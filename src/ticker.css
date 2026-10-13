@@ -1,0 +1,102 @@
+/* Windows 悬浮行情条：窗口尺寸 = 内容尺寸（由 fit_ticker 调整），窗口本身透明 */
+
+:root {
+  --up: #e0282e;
+  --down: #1a9f50;
+  --flat: #8e8e93;
+  --bg: rgba(255, 255, 255, 0.9);
+  --text: #1d1d1f;
+  --border: rgba(0, 0, 0, 0.12);
+  --hover: rgba(0, 0, 0, 0.05);
+  color-scheme: light dark;
+}
+:root.green-up {
+  --up: #089981;
+  --down: #f23645;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: rgba(32, 32, 34, 0.9);
+    --text: #f2f2f7;
+    --border: rgba(255, 255, 255, 0.14);
+    --hover: rgba(255, 255, 255, 0.07);
+  }
+}
+:root[data-theme="dark"] {
+  --bg: rgba(32, 32, 34, 0.9);
+  --text: #f2f2f7;
+  --border: rgba(255, 255, 255, 0.14);
+  --hover: rgba(255, 255, 255, 0.07);
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+html,
+body {
+  background: transparent;
+  overflow: hidden;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+  font-size: 12px;
+  color: var(--text);
+  user-select: none;
+  cursor: default;
+}
+
+.ticker {
+  display: inline-flex;
+  align-items: center;
+  width: max-content;
+  height: 28px;
+  padding: 0 10px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  background-color: Canvas;
+  background-image: linear-gradient(var(--bg), var(--bg));
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  transition: background-image 0.15s ease;
+}
+.ticker:hover {
+  background-image: linear-gradient(var(--hover), var(--hover)), linear-gradient(var(--bg), var(--bg));
+}
+.ticker.compact {
+  height: 36px;
+}
+
+.it b {
+  font-weight: 600;
+}
+.it em {
+  font-style: normal;
+}
+.compact .it {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  line-height: 1.2;
+}
+.compact .it em {
+  font-size: 11px;
+}
+.colored .it.up em {
+  color: var(--up);
+}
+.colored .it.down em {
+  color: var(--down);
+}
+
+.sep {
+  width: 1px;
+  height: 14px;
+  margin: 0 10px;
+  background: var(--border);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ticker {
+    transition: none;
+  }
+}

@@ -4,3 +4,4 @@ src-tauri/target
 src-tauri/gen
 .DS_Store
 .agents
+skills-lock.json

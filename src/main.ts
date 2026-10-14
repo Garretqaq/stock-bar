@@ -2,12 +2,15 @@ import {
   apiErrorText,
   getActiveSource,
   codeOf,
+  fetchMarketAmount,
   fetchQuotes,
   fetchTrend,
+  MARKET_INDEX,
   marketTag,
   regionOf,
   searchStocks,
   sessionStatus,
+  type MarketAmount,
   type Quote,
   type SearchItem,
   type TrendData,
@@ -45,9 +48,11 @@ let trendOpen: string | null = null;
 const trendCache = new Map<string, TrendData>();
 let trendSeq = 0;
 let refreshing = false;
+/** 全市场成交额（沪+深+北），只在指数分时面板展开时拉取 */
+let market: MarketAmount | null = null;
+let marketSeq = 0;
 
 // ---------- 工具 ----------
-
 const $ = <T extends HTMLElement = HTMLElement>(sel: string, root: ParentNode = document) =>
   root.querySelector<T>(sel)!;
 
@@ -189,7 +194,8 @@ async function toggleTrend(id: string): Promise<void> {
   syncOpenState();
   const had = trendCache.has(id);
   if (had) openHolders(id).forEach(animateTrend);
-  await loadTrend(id, !had);
+  // 全市场成交额（底部那两行）只在指数面板里出现，展开指数时顺带拉一次
+  await Promise.all([loadTrend(id, !had), isIndex(id) ? loadMarket() : Promise.resolve()]);
 }
 
 /** 只切换 class、不重建 DOM，保证展开/收起过渡完整播放 */
@@ -220,6 +226,24 @@ async function loadTrend(id: string, animate: boolean): Promise<void> {
     if (!trendCache.has(id)) trendErr.add(id);
     renderTrendPanels();
   }
+}
+
+/**
+ * 拉全市场成交额（沪+深+北）。
+ * 只在展开的标的是大盘指数时调用 —— 底部那两行只在指数面板里有位置。
+ * 失败时保留上一次的值：多一行旧数据也好过整行闪没。
+ */
+async function loadMarket(): Promise<void> {
+  const seq = ++marketSeq;
+  try {
+    const got = await fetchMarketAmount(quotes, S.source);
+    if (seq !== marketSeq) return;
+    market = got;
+  } catch {
+    // 拿不到就沿用上一次的值：多一行旧数据也好过整行闪没
+    return;
+  }
+  renderTrendPanels();
 }
 
 /** 同步指数共用面板 + 个股行内嵌面板的展开状态 */
@@ -275,31 +299,62 @@ function trendTotal(data: TrendData): number {
   return Math.max(data.total ?? 0, data.points.length);
 }
 /**
- * 大盘指数面板底部的成交额：当日累计，以及与上一交易日相同时长相比的增减。
+ * 大盘指数面板底部的成交额，两行：
+ *   1. 今日全市场（沪+深+北）总额 + 三市明细 —— 这才是各家 App 报的「两市/全市场成交额」；
+ *   2. 较上一日同期的增减 —— 只有沪深两市能比（北证50 没有历史成交额），所以要标「沪深」。
  * 个股的行内分时面板没有 .trend-foot，自然不显示。
  */
 function renderAmount(holder: HTMLElement, data: TrendData | undefined): void {
   const foot = holder.querySelector<HTMLElement>(".trend-foot");
   if (!foot) return;
+  // 全市场那行只在指数面板显示；个股面板没有 .trend-foot，走不到这里
+  const m = market;
+  const detail =
+    m == null
+      ? ""
+      : ([
+          ["沪", m.parts.sh],
+          ["深", m.parts.sz],
+          ["北", m.parts.bj],
+        ] as [string, number | null][])
+          .filter(([, v]) => v != null)
+          // 明细只报数字，单位由前面的「亿」带着；重复三遍「亿」在 360px 宽下会被省略号截断
+          .map(([k, v]) => `${k} ${Math.round((v as number) / 1e8)}`)
+          .join(" · ");
+
   const amt = data?.amount ?? null;
-  const prev = data?.prevAmount ?? null;
-  const diff = amt != null && prev != null ? amt - prev : null;
-  const pct = diff != null && prev != null && prev > 0 ? (amt! / prev - 1) * 100 : null;
+  const diff = m?.hsTotal != null && m.hsPrev != null ? m.hsTotal - m.hsPrev : null;
+  const pct =
+    diff != null && m!.hsPrev! > 0 ? (m!.hsTotal! / m!.hsPrev! - 1) * 100 : null;
+
   // 内容里只有数字和固定的 class，不需要转义；没变化就不重写，免得展开动画每帧都动 DOM
-  const html =
-    amt == null
+  const line1 =
+    m?.total == null
       ? ""
-      : `<span>成交额 <b>${fmtAmount(amt)}</b></span>` +
-        (diff == null
-          ? ""
-          : `<span>较上日同期 <b class="${dirOf(diff)}">${fmtAmountDiff(diff)}${
-              pct == null ? "" : `（${fmtPct(pct)}）`
-            }</b></span>`);
+      : `<span><span>今日全市场 <b>${fmtAmount(m.total)}</b></span>${
+          detail ? `<i>${detail}</i>` : ""
+        }</span>`;
+  const line2 =
+    diff == null
+      ? amt == null
+        ? ""
+        : `<span>成交额 <b>${fmtAmount(amt)}</b></span>`
+      : `<span>较上一日（沪深）<b class="${dirOf(diff)}">${fmtAmountDiff(diff)}${
+          pct == null ? "" : `（${fmtPct(pct)}）`
+        }</b></span>`;
+  const html = line1 || line2 ? `${line1}${line2}` : "";
+
   const title =
-    prev == null
+    m?.total == null
       ? ""
-      : `上日同期（${data?.prevDate ?? "--"}）${fmtAmount(prev)}` +
-        (diff == null ? "" : `，${diff >= 0 ? "多" : "少"} ${fmtAmount(Math.abs(diff))}`);
+      : `全市场 ${fmtAmount(m.total)}（沪 ${fmtAmount(m.parts.sh)} + 深 ${fmtAmount(
+          m.parts.sz,
+        )} + 北 ${fmtAmount(m.parts.bj)}）` +
+        (m.hsPrev == null
+          ? ""
+          : `\n沪深 ${fmtAmount(m.hsTotal)}，上一日同期（${m.prevDate ?? "--"}）${fmtAmount(
+              m.hsPrev,
+            )}` + (diff == null ? "" : `，${diff >= 0 ? "多" : "少"} ${fmtAmount(Math.abs(diff))}`));
   if (foot.innerHTML === html && foot.title === title) return;
   foot.innerHTML = html;
   if (title) foot.title = title;
@@ -853,13 +908,26 @@ function select(id: string): void {
 async function refresh(): Promise<void> {
   if (refreshing) return;
   refreshing = true;
-  const ids = [...new Set([...INDICES.map((i) => i.secid), S.selected, ...S.watchlist, ...S.bar])];
+  // 北证50 不在用户的指数列表里，但全市场成交额要用它，所以单独补进来
+  const ids = [
+    ...new Set([
+      ...INDICES.map((i) => i.secid),
+      MARKET_INDEX.bj,
+      S.selected,
+      ...S.watchlist,
+      ...S.bar,
+    ]),
+  ];
   try {
     const got = await fetchQuotes(ids, S.source);
     got.forEach((q, k) => quotes.set(k, q));
     lastOk = Date.now();
     failCount = 0;
-    if (trendOpen) void loadTrend(trendOpen, false);
+    if (trendOpen) {
+      void loadTrend(trendOpen, false);
+      // 指数面板展开着：底部那两行也要跟着刷新
+      if (isIndex(trendOpen)) void loadMarket();
+    }
   } catch (e) {
     failCount++;
     errorMsg = apiErrorText(e);

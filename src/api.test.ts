@@ -4,6 +4,7 @@ import {
   apiErrorText,
   codeOf,
   cumAmount,
+  fetchMarketAmount,
   fetchQuotes,
   fetchTrend,
   getActiveSource,
@@ -90,7 +91,7 @@ describe("fetchQuotes", () => {
     const body = {
       data: {
         diff: [
-          { f2: 1500.5, f3: 1.2, f4: 17.8, f12: "600519", f13: 1, f14: "贵州茅台", f124: 1791879120 },
+          { f2: 1500.5, f3: 1.2, f4: 17.8, f6: 6.6e9, f12: "600519", f13: 1, f14: "贵州茅台", f124: 1791879120 },
           { f2: "-", f3: "-", f4: "-", f12: "AAPL", f13: 105, f14: "苹果", f124: "-" },
         ],
       },
@@ -99,7 +100,7 @@ describe("fetchQuotes", () => {
     vi.stubGlobal("fetch", fetchMock);
     const got = await fetchQuotes(["1.600519", "105.AAPL", "1.600519", ""]);
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(fetchMock.mock.calls[0][0]).toContain("f124");
+    expect(fetchMock.mock.calls[0][0]).toContain("f6");
     expect(got.get("1.600519")).toEqual({
       secid: "1.600519",
       code: "600519",
@@ -109,9 +110,16 @@ describe("fetchQuotes", () => {
       pct: 1.2,
       change: 17.8,
       time: 1791879120,
+      amount: 6.6e9,
     });
     const aapl = got.get("105.AAPL")!;
-    expect([aapl.price, aapl.pct, aapl.change, aapl.time]).toEqual([null, null, null, null]);
+    expect([aapl.price, aapl.pct, aapl.change, aapl.time, aapl.amount]).toEqual([
+      null,
+      null,
+      null,
+      null,
+      null,
+    ]);
   });
 
   it("空列表不发请求", async () => {
@@ -275,9 +283,10 @@ describe("数据源与自动降级", () => {
   const TX_NAME = "腾讯名";
   const TX_NAME_GBK = Uint8Array.from([0xcc, 0xda, 0xd1, 0xb6, 0xc3, 0xfb]);
   const txResponse = () => {
-    const p = new Array(33).fill("");
+    const p = new Array(38).fill("");
     p[0] = "1"; p[2] = "600519"; p[3] = "11.11"; p[4] = "11.00";
     p[30] = "20261014120535"; p[31] = "0.11"; p[32] = "1.00";
+    p[37] = "66249184"; // 成交额（万元）→ 6624.9 亿
     const head = new TextEncoder().encode(`v_sh600519="1~`);   // 到名称字段之前
     const rest = new TextEncoder().encode(`~` + p.slice(2).join("~") + `";`); // 名称字段之后
     const out = new Uint8Array(head.length + TX_NAME_GBK.length + rest.length);
@@ -430,5 +439,87 @@ describe("腾讯映射与分时修正", () => {
     expect(t.points).toHaveLength(4);
     // total 取「最长的一天」，不能被算成 6
     expect(t.total).toBe(4);
+  });
+});
+
+describe("全市场成交额", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  /** 直接用报价 Map 构造，避免依赖接口路径 */
+  const quotesOf = (parts: Partial<Record<string, number | null>>) => {
+    const m = new Map<string, any>();
+    for (const [id, amount] of Object.entries(parts)) {
+      m.set(id, { secid: id, amount });
+    }
+    // 沪深两市的「上一日同期」走 fetchTrend，测试里单独 stub
+    return m;
+  };
+
+  const trendStub = (shPrev: number | null, szPrev: number | null) =>
+    vi.stubGlobal("fetch", vi.fn(async (u: string) => {
+      const isSh = u.includes("000001");
+      const prev = isSh ? shPrev : szPrev;
+      const rows = prev == null ? [] : [
+        { date: "20261013", data: ["0930 10 100 1000", "0931 10 200 3000"] },
+        { date: "20261014", data: ["0930 10 100 1000", "0931 10 200 3000"] },
+      ];
+      const code = isSh ? "sh000001" : "sz399001";
+      // prev 值通过分时累计额体现：把上一日累计额设成目标值
+      if (prev != null) rows[0].data = [`0930 10 100 ${prev}`];
+      return new Response(JSON.stringify({ data: { [code]: { data: rows, qt: { [code]: ["1", "X"] } } } }));
+    }));
+
+  it("三市齐全才给出全市场总额，并单独给出沪深合计", async () => {
+    trendStub(7793e8, 8966e8);
+    const m = await fetchMarketAmount(
+      quotesOf({ "1.000001": 6625e8, "0.399001": 7519e8, "0.899050": 122e8 }),
+      "tencent",
+    );
+    expect(m.total).toBe(6625e8 + 7519e8 + 122e8);
+    expect(m.hsTotal).toBe(6625e8 + 7519e8);
+  });
+
+  it("缺一个市场就不冒充「全市场」，退回 null", async () => {
+    trendStub(7793e8, 8966e8);
+    const m = await fetchMarketAmount(
+      quotesOf({ "1.000001": 6625e8, "0.399001": 7519e8, "0.899050": null }),
+      "tencent",
+    );
+    // 北证50 的成交额取不到时，total 不能只算沪深就叫做全市场
+    expect(m.total).toBeNull();
+    expect(m.hsTotal).toBe(6625e8 + 7519e8);
+  });
+
+  it("上一日同期取不到时 hsPrev 为 null，不影响今日值", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("", { status: 502 })));
+    const m = await fetchMarketAmount(
+      quotesOf({ "1.000001": 6625e8, "0.399001": 7519e8, "0.899050": 122e8 }),
+      "tencent",
+    );
+    expect(m.hsPrev).toBeNull();
+    expect(m.total).toBe(6625e8 + 7519e8 + 122e8);
+  });
+});
+
+describe("腾讯成交额单位", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  /** 造一行腾讯报价：f[37] 是成交额字段 */
+  const tx = (code: string, name: string, amt: string) => {
+    const p = new Array(38).fill("");
+    p[2] = code.slice(2); p[3] = "10"; p[30] = "20261014120535"; p[37] = amt;
+    return new TextEncoder().encode(`v_${code}="1~${name}~` + p.slice(2).join("~") + `";`);
+  };
+
+  it("A 股的 f[37] 是万元，换算成元", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(tx("sh000001", "SH", "66249184"))));
+    const got = await fetchQuotes(["1.000001"], "tencent");
+    expect(got.get("1.000001")?.amount).toBe(66249184 * 1e4);
+  });
+
+  it("港股/美股的 f[37] 量纲对不上，一律给 null 而不是错值", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(tx("hk00700", "HK", "6469119686.486"))));
+    const got = await fetchQuotes(["116.00700"], "tencent");
+    expect(got.get("116.00700")?.amount).toBeNull();
   });
 });

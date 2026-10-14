@@ -665,7 +665,8 @@ button {
     transform 0.3s var(--ease-out);
 }
 .trend.show {
-  max-height: 200px;
+  /* 卡片实际高度约 195px（含两行成交额），留出余量避免裁掉底部 */
+  max-height: 220px;
   margin: 2px 0 10px;
   opacity: 1;
   transform: none;
@@ -711,25 +712,32 @@ button {
   font-weight: 600;
 }
 
-/* 成交额：当日累计 + 与上一日同一时刻的增减（只在大盘指数面板里出现） */
+/* 成交额：第一行全市场（沪+深+北），第二行较上一日同期的增减（只在大盘指数面板里出现） */
 .trend-foot {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  height: 15px;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 15px;
   margin-top: 4px;
   font-size: 11px;
   color: var(--sub);
   white-space: nowrap;
 }
-/* 窗口很窄时先压缩右侧的对比文字，宁可省略也不要挤出卡片 */
-.trend-foot > span:last-child {
+.trend-foot > span {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  overflow: hidden;
+}
+/* 三市明细：更淡一档，跟在总额后面 */
+.trend-foot i {
+  flex-shrink: 1;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-.trend-foot > span:first-child {
-  flex-shrink: 0;
+  font-style: normal;
+  color: var(--sub);
+  opacity: 0.8;
 }
 /* 没有成交额数据时不占高度 */
 .trend-foot:empty {

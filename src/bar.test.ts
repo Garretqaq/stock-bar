@@ -12,6 +12,7 @@ const q = (secid: string, name: string, price: number | null, pct: number | null
   pct,
   change: null,
   time: null,
+  amount: null,
 });
 
 describe("bar 格式化", () => {

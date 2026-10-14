@@ -16,6 +16,11 @@ export interface Quote {
   pct: number | null;
   /** 最后成交时间（Unix 秒，f124），用于识别节假日休市 */
   time: number | null;
+  /**
+   * 当日成交额（元）。东财 f6 各市场都是元；腾讯只有 A 股的 f[37] 可信
+   * （A 股是万元，已换算），其港股/海外指数的 f[37] 量纲对不上，一律给 null。
+   */
+  amount: number | null;
 }
 
 export interface SearchItem {
@@ -207,7 +212,7 @@ async function quotesFromEastmoney(ids: string[]): Promise<Map<string, Quote>> {
   const out = new Map<string, Quote>();
   const url =
     `https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&invt=2` +
-    `&fields=f2,f3,f4,f12,f13,f14,f124&secids=${encodeURIComponent(ids.join(","))}` +
+    `&fields=f2,f3,f4,f6,f12,f13,f14,f124&secids=${encodeURIComponent(ids.join(","))}` +
     `&ut=${UT}&np=1&pi=0&pz=${ids.length}`;
   const json = await getJson(url);
   const diff = json?.data?.diff;
@@ -222,6 +227,8 @@ async function quotesFromEastmoney(ids: string[]): Promise<Map<string, Quote>> {
       price: num(d.f2),
       pct: num(d.f3),
       change: num(d.f4),
+      // f6 是成交额（元），各市场口径一致
+      amount: num(d.f6),
       time: num(d.f124),
     });
   }
@@ -304,6 +311,9 @@ async function quotesFromTencent(ids: string[]): Promise<Map<string, Quote>> {
         price: num(f[3]),
         pct: num(f[32]),
         change: num(f[31]),
+        // 成交额：只有 A 股的 f[37] 是「万元」，港美股/海外指数的 f[37] 量纲对不上，
+        // 一律给 null（全市场成交额只统计 A 股，缺港美股不影响）
+        amount: amountFromTencent(secid, f),
         time: tencentQuoteTime(secid, f[30]),
       });
     }
@@ -311,6 +321,18 @@ async function quotesFromTencent(ids: string[]): Promise<Map<string, Quote>> {
   // 一条都没取到、且确实有批次失败过，才把错误抛给上层（交给 auto 换源或显示失败）
   if (!out.size && lastErr) throw lastErr;
   return out;
+}
+
+/**
+ * 腾讯报价的成交额（f[37]）转成「元」。
+ * 实测 A 股（含北交所）是万元：sh000001 的 66249184 → 6624.9 亿，与东财 f6 一致；
+ * 但港股/海外指数给的是另一套量纲（恒生指数 15816621、纳指 31032551615262），
+ * 按万元换算会得出荒唐值，所以只认 A 股，其余返回 null。
+ */
+function amountFromTencent(secid: string, f: string[]): number | null {
+  if (regionOf(secid) !== "CN") return null;
+  const wan = num(f[37]);
+  return wan == null ? null : wan * 1e4;
 }
 
 /** 报价时间按标的所在市场的时区解析 */
@@ -675,6 +697,65 @@ export async function fetchTrend(
     }
   }
   throw lastErr ?? new ApiError("server", "分时获取失败");
+}
+
+// ---------- 全市场成交额 ----------
+
+/** 全市场成交额用到的三个指数：沪深北各取一个代表性指数，其成交额即该市场总额 */
+export const MARKET_INDEX = {
+  sh: "1.000001", // 上证指数 → 沪市
+  sz: "0.399001", // 深证成指 → 深市（与深证综指同为 7519 亿，口径一致）
+  bj: "0.899050", // 北证50  → 北交所
+} as const;
+
+export interface MarketAmount {
+  /** 沪/深/北各自的当日成交额（元）；取不到的市场为 null */
+  parts: { sh: number | null; sz: number | null; bj: number | null };
+  /** 全市场（沪+深+北）当日成交额；缺任何一个市场时为 null（不冒充全市场） */
+  total: number | null;
+  /** 沪深两市当日成交额；缺任一个时为 null */
+  hsTotal: number | null;
+  /** 沪深两市上一交易日同一时刻的合计（元）；没有可比数据时为 null */
+  hsPrev: number | null;
+  /** 上一交易日的日期（"2026-10-13"） */
+  prevDate: string | null;
+}
+
+/** 全部有值才算得出来：缺一个市场就不能冒充「全市场」，宁可返回 null */
+function sumStrict(...vs: (number | null)[]): number | null {
+  if (vs.some((v) => v == null)) return null;
+  return vs.reduce<number>((a, v) => a + (v as number), 0);
+}
+
+/**
+ * 全市场成交额：沪 + 深 + 北。
+ *
+ * 今日的三个值直接读调用方刚取到的报价（`Quote.amount` 已是元），不再多打一次接口。
+ * 「较上一日」要的是上一日的分钟累计成交额，只有沪深两市的分时接口给得出 ——
+ * 北证50 在腾讯的分时只有 3 列（价格/量，没有成交额）、日线也只回当天，
+ * 两家都取不到它的历史成交额，所以对比固定为沪深口径，界面上必须写明，不能假装成全市场对比。
+ */
+export async function fetchMarketAmount(
+  quotes: Map<string, Quote>,
+  source: DataSource = "auto",
+): Promise<MarketAmount> {
+  // 先把本轮的今日值定下来，免得和后面分时请求期间的新一轮刷新串味
+  const partOf = (id: string) => quotes.get(id)?.amount ?? null;
+  const sh = partOf(MARKET_INDEX.sh);
+  const sz = partOf(MARKET_INDEX.sz);
+  const bj = partOf(MARKET_INDEX.bj);
+  // 沪深各取两天：图上不用，只借 prevAmount 算「与上一日同期」
+  const [shTrend, szTrend] = await Promise.all([
+    fetchTrend(MARKET_INDEX.sh, 2, source).catch(() => null),
+    fetchTrend(MARKET_INDEX.sz, 2, source).catch(() => null),
+  ]);
+  return {
+    parts: { sh, sz, bj },
+    total: sumStrict(sh, sz, bj),
+    hsTotal: sumStrict(sh, sz),
+    hsPrev: sumStrict(shTrend?.prevAmount ?? null, szTrend?.prevAmount ?? null),
+    prevDate: shTrend?.prevDate ?? szTrend?.prevDate ?? null,
+  };
 }
 
 // ---------- secid 辅助 ----------

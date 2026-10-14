@@ -71,11 +71,18 @@ describe("右键菜单", () => {
   it("ignoreScrollFrom 里的滚动不收起菜单（锚点不跟着动）", () => {
     const strip = document.createElement("div");
     document.body.append(strip);
-    openMenu(0, 0, [{ label: "删除" }], strip);
+    openMenu(0, 0, [{ label: "删除" }], { ignoreScrollFrom: strip });
     strip.dispatchEvent(new Event("scroll", { bubbles: true }));
     expect(menu()).not.toBeNull();
     document.body.dispatchEvent(new Event("scroll", { bubbles: true }));
     expect(menu()).toBeNull();
     strip.remove();
+  });
+
+  it("compact：只有 ☰ 那种紧凑菜单带 compact 类，普通右键菜单不带", () => {
+    openMenu(0, 0, [{ label: "科技" }], { compact: true });
+    expect(menu()!.classList.contains("compact")).toBe(true);
+    openMenu(0, 0, [{ label: "科技" }]);
+    expect(menu()!.classList.contains("compact")).toBe(false);
   });
 });

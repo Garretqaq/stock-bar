@@ -24,17 +24,29 @@ export function closeMenu(): void {
   cleanup = null;
 }
 
+/** openMenu 的可选行为 */
+export interface MenuOpts {
+  /** 菜单锚点所在容器：它自己的滚动不挪动锚点，所以那种滚动不该把菜单收起来 */
+  ignoreScrollFrom?: Element;
+  /**
+   * 紧凑样式：行高 / 字号 / 宽度都按分组标签的尺寸来。
+   * 筛选条末尾的 ☰ 展开的就是那排标签本身，用大菜单会显得很突兀。
+   */
+  compact?: boolean;
+}
+
 /**
  * 在 (x, y) 处弹出菜单；重复调用会先关掉上一个。
  * ignoreScrollFrom：这个容器里自己的滚动不会挪动菜单的位置（比如菜单挂在筛选条末尾的 ☰ 上，
  * 筛选条横着滚，☰ 是不动的），所以那种滚动不该把菜单收起来；页面 / 列表滚动照旧收起菜单。
  */
-export function openMenu(x: number, y: number, items: MenuItem[], ignoreScrollFrom?: Element): void {
+export function openMenu(x: number, y: number, items: MenuItem[], opts: MenuOpts = {}): void {
   closeMenu();
   if (!items.length) return;
+  const { ignoreScrollFrom, compact } = opts;
 
   const el = document.createElement("div");
-  el.className = "ctx-menu";
+  el.className = compact ? "ctx-menu compact" : "ctx-menu";
   el.setAttribute("role", "menu");
   el.innerHTML = items
     .map(

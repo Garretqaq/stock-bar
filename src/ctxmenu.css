@@ -77,6 +77,27 @@
   cursor: not-allowed;
 }
 
+/* 紧凑样式：筛选条末尾的 ☰ 用它 —— 展开的其实就是那排分组标签本身。
+   行高 / 字号 / 内边距都按标签来（.gtab 是 26px 高、12px 字），选中态也沿用标签那套
+   「浅底 + 强调色文字」，而不是整块强调色填充，不然一个小 ☰ 底下弹出一个大菜单很突兀。 */
+.ctx-menu.compact {
+  min-width: 96px;
+  padding: 3px;
+  border-radius: 8px;
+}
+.ctx-menu.compact .ctx-item {
+  height: 26px;
+  gap: 6px;
+  padding: 0 9px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+.ctx-menu.compact .ctx-item:not(.danger):hover:not(:disabled),
+.ctx-menu.compact .ctx-item:not(.danger):focus-visible {
+  background: var(--accent-soft, rgba(10, 132, 255, 0.12));
+  color: var(--accent, #0a84ff);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .ctx-menu {
     animation: none;

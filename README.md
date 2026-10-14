@@ -68,7 +68,7 @@ pnpm app:build
 
 产物位于 `src-tauri/target/release/bundle/`。
 
-Windows 仓库维护者还可在 [GitHub Actions](https://github.com/Garretqaq/stock-bar/actions/workflows/build-windows.yml) 手动运行 `build-windows`，从该次运行的 Artifacts 下载 MSI / NSIS 安装包。推送 `v*` 标签会构建并创建 Release 草稿；缺少 WebView2 时安装器会自动下载。
+仓库维护者也可在 [GitHub Actions](https://github.com/Garretqaq/stock-bar/actions/workflows/build.yml) 手动运行 `build`，从该次运行的 Artifacts 下载安装包。推送 `v*` 标签会构建 macOS（通用二进制，Intel 与 Apple Silicon 通用）和 Windows 安装包，并创建 Release 草稿（需手动确认后公开）；Windows 缺少 WebView2 时安装器会自动下载。
 
 ### 只预览前端
 

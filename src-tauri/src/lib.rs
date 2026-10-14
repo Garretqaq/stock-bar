@@ -9,6 +9,8 @@ use tauri::{
 #[cfg(target_os = "macos")]
 use tauri_plugin_positioner::{Position, WindowExt};
 
+mod bridge;
+
 const TRAY_ID: &str = "main";
 const WINDOW_LABEL: &str = "main";
 const SETTINGS_LABEL: &str = "settings";
@@ -357,9 +359,24 @@ fn quit_app(app: AppHandle) {
     app.exit(0);
 }
 
+// MCP 本地桥的两条命令：命令本体在 bridge.rs 里是普通函数，
+// 放在这里是为了走 crate 根上的命令宏（子模块里定义还要额外处理宏路径）
+
+/// 主面板注册好 MCP 监听后调用
+#[tauri::command]
+fn mcp_ready() {
+    bridge::mark_ready();
+}
+
+/// 前端执行完一条 MCP 命令后回信
+#[tauri::command]
+fn mcp_reply(id: u64, payload: String) {
+    bridge::reply(id, payload);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         // 单实例必须最先注册：重复启动时不再出现第二个托盘图标，而是打开设置窗口
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             let _ = open_settings(app.clone());
@@ -373,7 +390,9 @@ pub fn run() {
             fit_ticker,
             ticker_click,
             hide_window,
-            quit_app
+            quit_app,
+            mcp_ready,
+            mcp_reply
         ])
         .setup(|app| {
             // macOS：不在 Dock 显示，只做菜单栏应用
@@ -387,6 +406,9 @@ pub fn run() {
                 let _ = win.set_shadow(false);
                 let _ = win.set_size(tauri::LogicalSize::new(376.0, 576.0));
             }
+
+            // MCP 本地桥：外部客户端改自选/分组的入口（命令仍由前端执行）
+            bridge::start(app.handle().clone());
 
             let quit = MenuItem::with_id(app, "quit", "退出 StockBar", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&quit])?;
@@ -437,6 +459,12 @@ pub fn run() {
             }
             _ => {}
         })
-        .run(tauri::generate_context!())
+        .build(tauri::generate_context!())
         .expect("启动 StockBar 失败");
+    // 退出前删掉 MCP 连接信息文件，免得外部客户端照着过期端口乱撞
+    app.run(|_, event| {
+        if matches!(event, tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit) {
+            bridge::shutdown();
+        }
+    });
 }

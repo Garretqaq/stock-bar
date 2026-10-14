@@ -3,8 +3,8 @@
 
 const UT = "b2884a393a59ad64002292a3e90d46a5";
 const SEARCH_TOKEN = "D43BF722C8E33BDC906FB84D85E326E8";
-/** 只保留能识别的市场：沪/深/港/美/海外指数（过滤板块 90.BK、中证指数 2.H 等） */
-const SUPPORTED_MARKETS = new Set(["0", "1", "100", "105", "106", "107", "116"]);
+/** 只保留能识别的市场：沪/深/港/美/海外指数（过滤板块 90.BK、中证指数 2.H 等）；MCP 侧也用它校验 secid */
+export const SUPPORTED_MARKETS = new Set(["0", "1", "100", "105", "106", "107", "116"]);
 
 export interface Quote {
   secid: string;

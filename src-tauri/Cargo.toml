@@ -17,6 +17,10 @@ tauri-plugin-positioner = { version = "2", features = ["tray-icon"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri-plugin-single-instance = "2"
+# MCP 本地桥用的极简 HTTP 服务（只监听回环，见 src/bridge.rs）
+tiny_http = "0.12"
+# 桥的令牌：用系统随机源，别自己拼（本来就在依赖树里）
+getrandom = "0.3"
 
 [profile.release]
 codegen-units = 1

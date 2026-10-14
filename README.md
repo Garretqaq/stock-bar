@@ -90,6 +90,31 @@ pnpm dev
 
 交易状态按市场时区与最后成交时间推断，**没有节假日日历**，开盘前无法提前判断当天是否休市。完整操作、设置说明和数据规则见 [使用指南](docs/usage.md)。
 
+## 用 MCP 配置自选（可选）
+
+仓库自带一个零依赖的 MCP 服务，可以让支持 MCP 的 AI 客户端（Claude Code、Claude Desktop 等）按你的话改自选与分组：
+
+- 「把宁德时代加到自选，放进持仓分组」
+- 「新建一个分组叫打新，把这三只挪进去」
+- 「我自选里现在有哪些分组，各放了什么」
+
+在客户端里配置（路径换成你 clone 下来的位置，需要 Node 22+）：
+
+```json
+{
+  "mcpServers": {
+    "stockbar": {
+      "command": "node",
+      "args": ["/Users/you/code/stock-bar/mcp/stockbar-mcp.mjs"]
+    }
+  }
+}
+```
+
+前提是 **StockBar 正在运行**（macOS 菜单栏 / Windows 托盘有图标）：MCP 服务不直接改存储，它把命令通过本机回环端口交给应用，由应用用与界面完全相同的规则执行 —— 校验、分组归属、置顶、菜单栏名额、跨窗口刷新全都一致，改完界面立刻跟着变。连接信息（随机端口 + 令牌）放在应用数据目录的 `mcp-endpoint.json`（macOS 为 `~/Library/Application Support/com.stockbar.eastmoney/`），退出应用时删除。
+
+可用工具共 11 个：`list_watchlist`、`search_instrument`、`add_to_watchlist`、`remove_from_watchlist`、`move_in_watchlist`、`set_watchlist_group`、`set_watchlist_pin`、`create_group`、`rename_group`、`delete_group`、`move_group`。大盘指数是内置的，不能通过 MCP 增删。
+
 ## 开发与贡献
 
 ```bash

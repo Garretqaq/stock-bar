@@ -11,12 +11,14 @@ pnpm build          # tsc --noEmit + vite build → dist/
 pnpm app:dev        # tauri dev：启动完整的菜单栏应用
 pnpm app:build      # tauri build → src-tauri/target/release/bundle/
 pnpm test           # vitest 单元测试
+pnpm test           # vitest 单元测试（src/ 与 mcp/）
+pnpm mcp            # 用 stdio 跑 MCP 服务，供 MCP 客户端配置（见「MCP 本地桥」）
 pnpm check          # tsc --noEmit + vitest
 cd src-tauri && cargo check   # Rust 侧检查
 ```
 
 - 包管理器用 **pnpm**（`packageManager` 字段已锁定版本），不要用 npm 或 yarn。
-- 单元测试用 **vitest**（happy-dom 环境），测试文件为 `src/*.test.ts`，覆盖 api / bar / settings / ctxmenu / drag 里的纯逻辑。没有 lint 或格式化配置。
+- 单元测试用 **vitest**：`src/*.test.ts` 跑在 happy-dom 环境，覆盖 api / bar / settings / ctxmenu / drag / mcp 里的纯逻辑；`mcp/*.test.mjs` 是 MCP 服务端的测试，文件头用 `// @vitest-environment node` 切到 node 环境（含一条真的起进程 + 假本地桥的端到端用例）。没有 lint 或格式化配置。
 - 改完之后至少跑通 `pnpm check`（类型检查加单元测试）和 `pnpm build`；改了 Rust 就再跑一次 `cargo check`。改了纯逻辑要补对应测试。
 - Vite 开发端口固定为 1420（`strictPort`），和 `tauri.conf.json` 里的 `devUrl` 一一对应，两边必须一起改。
 
@@ -32,9 +34,12 @@ src/bar.ts       菜单栏内容生成：单行文字 barText / 双行紧凑 can
 src/tauri.ts     Tauri 桥接层：call / emitAll / listenAll（非 Tauri 环境自动降级为空操作），平台判断 IS_WIN、canvas 字体栈 UI_FONT
 src/ctxmenu.ts   通用右键菜单 openMenu / closeMenu（样式 ctxmenu.css，主面板与设置窗口共用）
 src/drag.ts      拖动排序的纯计算：slotAt（指针落在第几格）/ shiftIndex（拖动中其他行让开多少），设置窗口的仪表盘与行情页共用
+src/mcp.ts       MCP 命令处理：看 / 搜 / 增删自选、置顶、排序、分组增删改排序的纯逻辑（搜索与报价由调用方注入）
 src-tauri/src/lib.rs   托盘、弹窗定位（macOS 用 positioner，Windows/Linux 按托盘位置 + 屏幕工作区自己算）、失焦自动收起、单实例、所有 #[tauri::command]
+src-tauri/src/bridge.rs    MCP 本地桥：回环地址上的 HTTP 入口、令牌与连接信息文件、命令转发与回信配对
 src-tauri/capabilities/default.json   三个窗口（main / settings / ticker）的权限
 .github/workflows/build.yml   双端打包：推 v* 标签构建 macOS（通用二进制）+ Windows 安装包并创建 Release 草稿，或手动触发上传 Artifacts
+mcp/lib.mjs + mcp/stockbar-mcp.mjs   零依赖 MCP 服务（stdio JSON-RPC）：工具表、端点发现、把命令转给本地桥（`pnpm mcp` 可直接跑）
 ```
 
 Vite 是多页面打包，入口在 `vite.config.ts` 的 `rollupOptions.input` 里，新增页面要在这里登记。
@@ -52,6 +57,15 @@ Vite 是多页面打包，入口在 `vite.config.ts` 的 `rollupOptions.input` �
 - 分组标题的操作菜单由 `#watch-groups` 一处委托：标题右侧的「⋯」按钮左键点开，右键标题也可以（未分组不给菜单）。删除分组必须先就地确认：点「删除分组…」只把 `groupConfirm` 置上、把标题行换成确认条（`groupHead()` 渲染，文案里报出成员会回到未分组），真正删除只发生在确认条的「删除」上。`groupConfirm` 进 `groupsKey`，确认态的变化才会重建 DOM；确认态下右键标题不再叠菜单，Esc 先取消确认、再清多选。危险按钮用固定的 `#ff453a`，不要跟随 `--up`（绿涨红跌下会变成绿色）。
 - 分组视图里的拖动要用 `moveInView()` 把可见下标换算成整表下标，落点仍用 `clampBlock()` 按可见列表（也就是该分组内的置顶区）钳制。设置窗口的每个分组区块各注册一次 `sortable()`；区块会随分组增减重建，所以「拖完那一下 click」的标记放在外部 `marketSwallow` 里由各实例共用，不能退回成实例内的局部变量。
 
+**MCP 本地桥（外部配置）**
+- 外部 MCP 客户端（`mcp/stockbar-mcp.mjs`，stdio JSON-RPC）改自选与分组走这条链路：HTTP 桥（`bridge.rs`，只监听 `127.0.0.1` 的随机端口）→ Tauri 事件 `mcp-request` → 主面板 → `src/mcp.ts` 的 `prepareCommand()` / `apply()` → `saveSettings()` → 前端再调 `mcp_reply` 回信。**命令永远由前端执行**，所以 MCP 改动的校验、规整、广播与手点界面完全一致（设置窗口、菜单栏都会跟着刷新）。
+- 桥只在应用运行时存在：连接信息（随机端口 + 令牌）写在 app data 目录的 `mcp-endpoint.json`（macOS 为 `~/Library/Application Support/com.stockbar.eastmoney/`，权限 0600），退出时删掉；令牌只用来挡本机其他进程。
+- 前端注册好监听后才调 `mcp_ready` 置位 READY，之前到达的命令会被明确拒绝（「还在启动」），而不是静默超时。等前端回信的上限是 32 秒，请求里带一个早 4 秒的 `deadline`：命令来不及了就不改设置、直接回「超时」，免得出现「客户端收到失败、设置其实改了」。
+- 命令分两段：`prepareCommand()` 先做要联网的部分（搜索 / 报价 / 确认成员还在），返回一个 `apply(latest)` 闭包，由主面板在**当时最新**的 `S` 上执行 —— 命令等网线的这几秒里设置窗口改过的东西（主题、刷新间隔、自选本身）不会被打回旧快照；`runCommand()` 是「准备完立刻执行」的便捷入口，只有测试与简单调用用。
+- op 名是 `watchlist.*` / `groups.*` / `instrument.*`（见 `src/mcp.ts` 的 `prepareCommand` switch），MCP 工具名、描述与入参 schema 在 `mcp/lib.mjs` 的 `TOOLS` 里：**新增能力要两边一起加**。参数校验在命令处理里做，不信 schema 的「required」。
+- 标的用「secid 或关键词」指代：`resolveTarget()` 先认 secid 正则，否则走搜索；命中多只就报错并把候选列出来，让模型用 secid 再问一次。加入自选前会用一次报价确认代码不是编的（报价接口本身挂了就放行，并在结果里说明「未能校验」）。
+- 分组用「名字或 id」指代，找不到就报错并列出可选分组；「未分组」是内置的，不能改名 / 排序 / 删除。删除分组只把成员回落到未分组，自选一只都不少。
+
 **菜单栏（托盘）**
 - 托盘只由主面板 `main.ts` 的 `updateTray()` 负责更新。它用签名 `traySig` 去重，内容没变就不推送。设置窗口只用 `bar.ts` 做本地预览，不调用托盘命令。
 - 三种样式：`text` 调 `set_tray_text`（默认图标加文字）；`compact` 用 canvas 按 2x、高 36px 绘制 PNG，再调 `set_tray_image`；`icon` 只显示图标。
@@ -66,7 +80,7 @@ Vite 是多页面打包，入口在 `vite.config.ts` 的 `rollupOptions.input` �
 - 主面板在 Windows 关闭系统阴影、窗口放大到 376×576，由 CSS 留 8px 边距自己画圆角阴影；WebView2 的 `backdrop-filter` 透不到桌面，所以 `.win .panel` 用不透明底。设置窗口在 Windows 用原生标题栏（不渲染仿红绿灯和拖动区，标题栏深浅随应用主题 `setTheme`），整体是 Windows 11「设置」风格：`prefs.css` 末尾的 `.win` 区块（导航强调色竖条、每项一张 4px 圆角卡片、带「开/关」文字的开关、方形复选框），预览是桌面 + 任务栏 + 悬浮行情条（内容与真实行情条共用 `bar.ts` 的 `tickerHtml`）。开发时 `pnpm dev` 打开 `settings.html?win` 可在浏览器预览 Windows 布局。
 
 **Rust 侧**
-- 前端可以调用的命令：`set_tray_text`、`set_tray_image`、`open_settings`、`set_ticker`、`fit_ticker`、`ticker_click`、`hide_window`、`quit_app`。新增命令要同时改两处：在 `generate_handler![]` 里注册，前端通过 `call()` 调用。
+- 前端可以调用的命令：`set_tray_text`、`set_tray_image`、`open_settings`、`set_ticker`、`fit_ticker`、`ticker_click`、`hide_window`、`quit_app`、`mcp_ready`、`mcp_reply`。新增命令要同时改两处：在 `generate_handler![]` 里注册，前端通过 `call()` 调用。MCP 的两条命令壳写在 `lib.rs`、实现放在 `bridge.rs`（原因见「坑」）。
 - 用 `LAST_HIDDEN_MS` 做防抖（macOS 250ms，Windows/Linux 400ms，见 `TOGGLE_DEBOUNCE_MS`），实现"再点一次图标收起小窗"（点击时窗口会先失焦、自动隐藏）。改托盘点击逻辑时不要破坏这个行为。
 - 主面板每次弹出都会收到 `panel-shown` 事件，触发入场动画并立即刷新数据。
 - 新建窗口或使用新的插件 API 时，记得在 `capabilities/default.json` 里加上对应的 window label 和 permission。
@@ -92,6 +106,9 @@ Vite 是多页面打包，入口在 `vite.config.ts` 的 `rollupOptions.input` �
 - 已启用 CSP（`tauri.conf.json` 的 `csp` / `devCsp`）。新增外部域名时必须同步放行：fetch 走 `connect-src`，JSONP 走 `script-src`，图片走 `img-src`。`devCsp` 额外放行了 Vite 的 `localhost:1420`。`macOSPrivateApi: true` 是透明窗口需要的，不要关。
 - `dist/`、`src-tauri/target/`、`src-tauri/gen/` 都是生成产物，不要手动修改。
 - 项目是 git 仓库，生成产物已在 `.gitignore` 中排除。
+- MCP 的名字是三处对齐的：事件名 `mcp-request`、命令 `mcp_reply`、回信的载荷形状散在 `bridge.rs` / `main.ts` / `mcp/lib.mjs` 里，改一处要三处一起改；新增一条 op 同理（`src/mcp.ts` 的 switch + `mcp/lib.mjs` 的工具表）。
+- `#[tauri::command]` 定义在子模块里时 `generate_handler!` 的宏路径很难伺候（命令宏落在 crate 根，`bridge::mcp_ready` 这类路径解析不到），所以命令壳统一写在 `lib.rs`，实现函数放 `bridge.rs`。
+- MCP 相关改动不碰 CSP：那些请求由 Rust 侧处理，不经过 webview。`mcp-endpoint.json` 里是端口与令牌，不要提交进仓库或日志。
 
 ## 发布流程
 

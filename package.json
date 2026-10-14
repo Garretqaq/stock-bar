@@ -10,7 +10,8 @@
     "app:dev": "tauri dev",
     "app:build": "tauri build",
     "test": "vitest run",
-    "check": "tsc --noEmit && vitest run"
+    "check": "tsc --noEmit && vitest run",
+    "mcp": "node mcp/stockbar-mcp.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.12.0"

@@ -36,6 +36,7 @@ import {
 } from "./settings";
 import { IN_TAURI, IS_WIN, UI_FONT, call, listenAll } from "./tauri";
 import { openMenu, type MenuItem } from "./ctxmenu";
+import { McpError, prepareCommand } from "./mcp";
 
 let S: Settings = loadSettings();
 const save = () => saveSettings(S);
@@ -1065,25 +1066,40 @@ matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
   void updateTray();
 });
 
-// 设置窗口改了设置 → 主面板与菜单栏立即同步
-onSettingsChange((next) => {
-  const intervalChanged = next.interval !== S.interval;
-  // 保留本窗口的选中项，避免被对方覆盖；已在设置窗口里被删掉的标的退回列表首项
+/** 把一份新设置接到本窗口（只改内存里的 S）：保留本窗口的选中项，被删掉的标的退回列表首项 */
+function assignSettings(next: Settings): void {
   const keep = S.selected;
   S = {
     ...next,
     selected: next.watchlist.includes(keep) || isIndex(keep) ? keep : (next.watchlist[0] ?? INDICES[0].secid),
   };
+  // 展开中的分时图标的没了就收起
   if (trendOpen && !S.watchlist.includes(trendOpen) && !isIndex(trendOpen)) trendOpen = null;
+}
+
+/** 按当前 S 重画：外观、列表、菜单栏、行情条 */
+function renderFromSettings(): void {
   applyColorMode();
   renderAll();
   void updateTray();
+  syncTicker();
+  void refresh();
+}
+
+/** 外部（设置窗口或 MCP）改完设置后，让本窗口接到新状态上 */
+function adoptSettings(next: Settings): void {
+  assignSettings(next);
+  renderFromSettings();
+}
+
+// 设置窗口改了设置 → 主面板与菜单栏立即同步
+onSettingsChange((next) => {
+  const intervalChanged = next.interval !== S.interval;
+  adoptSettings(next);
   if (intervalChanged) {
     intervalSel.value = String(S.interval);
     schedule();
   }
-  syncTicker();
-  void refresh();
 });
 window.addEventListener("resize", () => {
   if (trendOpen) renderTrendPanels();
@@ -1106,6 +1122,60 @@ void listenAll("panel-shown", () => {
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && !searchInput.value) call("hide_window");
 });
+
+// ---------- MCP 本地桥 ----------
+// 外部 MCP 客户端要改自选与分组时，Rust 侧把命令转成 mcp-request 事件送到这个窗口；
+// 这里用与界面完全同一套逻辑改完 S，再保存（saveSettings 会顺带通知设置窗口），最后回信。
+const MCP_DEPS = {
+  search: (keyword: string) => searchStocks(keyword),
+  quotes: (secids: string[]) => fetchQuotes(secids, S.source),
+};
+
+/** 一条来自本地桥的命令：请求带 id（回信要带上）与 deadline（Rust 侧的等待上限，毫秒时间戳） */
+interface McpRequest {
+  id: number;
+  op: string;
+  args?: Record<string, unknown>;
+  deadline?: number;
+}
+
+async function runMcpCommand(req: McpRequest): Promise<void> {
+  const reply = (payload: unknown) => void call("mcp_reply", { id: req.id, payload: JSON.stringify(payload) });
+  try {
+    // 先做准备（要联网、要搜索），再在「此刻最新」的 S 上执行：准备期间设置窗口可能改过设置，
+    // 拿准备时的旧快照整份覆盖会把那些改动弄丢
+    const prepared = await prepareCommand(S, req.op, req.args ?? {}, MCP_DEPS);
+    if (req.deadline && Date.now() > req.deadline) {
+      // 已经等太久了：Rust 侧多半已经回了超时，就别再改设置了，免得「报错但生效」
+      reply({ ok: false, error: "命令处理超时（应用可能正忙），这次没有改动设置，请重试" });
+      return;
+    }
+    const result = prepared.apply(S);
+    if (result.changed) {
+      // 先落盘再重画：重画万一出错，改动已经存下来了，回执也不该说失败
+      assignSettings(result.settings);
+      save();
+      try {
+        renderFromSettings();
+      } catch (e) {
+        console.warn("[mcp] 设置已保存，但重画失败：", e);
+      }
+    }
+    reply({ ok: true, text: result.text, data: result.data });
+  } catch (e) {
+    reply({ ok: false, error: e instanceof McpError ? e.message : `执行失败：${String(e)}` });
+  }
+}
+
+// 串行执行：一条命令可能要联网好几秒，两条同时跑会各自基于同一份旧设置算出新设置，后写的会把先写的盖掉
+let mcpQueue: Promise<void> = Promise.resolve();
+void (async () => {
+  await listenAll<McpRequest>("mcp-request", (req) => {
+    mcpQueue = mcpQueue.then(() => runMcpCommand(req));
+  });
+  // 监听确实挂上之后再告诉 Rust 侧可以接命令（异常情况下也不至于让请求石沉大海）
+  await call("mcp_ready");
+})();
 
 renderAll();
 playStagger();

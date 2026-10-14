@@ -85,3 +85,27 @@ Vite 是多页面打包，入口在 `vite.config.ts` 的 `rollupOptions.input` �
 - 已启用 CSP（`tauri.conf.json` 的 `csp` / `devCsp`）。新增外部域名时必须同步放行：fetch 走 `connect-src`，JSONP 走 `script-src`，图片走 `img-src`。`devCsp` 额外放行了 Vite 的 `localhost:1420`。`macOSPrivateApi: true` 是透明窗口需要的，不要关。
 - `dist/`、`src-tauri/target/`、`src-tauri/gen/` 都是生成产物，不要手动修改。
 - 项目是 git 仓库，生成产物已在 `.gitignore` 中排除。
+
+## 发布流程
+
+发布由 `.github/workflows/build.yml` 承担，不要在本地 `pnpm app:build` 之后手动传安装包。
+
+1. **定版本**：四处版本号必须一致 —— `package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock` 里的 `stock-bar`。安装包文件名取自 `tauri.conf.json` 的 `version`。
+2. **提交并推 main**：`git commit` 后 `git push origin main`。CI 会先跑 `pnpm check`，不通过就不构建。
+3. **打标签推送**：`git tag -a vX.Y.Z -m "StockBar vX.Y.Z" && git push origin vX.Y.Z`。标签必须匹配 `v*` 才会触发。
+4. **等构建**：`build` 矩阵跑 macOS（`--target universal-apple-darwin`，Intel + Apple Silicon 通用）和 Windows（MSI + NSIS）；各平台产物先上传到本次运行的 Artifacts，再由 `release` 作业汇总创建 **Release 草稿**。
+5. **写发布描述（必做）**：草稿初始 body 只有 `--generate-notes` 生成的一行 Full Changelog，发布前必须补成正式发布说明，按固定结构写：
+   - 开头一句话：这个版本是什么、给谁用；
+   - `## 功能`：本版新增或变化的能力，用面向用户的话术；
+   - `## 下载`：表格列出 `StockBar_<版本>_universal.dmg`、`_x64-setup.exe`、`_x64_zh-CN.msi`，并保留 macOS 未签名、首次打开需右键「打开」或 `xattr -dr com.apple.quarantine` 的提示；
+   - `## 已知限制`：无节假日日历、不保证交易所级实时性等；
+   - 结尾保留 Full Changelog 链接。
+6. **发布**：在 GitHub 上把草稿 Publish。草稿期间 URL 显示成 `untagged-...` 属正常，发布后即 `releases/tag/vX.Y.Z`。
+7. **不发版的验证**：在 Actions 页面手动运行 `build`（`workflow_dispatch`），只构建并上传 Artifacts，不建 Release。
+
+坑：
+
+- `main` 要先推上去，标签指向的提交才在远端默认分支上。
+- 不要让多个平台作业各自调 `tauri-action` 建 Release，会并发撞车；现在的分工是各平台只上传 Artifacts，单独一个作业汇总。
+- `gh release upload` 不能喂目录：`upload-artifact` 会保留匹配路径的公共父目录（Windows 的 `msi/`、`nsis/`），所以 release 作业里那步 `find dist -type f` 展平不能删。
+- macOS 包未签名与公证是已知状态，不是回归。

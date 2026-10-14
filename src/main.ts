@@ -37,9 +37,13 @@ import {
 import { IN_TAURI, IS_WIN, UI_FONT, call, listenAll } from "./tauri";
 import { openMenu, type MenuItem } from "./ctxmenu";
 import { McpError, prepareCommand } from "./mcp";
+import { hintText, type UpdateInfo } from "./update";
 
 let S: Settings = loadSettings();
 const save = () => saveSettings(S);
+
+/** 启动时查到的更新信息：没有新版本（或还没查）就是 null */
+let updateInfo: UpdateInfo | null = null;
 
 // ---------- 运行时状态 ----------
 
@@ -130,6 +134,7 @@ app.innerHTML = `
     </div>
   </header>
   <div class="error-bar" id="error-bar">行情获取失败，正在重试…</div>
+  <button class="update-bar" id="update-bar" hidden><span id="update-text"></span><i>去更新</i></button>
 
   <main class="body" id="body">
     <section class="indices" id="indices"></section>
@@ -641,6 +646,12 @@ function renderHeader(): void {
   const bar = $("#error-bar");
   bar.classList.toggle("show", failCount > 0);
   if (failCount > 0) bar.textContent = errorMsg;
+
+  // 更新提示条：启动时查到新版本才有，点它去设置窗口的「关于」页
+  const hint = hintText(updateInfo);
+  const updateBar = $("#update-bar");
+  updateBar.hidden = !hint;
+  if (hint) $<HTMLElement>("#update-text").textContent = hint;
 }
 
 /** 底部「数据来源」文案：自动模式时说明当前实际命中哪家；取不到数据时明说 */
@@ -1180,8 +1191,28 @@ void (async () => {
   await call("mcp_set_enabled", { on: S.mcp });
 })();
 
+
+// ---------- 版本更新 ----------
+// 启动时静默查一次（设置里的「启动时自动检查更新」关掉就不查）；查到新版本才在顶栏下挂提示条。
+// 点提示条打开设置窗口的「关于」页：下载、安装与进度都在那里（见 prefs.ts 与 src-tauri/src/update.rs）。
+
+async function checkUpdateOnce(): Promise<void> {
+  if (!S.updateCheck || !IN_TAURI) return;
+  // 用 call 而不是 callOrThrow：这是背景检查，失败不该打扰用户，静默跳过就行
+  const info = await call<UpdateInfo>("update_check");
+  if (!info?.available) return;
+  updateInfo = info;
+  renderHeader();
+}
+
+$("#update-bar").addEventListener("click", () => {
+  // 直接落到「关于」页：看到提示条就是想更新
+  if (IN_TAURI) void call("open_settings", { page: "about" });
+});
 renderAll();
 playStagger();
 refresh();
 schedule();
 syncTicker();
+// 启动时静默查一次更新：先把行情与菜单栏点亮，别和它们抢带宽，查到新版本再挂提示条
+window.setTimeout(() => void checkUpdateOnce(), 4000);

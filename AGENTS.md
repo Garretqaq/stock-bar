@@ -9,16 +9,16 @@ pnpm install
 pnpm dev            # 只跑前端，浏览器打开 http://localhost:1420（Tauri 调用自动变成空操作）
 pnpm build          # tsc --noEmit + vite build → dist/
 pnpm app:dev        # tauri dev：启动完整的菜单栏应用
-pnpm app:build      # tauri build → src-tauri/target/release/bundle/
+pnpm app:build      # tauri build → src-tauri/target/release/bundle/（要带 TAURI_SIGNING_PRIVATE_KEY，见「发布流程」）
 pnpm test           # vitest 单元测试
-pnpm test           # vitest 单元测试（src/ 与 mcp/）
+pnpm test           # vitest 单元测试（src/ 与 mcp/ 与 scripts/）
 pnpm mcp            # 用 stdio 跑 MCP 服务，供 MCP 客户端配置（见「MCP 本地桥」）
 pnpm check          # tsc --noEmit + vitest
 cd src-tauri && cargo check   # Rust 侧检查
 ```
 
 - 包管理器用 **pnpm**（`packageManager` 字段已锁定版本），不要用 npm 或 yarn。
-- 单元测试用 **vitest**：`src/*.test.ts` 跑在 happy-dom 环境，覆盖 api / bar / settings / ctxmenu / drag / mcp 里的纯逻辑；`mcp/*.test.mjs` 是 MCP 服务端的测试，文件头用 `// @vitest-environment node` 切到 node 环境（含一条真的起进程 + 假本地桥的端到端用例）。没有 lint 或格式化配置。
+- 单元测试用 **vitest**：`src/*.test.ts` 跑在 happy-dom 环境，覆盖 api / bar / settings / ctxmenu / drag / mcp / update 里的纯逻辑；`mcp/*.test.mjs` 与 `scripts/*.test.mjs` 是脚本测试，文件头用 `// @vitest-environment node` 切到 node 环境（含一条真的起进程 + 假本地桥的端到端用例）。没有 lint 或格式化配置。
 - 改完之后至少跑通 `pnpm check`（类型检查加单元测试）和 `pnpm build`；改了 Rust 就再跑一次 `cargo check`。改了纯逻辑要补对应测试。
 - Vite 开发端口固定为 1420（`strictPort`），和 `tauri.conf.json` 里的 `devUrl` 一一对应，两边必须一起改。
 
@@ -26,7 +26,7 @@ cd src-tauri && cargo check   # Rust 侧检查
 
 ```
 index.html      → src/main.ts   + src/style.css   主面板（托盘弹出的 360×560 无边框小窗，label="main"）
-settings.html   → src/prefs.ts  + src/prefs.css   设置窗口（仪表盘 / 行情 / MCP / 设置四页，label="settings"，由 Rust 动态创建）
+settings.html   → src/prefs.ts  + src/prefs.css   设置窗口（仪表盘 / 行情 / MCP / 关于 / 设置五页，label="settings"，由 Rust 动态创建）
 ticker.html     → src/ticker.ts + src/ticker.css  Windows 悬浮行情条（label="ticker"，由 set_ticker 动态创建/关闭）
 src/api.ts       东方财富接口：批量报价 ulist.np、分时 trends2、搜索 suggest（JSONP）、secid/市场/交易时段工具函数
 src/settings.ts  Settings 类型、默认值、localStorage 读写和旧数据迁移、跨窗口同步、主题和涨跌配色、自选分组的纯函数（`itemsOf` / `moveInView` / `normalizeGroups` 等）
@@ -35,11 +35,14 @@ src/tauri.ts     Tauri 桥接层：call / emitAll / listenAll（非 Tauri 环境
 src/ctxmenu.ts   通用右键菜单 openMenu / closeMenu（样式 ctxmenu.css，主面板与设置窗口共用）
 src/drag.ts      拖动排序的纯计算：slotAt（指针落在第几格）/ shiftIndex（拖动中其他行让开多少），设置窗口的仪表盘与行情页共用
 src/mcp.ts       MCP 命令处理：看 / 搜 / 增删自选、置顶、排序、分组增删改排序的纯逻辑（搜索与报价由调用方注入）；另含设置面板 MCP 卡片用的 clientConfig()（客户端配置 JSON）与 bridgeState()（状态文案）
+src/update.ts    版本更新的纯逻辑：状态文案、下载进度、提示条文案（联网在 Rust 侧）
 src-tauri/src/lib.rs   托盘、弹窗定位（按鼠标位置把面板夹进工作区，见「坑」）、失焦自动收起、单实例、所有 #[tauri::command]
 src-tauri/src/bridge.rs    MCP 本地桥：回环地址上的 HTTP 入口、令牌与连接信息文件、命令转发与回信配对；info() 给设置面板报桥状态与脚本路径
+src-tauri/src/update.rs    应用内更新：检查 / 下载 / 安装 / 重启，待装的更新存在模块级静态量里（命令壳在 lib.rs）
 src-tauri/capabilities/default.json   三个窗口（main / settings / ticker）的权限
-.github/workflows/build.yml   双端打包：推 v* 标签构建 macOS（通用二进制）+ Windows 安装包并创建 Release 草稿，或手动触发上传 Artifacts
+.github/workflows/build.yml   双端打包：推 v* 标签构建 macOS（通用二进制）+ Windows 安装包与更新包，合并出 latest.json 并创建 Release 草稿，或手动触发上传 Artifacts
 mcp/lib.mjs + mcp/stockbar-mcp.mjs   零依赖 MCP 服务（stdio JSON-RPC）：工具表、端点发现、把命令转给本地桥（`pnpm mcp` 可直接跑）
+scripts/latest-json.mjs   把各平台的更新包与签名整理成 latest.json 片段并合并成一份（CI 用；纯逻辑有单测）
 ```
 
 Vite 是多页面打包，入口在 `vite.config.ts` 的 `rollupOptions.input` 里，新增页面要在这里登记。
@@ -68,6 +71,15 @@ Vite 是多页面打包，入口在 `vite.config.ts` 的 `rollupOptions.input` �
 - 标的用「secid 或关键词」指代：`resolveTarget()` 先认 secid 正则，否则走搜索；命中多只就报错并把候选列出来，让模型用 secid 再问一次。加入自选前会用一次报价确认代码不是编的（报价接口本身挂了就放行，并在结果里说明「未能校验」）。
 - 分组用「名字或 id」指代，找不到就报错并列出可选分组；「未分组」是内置的，不能改名 / 排序 / 删除。删除分组只把成员回落到未分组，自选一只都不少。
 
+**版本更新（应用内）**
+- 检查与安装都在 Rust 侧（`src-tauri/src/update.rs`，命令壳在 `lib.rs`）：`tauri-plugin-updater` 请求 `tauri.conf.json` 里配的端点（GitHub Release 上的 `latest.json`），按公钥校验签名、下载、替换安装包。前端只管文案与进度，纯逻辑在 `src/update.ts`，两个窗口共用。
+- 端点与公钥写在 `tauri.conf.json` 的 `plugins.updater`：端点是 `releases/latest/download/latest.json`，所以「最新那份已发布的 Release」就是所有用户拿到的东西。Windows 用 `installMode: passive`（安装时有个小进度窗，不需要交互）。
+- 进度走 Tauri 的 `Channel`（不是事件）：`update_install` 的 `on_event` 依次推 `{event:"started",data:{contentLength}}`、`{event:"progress",data:{chunkLength}}`、`{event:"finished"}`。这个形状由 `update.rs` 的单测钉住 —— `DownloadEvent` 上那行 `rename_all_fields` 不能删，删了字段名会变回 snake_case，前端读不到字节数（`rename_all` 只管变体名）。
+- 启动检查一次：主面板起来 4 秒后调 `update_check`（设置里的 `updateCheck` 关掉就不查），有新版才在顶栏下面挂提示条；点提示条调 `open_settings({ page: "about" })` 落到「关于」页。
+- 设置窗口的「关于」页：当前版本来自 `app_version`（不联网），三个入口是检查更新 / 立即更新 / 打开发布页；装完自动调 `update_restart` 重启（Windows 上安装器会让应用自己退出，走不到这一步）。检查与安装用 `callOrThrow()` 而不是 `call()`：失败原因要显示给用户，不能被静默吞掉。
+- 待装的更新存在 `update.rs` 的 `PENDING` 静态量里：检查到的那份 `Update` 带着下载地址与签名，装的时候必须用同一个，所以别把它丢掉；安装失败会放回去，重试不必重新检查。
+- 「该打开哪一页」有两套路径：设置窗口已经开着就直接发 `goto-page` 事件；窗口是新建的就先把页名存进 `PENDING_PAGE`，等前端挂好监听调 `settings_ready` 来取（建窗那一刻发事件会早于前端注册监听）。
+
 **菜单栏（托盘）**
 - 托盘只由主面板 `main.ts` 的 `updateTray()` 负责更新。它用签名 `traySig` 去重，内容没变就不推送。设置窗口只用 `bar.ts` 做本地预览，不调用托盘命令。
 - 三种样式：`text` 调 `set_tray_text`（默认图标加文字）；`compact` 用 canvas 按 2x、高 36px 绘制 PNG，再调 `set_tray_image`；`icon` 只显示图标。
@@ -82,7 +94,7 @@ Vite 是多页面打包，入口在 `vite.config.ts` 的 `rollupOptions.input` �
 - 主面板在 Windows 关闭系统阴影、窗口放大到 376×576，由 CSS 留 8px 边距自己画圆角阴影；WebView2 的 `backdrop-filter` 透不到桌面，所以 `.win .panel` 用不透明底。设置窗口在 Windows 用原生标题栏（不渲染仿红绿灯和拖动区，标题栏深浅随应用主题 `setTheme`），整体是 Windows 11「设置」风格：`prefs.css` 末尾的 `.win` 区块（导航强调色竖条、每项一张 4px 圆角卡片、带「开/关」文字的开关、方形复选框），预览是桌面 + 任务栏 + 悬浮行情条（内容与真实行情条共用 `bar.ts` 的 `tickerHtml`）。开发时 `pnpm dev` 打开 `settings.html?win` 可在浏览器预览 Windows 布局。
 
 **Rust 侧**
-- 前端可以调用的命令：`set_tray_text`、`set_tray_image`、`open_settings`、`set_ticker`、`fit_ticker`、`ticker_click`、`hide_window`、`quit_app`、`mcp_ready`、`mcp_reply`、`mcp_info`、`mcp_set_enabled`。新增命令要同时改两处：在 `generate_handler![]` 里注册，前端通过 `call()` 调用。MCP 的命令壳写在 `lib.rs`、实现放在 `bridge.rs`（原因见「坑」）。
+- 前端可以调用的命令：`set_tray_text`、`set_tray_image`、`open_settings`（可带 `page` 指定打开哪一页）、`set_ticker`、`fit_ticker`、`ticker_click`、`hide_window`、`quit_app`、`mcp_ready`、`mcp_reply`、`mcp_info`、`mcp_set_enabled`、`app_version`、`update_check`、`update_install`、`update_restart`、`open_release_page`、`settings_ready`。新增命令要同时改两处：在 `generate_handler![]` 里注册，前端通过 `call()` 调用。MCP 与更新的命令壳写在 `lib.rs`、实现放在 `bridge.rs` / `update.rs`（原因见「坑」）。
 - **建窗口的命令必须是 `async fn`**：Windows 上 WebView2 不会在事件回调里重入，同步命令跑在 IPC 回调里，`WebviewWindowBuilder::build()` 会让 `create_controller` 永远等不到完成回调，整个应用卡死（tauri 文档的 Known issues / wry#583）。`open_settings`（建设置窗口）与 `set_ticker`（建行情条）因此都是 async，真正的建窗逻辑放在同步的 `open_settings_window()` / `set_ticker_window()` 里，由 async 命令（跑在 tokio 线程池上）调用；单实例回调里也是另起线程调 `open_settings_window()`，不在窗口过程里建窗。
 - 用 `LAST_HIDDEN_MS` 做防抖（macOS 250ms，Windows/Linux 400ms，见 `TOGGLE_DEBOUNCE_MS`），实现"再点一次图标收起小窗"（点击时窗口会先失焦、自动隐藏）。改托盘点击逻辑时不要破坏这个行为。
 - 主面板每次弹出都会收到 `panel-shown` 事件，触发入场动画并立即刷新数据。
@@ -119,22 +131,32 @@ Vite 是多页面打包，入口在 `vite.config.ts` 的 `rollupOptions.input` �
 
 发布由 `.github/workflows/build.yml` 承担，不要在本地 `pnpm app:build` 之后手动传安装包。
 
+签名密钥（每个仓库做一次）：`pnpm tauri signer generate -w ~/.tauri/stockbar.key` 会生成 `stockbar.key`（私钥）与 `stockbar.key.pub`（公钥）。公钥内容填进 `tauri.conf.json` 的 `plugins.updater.pubkey`，私钥内容填进仓库 Secret；私钥别进仓库、也别丢 —— 丢了之后已经装过老版本的用户再也收不到更新。
+
+```bash
+gh secret set TAURI_SIGNING_PRIVATE_KEY < ~/.tauri/stockbar.key
+```
+
 1. **定版本**：四处版本号必须一致 —— `package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock` 里的 `stock-bar`。安装包文件名取自 `tauri.conf.json` 的 `version`。
 2. **提交并推 main**：`git commit` 后 `git push origin main`。CI 会先跑 `pnpm check`，不通过就不构建。
 3. **打标签推送**：`git tag -a vX.Y.Z -m "StockBar vX.Y.Z" && git push origin vX.Y.Z`。标签必须匹配 `v*` 才会触发。
-4. **等构建**：`build` 矩阵跑 macOS（`--target universal-apple-darwin`，Intel + Apple Silicon 通用）和 Windows（MSI + NSIS）；各平台产物先上传到本次运行的 Artifacts，再由 `release` 作业汇总创建 **Release 草稿**。
+4. **等构建**：`build` 矩阵跑 macOS（`--target universal-apple-darwin`，Intel + Apple Silicon 通用）和 Windows（MSI + NSIS）；各平台除安装包外还产出**更新包**（`.app.tar.gz` / `-setup.exe` 与它们的 `.sig`）和一份 `latest-<平台>.json` 片段，先上传到本次运行的 Artifacts，再由 `release` 作业合并成 `latest.json` 并创建 **Release 草稿**。
 5. **写发布描述（必做）**：草稿初始 body 只有 `--generate-notes` 生成的一行 Full Changelog，发布前必须补成正式发布说明，按固定结构写：
    - 开头一句话：这个版本是什么、给谁用；
    - `## 功能`：本版新增或变化的能力，用面向用户的话术；
    - `## 下载`：表格列出 `StockBar_<版本>_universal.dmg`、`_x64-setup.exe`、`_x64_zh-CN.msi`，并保留 macOS 未签名、首次打开需右键「打开」或 `xattr -dr com.apple.quarantine` 的提示；
    - `## 已知限制`：无节假日日历、不保证交易所级实时性等；
    - 结尾保留 Full Changelog 链接。
-6. **发布**：在 GitHub 上把草稿 Publish。草稿期间 URL 显示成 `untagged-...` 属正常，发布后即 `releases/tag/vX.Y.Z`。
+   - 注意：`latest.json` 里的 `notes` 取自草稿创建那一刻的正文（也就是 `--generate-notes` 生成的那份）。要让应用「关于」页显示改写后的正式说明，就在改完正文后重跑一次这个工作流：`gh workflow run build.yml --ref vX.Y.Z`（会重新构建并覆盖 Release 上的资产与 latest.json）。
+6. **发布**：在 GitHub 上把草稿 Publish。草稿期间 URL 显示成 `untagged-...` 属正常，发布后即 `releases/tag/vX.Y.Z`。应用内更新读的是 `/releases/latest/download/latest.json`，所以**公开之后**新版本才对所有人生效。
 7. **不发版的验证**：在 Actions 页面手动运行 `build`（`workflow_dispatch`），只构建并上传 Artifacts，不建 Release。
 
 坑：
 
 - `main` 要先推上去，标签指向的提交才在远端默认分支上。
 - 不要让多个平台作业各自调 `tauri-action` 建 Release，会并发撞车；现在的分工是各平台只上传 Artifacts，单独一个作业汇总。
-- `gh release upload` 不能喂目录：`upload-artifact` 会保留匹配路径的公共父目录（Windows 的 `msi/`、`nsis/`），所以 release 作业里那步 `find dist -type f` 展平不能删。
+- `gh release upload` 不能喂目录：`upload-artifact` 会保留匹配路径的公共父目录（Windows 的 `msi/`、`nsis/`），所以 release 作业里那步 `find dist -type f` 展平不能删；展平时要排掉 `latest-*.json`（那是各平台片段，合并完就不该再当资产传上去）。
+- 更新包必须签名：仓库 Secret `TAURI_SIGNING_PRIVATE_KEY` 存 `~/.tauri/stockbar.key` 的内容（私钥没设密码时 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 留空即可）。**缺这个 secret 会直接构建失败** —— `bundle.createUpdaterArtifacts` 要私钥签名；本地 `pnpm app:build` 同理，要带上 `TAURI_SIGNING_PRIVATE_KEY=~/.tauri/stockbar.key`（该变量可以给路径，也可以给内容）。
+- `plugins.updater.pubkey` 必须与那把私钥配对：不配对时签名照出、安装时才校验失败，构建期只有一条 warning。换密钥要连公钥一起换，否则老用户再也收不到更新。
+- `latest.json` 里的下载地址指向本次标签，而应用读的是 `releases/latest/download/latest.json`：草稿期间更新不生效，公开之后才对用户生效。
 - macOS 包未签名与公证是已知状态，不是回归。

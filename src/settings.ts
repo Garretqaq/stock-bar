@@ -51,6 +51,8 @@ export interface Settings {
   ticker: boolean;
   /** 允许外部 MCP 客户端（AI 客户端）改自选与分组：关掉后本地桥不监听，端口与连接信息文件都不在 */
   mcp: boolean;
+  /** 启动时自动检查更新（只在发现新版本时提示，不会自己下载安装） */
+  updateCheck: boolean;
 }
 
 export const STORE_KEY = "stockbar.settings.v1";
@@ -301,6 +303,7 @@ export const DEFAULTS: Settings = {
   theme: "system",
   ticker: true,
   mcp: true,
+  updateCheck: true,
 };
 
 export function loadSettings(): Settings {
@@ -331,6 +334,8 @@ export function loadSettings(): Settings {
   }
   // MCP 开关：旧数据没有这个字段（或写坏了）时按默认「开启」，别让已经配好的客户端忽然失效
   if (typeof raw.mcp !== "boolean") s.mcp = DEFAULTS.mcp;
+  // 更新检查开关：旧数据没有这个字段（或写坏了）时按默认「开启」，别让用户收不到新版本
+  if (typeof raw.updateCheck !== "boolean") s.updateCheck = DEFAULTS.updateCheck;
   return s;
 }
 

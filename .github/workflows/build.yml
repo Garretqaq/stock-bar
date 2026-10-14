@@ -1,6 +1,13 @@
-# 双端打包：推送 v* 标签后构建 macOS（通用二进制）与 Windows 安装包，
-# 并统一发布到同一个 GitHub Release（草稿，需手动确认后公开）。
+# 双端打包：推送 v* 标签后构建 macOS（通用二进制）与 Windows 安装包，并统一发布到
+# 同一个 GitHub Release（草稿，需手动确认后公开）。
 # 也可在 Actions 页面手动触发：只构建并上传到本次运行的 Artifacts，不发 Release。
+#
+# 除了安装包，还会产出「更新包」（macOS 的 .app.tar.gz、Windows 的 -setup.exe 及其 .sig）
+# 和一份 latest.json —— 应用内更新（tauri-plugin-updater）就靠它们。
+# 因此需要仓库 Secret `TAURI_SIGNING_PRIVATE_KEY`：更新包签名私钥，缺了构建会直接失败；
+# 私钥没设密码时 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 留空即可。生成密钥见 AGENTS.md 的「发布流程」。
+# latest.json 里写的下载地址指向本次标签，而应用读的是 /releases/latest/download/latest.json，
+# 所以草稿期间更新不会生效，公开之后才开始对新版本生效。
 #
 # 注意：macOS 产物未做签名与公证，用户首次打开需右键「打开」，
 # 或执行 xattr -dr com.apple.quarantine /Applications/StockBar.app。
@@ -27,15 +34,25 @@ jobs:
             args: --target universal-apple-darwin
             targets: aarch64-apple-darwin,x86_64-apple-darwin
             artifact: StockBar-macos
-            paths: src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+            platform: darwin
+            bundle: src-tauri/target/universal-apple-darwin/release/bundle
+            paths: |
+              src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+              src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz
+              src-tauri/target/universal-apple-darwin/release/bundle/macos/*.sig
+              latest-darwin.json
           - name: Windows
             os: windows-latest
             args: ""
             targets: ""
             artifact: StockBar-windows
+            platform: windows
+            bundle: src-tauri/target/release/bundle
             paths: |
               src-tauri/target/release/bundle/msi/*.msi
               src-tauri/target/release/bundle/nsis/*.exe
+              src-tauri/target/release/bundle/nsis/*.sig
+              latest-windows.json
     steps:
       - uses: actions/checkout@v4
 
@@ -59,8 +76,16 @@ jobs:
 
       - run: pnpm check
 
-      - name: 构建安装包
+      - name: 构建安装包（含更新包与签名）
         run: pnpm app:build ${{ matrix.args }}
+        env:
+          # 更新包必须签名（bundle.createUpdaterArtifacts 要私钥），缺了会直接构建失败
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      - name: 生成 latest.json 片段
+        if: startsWith(github.ref, 'refs/tags/')
+        run: node scripts/latest-json.mjs fragment --platform ${{ matrix.platform }} --dir ${{ matrix.bundle }} --out latest-${{ matrix.platform }}.json
 
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
@@ -75,22 +100,35 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
+      # 合并 latest.json 要跑仓库里的脚本，所以这个作业也要 checkout
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
 
-      - name: 汇总安装包
+      - name: 汇总安装包与更新包
         run: |
           mkdir -p release
-          find dist -type f -exec cp {} release/ \;
+          # latest-*.json 只是各平台的片段，用来合并，不作为发布资产
+          find dist -type f ! -name 'latest-*.json' -exec cp {} release/ \;
           ls -lh release
 
-      - name: 创建 Release 草稿并上传安装包
+      - name: 创建 Release 草稿
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 ||
             gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft \
               --title "StockBar $GITHUB_REF_NAME" --generate-notes
-          gh release upload "$GITHUB_REF_NAME" release/* --repo "$GITHUB_REPOSITORY" --clobber
+          # 更新说明取这次生成的正文：应用里「关于」页会显示它
+          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json body -q .body > notes.md
+
+      - name: 合并 latest.json
+        run: node scripts/latest-json.mjs merge --in dist --notes-file notes.md --out release/latest.json
+
+      - name: 上传安装包、更新包与 latest.json
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$GITHUB_REF_NAME" release/* --repo "$GITHUB_REPOSITORY" --clobber

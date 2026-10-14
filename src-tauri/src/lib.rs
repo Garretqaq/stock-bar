@@ -1,4 +1,5 @@
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{LazyLock, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use tauri::{
@@ -10,6 +11,7 @@ use tauri::{
 use tauri_plugin_positioner::{Position, WindowExt};
 
 mod bridge;
+mod update;
 
 const TRAY_ID: &str = "main";
 const WINDOW_LABEL: &str = "main";
@@ -267,7 +269,9 @@ fn refresh_tray_icon(app: &AppHandle) {
 
 // ---------- 设置窗口 ----------
 
-/// 打开（或聚焦）独立的设置窗口：仪表盘 + 设置，类似 macOS 系统设置。
+/// 打开（或聚焦）独立的设置窗口：仪表盘 / 行情 / MCP / 关于 / 设置，类似 macOS 系统设置。
+///
+/// page 是希望直接打开的那一页（主面板发现新版本时会要求打开「关于」页）；不传就维持现状。
 ///
 /// 必须是 async：Windows 上 WebView2 不会在事件回调里重入，而同步命令是跑在 IPC 回调里的，
 /// 在里面创建 webview 会让 create_controller 永远等不到完成回调，整个应用就此卡死
@@ -275,14 +279,53 @@ fn refresh_tray_icon(app: &AppHandle) {
 /// 建窗口会死锁，请改用 async 命令或独立线程」，即 wry#583）。async 命令跑在 tokio
 /// 线程池上，窗口创建回到事件循环自己的派发里，不再嵌在 WebView2 回调中。
 #[tauri::command]
-async fn open_settings(app: AppHandle) -> Result<(), String> {
-    open_settings_window(app)
+async fn open_settings(app: AppHandle, page: Option<String>) -> Result<(), String> {
+    open_settings_window(app, page)
+}
+
+/// 设置窗口里可用的页（与 prefs.ts 的 Page 一一对应）：不认识的页名一律忽略，免得切到空白页
+const PAGES: [&str; 5] = ["dashboard", "market", "mcp", "about", "settings"];
+
+/// 窗口是新建的时候，「要打开哪一页」先存在这里：建窗时前端还没挂上监听，事件发出去会丢
+static PENDING_PAGE: LazyLock<Mutex<Option<String>>> = LazyLock::new(|| Mutex::new(None));
+
+/// 设置窗口的前端是否已经挂好监听（它载入完成后会调 settings_ready）。
+/// 刚建好那会儿还是 false，这时只能把页名存起来等它来取 —— 直接发事件会丢
+static SETTINGS_READY: AtomicBool = AtomicBool::new(false);
+
+/// 设置窗口挂好监听后取「该打开哪一页」（取走即清空；没有就返回 null）
+#[tauri::command]
+fn settings_ready() -> Option<String> {
+    SETTINGS_READY.store(true, Ordering::Relaxed);
+    take_pending_page()
+}
+
+fn set_pending_page(page: Option<String>) {
+    if let Ok(mut pending) = PENDING_PAGE.lock() {
+        *pending = page;
+    }
+}
+
+fn take_pending_page() -> Option<String> {
+    PENDING_PAGE.lock().ok().and_then(|mut page| page.take())
 }
 
 /// open_settings 的本体（同步）：async 命令与单实例回调共用
-fn open_settings_window(app: AppHandle) -> Result<(), String> {
+fn open_settings_window(app: AppHandle, page: Option<String>) -> Result<(), String> {
+    let page = page.filter(|p| PAGES.contains(&p.as_str()));
     if let Some(main) = app.get_webview_window(WINDOW_LABEL) {
         hide_panel(&main);
+    }
+    if let Some(page) = page {
+        // 先记下来：前端还没挂上监听时事件会丢，由它载入后来取（见 settings_ready）
+        set_pending_page(Some(page.clone()));
+        if let Some(win) = app.get_webview_window(SETTINGS_LABEL) {
+            if SETTINGS_READY.load(Ordering::Relaxed) {
+                // 前端在监听：事件就够用了，别把页名留着（下次重建窗口会串页）
+                set_pending_page(None);
+                let _ = win.emit_to(SETTINGS_LABEL, "goto-page", page);
+            }
+        }
     }
     if let Some(win) = app.get_webview_window(SETTINGS_LABEL) {
         let _ = win.unminimize();
@@ -301,7 +344,11 @@ fn open_settings_window(app: AppHandle) -> Result<(), String> {
         .title_bar_style(tauri::TitleBarStyle::Overlay)
         .hidden_title(true)
         .traffic_light_position(tauri::LogicalPosition::new(18.0, 22.0));
-    builder.build().map_err(|e| e.to_string())?;
+    if let Err(e) = builder.build() {
+        // 没建成就把页名清掉：留着的话，下次不带 page 打开会莫名落到这一页
+        set_pending_page(None);
+        return Err(e.to_string());
+    }
     Ok(())
 }
 
@@ -449,6 +496,39 @@ fn mcp_set_enabled(app: AppHandle, on: bool) -> bridge::McpInfo {
     bridge::info(&app)
 }
 
+
+// ---------- 版本更新 ----------
+// 命令壳在这里，本体在 update.rs（理由同 MCP：子模块里定义命令宏路径难伺候）
+
+/// 当前版本（「关于」页不联网就能显示）
+#[tauri::command]
+fn app_version() -> String {
+    update::current_version()
+}
+
+/// 检查更新：有新版就报出版本号与更新说明，没有就是 available = false
+#[tauri::command]
+async fn update_check(app: AppHandle) -> Result<update::UpdateInfo, String> {
+    update::check(&app).await
+}
+
+/// 下载并安装更新；进度通过 Channel 回传（Started → Progress → Finished）
+#[tauri::command]
+async fn update_install(on_event: tauri::ipc::Channel<update::DownloadEvent>) -> Result<(), String> {
+    update::install(on_event).await
+}
+
+/// 装完重启：macOS / Linux 上新版本要重启才生效（Windows 由安装器负责重启）
+#[tauri::command]
+fn update_restart(app: AppHandle) {
+    update::restart(&app);
+}
+
+/// 自动更新走不通时，去发布页自己下安装包
+#[tauri::command]
+fn open_release_page() -> Result<(), String> {
+    update::open_release_page()
+}
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
@@ -459,10 +539,12 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             let app = app.clone();
             std::thread::spawn(move || {
-                let _ = open_settings_window(app);
+                let _ = open_settings_window(app, None);
             });
         }))
         .plugin(tauri_plugin_positioner::init())
+        // 应用内更新：端点与公钥在 tauri.conf.json 的 plugins.updater 里（实现见 src/update.rs）
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             set_tray_text,
             set_tray_image,
@@ -475,7 +557,13 @@ pub fn run() {
             mcp_ready,
             mcp_reply,
             mcp_info,
-            mcp_set_enabled
+            mcp_set_enabled,
+            app_version,
+            update_check,
+            update_install,
+            update_restart,
+            open_release_page,
+            settings_ready
         ])
         .setup(|app| {
             // macOS：不在 Dock 显示，只做菜单栏应用
@@ -535,6 +623,10 @@ pub fn run() {
                 LAST_HIDDEN_MS.store(now_ms(), Ordering::Relaxed);
                 let _ = window.hide();
             }
+            // 设置窗口被关掉了：下次是重新载入的前端，监听还没挂上（见 open_settings_window）
+            WindowEvent::Destroyed if window.label() == SETTINGS_LABEL => {
+                SETTINGS_READY.store(false, Ordering::Relaxed);
+            }
             // Windows 切换深浅色 → 托盘图标跟着换色
             #[cfg(target_os = "windows")]
             WindowEvent::ThemeChanged(_) if window.label() == WINDOW_LABEL => {
@@ -578,5 +670,21 @@ mod tests {
         assert_eq!(panel_position(None, WORK, SIZE, GAP), (3876.0, 174.0));
         // 面板比工作区还高：至少顶在工作区上沿，别把标题栏顶到屏幕外
         assert_eq!(panel_position(Some((1000.0, 100.0)), WORK, (720.0, 3000.0), GAP).1, 174.0);
+    }
+
+    #[test]
+    fn 页名白名单只放行认识的页() {
+        for page in ["dashboard", "market", "mcp", "about", "settings"] {
+            assert!(PAGES.contains(&page), "{page} 应该在白名单里");
+        }
+        assert!(!PAGES.contains(&"nope"));
+    }
+
+    #[test]
+    fn 待打开的页取一次就清空() {
+        set_pending_page(Some("about".into()));
+        assert_eq!(take_pending_page().as_deref(), Some("about"));
+        // 取走即清空：不然下次窗口重建会莫名串到这一页
+        assert_eq!(take_pending_page(), None);
     }
 }

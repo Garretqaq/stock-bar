@@ -63,10 +63,11 @@ pnpm app:dev
 ### 打包安装
 
 ```bash
-pnpm app:build
+# 更新包要签名，本地打包也得带上私钥（生成方式见 AGENTS.md 的「发布流程」）
+TAURI_SIGNING_PRIVATE_KEY=~/.tauri/stockbar.key pnpm app:build
 ```
 
-产物位于 `src-tauri/target/release/bundle/`。
+产物位于 `src-tauri/target/release/bundle/`，其中 `.dmg` / `.msi` / `-setup.exe` 是给人装的安装包，`.app.tar.gz` 与 `-setup.exe` 的 `.sig` 是给应用内更新用的。
 
 仓库维护者也可在 [GitHub Actions](https://github.com/Garretqaq/stock-bar/actions/workflows/build.yml) 手动运行 `build`，从该次运行的 Artifacts 下载安装包。推送 `v*` 标签会构建 macOS（通用二进制，Intel 与 Apple Silicon 通用）和 Windows 安装包，并创建 Release 草稿（需手动确认后公开）；Windows 缺少 WebView2 时安装器会自动下载。
 
@@ -118,6 +119,17 @@ pnpm dev
 前提是 **StockBar 正在运行**（macOS 菜单栏 / Windows 托盘有图标）：MCP 服务不直接改存储，它把命令通过本机回环端口交给应用，由应用用与界面完全相同的规则执行 —— 校验、分组归属、置顶、菜单栏名额、跨窗口刷新全都一致，改完界面立刻跟着变。连接信息（随机端口 + 令牌）放在应用数据目录的 `mcp-endpoint.json`（macOS 为 `~/Library/Application Support/com.stockbar.eastmoney/`），退出应用时删除。
 
 可用工具共 11 个：`list_watchlist`、`search_instrument`、`add_to_watchlist`、`remove_from_watchlist`、`move_in_watchlist`、`set_watchlist_group`、`set_watchlist_pin`、`create_group`、`rename_group`、`delete_group`、`move_group`。大盘指数是内置的，不能通过 MCP 增删。
+
+## 应用内更新
+
+应用会向 GitHub Release 上的 `latest.json` 检查新版本：发现新版本时，主面板顶栏下会出现一条提示，点它落到设置窗口的「关于」页，在那里一键下载安装，装完自动重启生效；「关于」页也可以手动检查，或关掉「启动时自动检查更新」。
+
+更新包必须先通过发布者签名公钥的校验才会安装，下载地址与签名都来自 Release 里的 `latest.json`：
+
+- macOS 用 `.app.tar.gz` 就地替换 `StockBar.app`，所以应用要放在可写的位置（拖进 `/Applications` 即可）；
+- Windows 用 NSIS 安装包，安装时有一个小进度窗，安装器会让应用自己退出。
+
+macOS 包未做签名与公证，更新后如果系统再次拦下，右键「打开」或执行 `xattr -dr com.apple.quarantine /Applications/StockBar.app`。
 
 ## 开发与贡献
 

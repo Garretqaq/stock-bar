@@ -21,6 +21,16 @@ export async function call<T = unknown>(cmd: string, args?: Record<string, unkno
   }
 }
 
+/**
+ * 与 call 一样，但失败时把原因抛出来：更新这类「出错必须让用户看见原因」的场景用它。
+ * call 的静默降级是给「失败也不该打断界面」的刷新与预览用的。
+ */
+export async function callOrThrow<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+  if (!IN_TAURI) throw new Error("不在应用里运行（浏览器预览没有这个能力）");
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<T>(cmd, args);
+}
+
 /** 广播给所有窗口（含自己） */
 export async function emitAll(event: string, payload?: unknown): Promise<void> {
   if (!IN_TAURI) return;

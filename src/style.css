@@ -224,6 +224,40 @@ button {
   height: 28px;
 }
 
+/* 更新提示条：启动时查到新版本才出现（默认 hidden），点它打开设置窗口的「关于」页 */
+.update-bar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  flex-shrink: 0;
+  width: 100%;
+  padding: 6px 12px;
+  border: 0;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--accent);
+  background: var(--accent-soft);
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+.update-bar[hidden] {
+  display: none;
+}
+.update-bar:hover {
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+}
+.update-bar i {
+  font-style: normal;
+  font-weight: 600;
+}
+@media (prefers-reduced-motion: reduce) {
+  .update-bar {
+    transition: none;
+  }
+}
+
 /* ---------- 主体 ---------- */
 
 .body {

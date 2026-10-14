@@ -82,6 +82,15 @@ describe("loadSettings", () => {
     expect(loadSettings().mcp).toBe(DEFAULTS.mcp);
   });
 
+  it("旧数据没有 updateCheck 字段时默认开启，写坏的值回到默认", () => {
+    put({ watchlist: ["0.300750"] });
+    expect(loadSettings().updateCheck).toBe(true);
+    put({ updateCheck: false });
+    expect(loadSettings().updateCheck).toBe(false);
+    put({ updateCheck: "yes" });
+    expect(loadSettings().updateCheck).toBe(DEFAULTS.updateCheck);
+  });
+
   it("saveSettings 写入后能原样读回", () => {
     const s = { ...DEFAULTS, interval: 30, theme: "dark" as const };
     saveSettings(s);

@@ -11,6 +11,17 @@ import {
 import { barImage, barPct, barPrice, barText, shortName, tickerClass, tickerHtml } from "./bar";
 import { shiftIndex, slotAt, type RowRect } from "./drag";
 import { bridgeState, clientConfig, type McpInfo } from "./mcp";
+import { Channel } from "@tauri-apps/api/core";
+import {
+  canInstall,
+  formatDate,
+  progressPct,
+  progressText,
+  statusOf,
+  versionLabel,
+  type Phase,
+  type UpdateInfo,
+} from "./update";
 import {
   BAR_MAX,
   GROUP_NAME_MAX,
@@ -43,7 +54,7 @@ import {
   type Settings,
   type Theme,
 } from "./settings";
-import { IN_TAURI, IS_WIN, call } from "./tauri";
+import { IN_TAURI, IS_WIN, call, callOrThrow, listenAll } from "./tauri";
 import appIcon from "./assets/app-icon.png";
 // 与 Rust 托盘共用同一张图标（src-tauri/icons/tray.png），避免两份图不一致
 import trayIcon from "../src-tauri/icons/tray.png";
@@ -53,9 +64,12 @@ import { openMenu, type MenuItem } from "./ctxmenu";
 
 let S: Settings = loadSettings();
 const quotes = new Map<string, Quote>();
-type Page = "dashboard" | "market" | "mcp" | "settings";
+type Page = "dashboard" | "market" | "mcp" | "about" | "settings";
+/** 页名白名单：Rust 侧也会过滤（见 lib.rs 的 PAGES），这里再挡一次，免得切到空白页 */
+const PAGES: Page[] = ["dashboard", "market", "mcp", "about", "settings"];
+const isPage = (p: unknown): p is Page => PAGES.includes(p as Page);
 const HASH = location.hash.replace("#", "");
-let page: Page = HASH === "settings" || HASH === "market" || HASH === "mcp" ? HASH : "dashboard";
+let page: Page = isPage(HASH) ? HASH : "dashboard";
 let pollTimer: number | undefined;
 
 // ---------- 行情页：多选（临时状态，不写入设置） ----------
@@ -97,6 +111,7 @@ const I = {
   search: `<svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.2-4.2"/></svg>`,
   grip: `<svg class="fill" viewBox="0 0 24 24"><circle cx="9" cy="5" r="1.5"/><circle cx="15" cy="5" r="1.5"/><circle cx="9" cy="12" r="1.5"/><circle cx="15" cy="12" r="1.5"/><circle cx="9" cy="19" r="1.5"/><circle cx="15" cy="19" r="1.5"/></svg>`,
   pin: `<svg viewBox="0 0 24 24"><path d="M12 17v5M9 3h6l-1 7 4 3v2H6v-2l4-3z"/></svg>`,
+  about: `<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11.2v5.3"/><circle cx="12" cy="7.9" r="1" class="fill"/></svg>`,
   top: `<svg viewBox="0 0 24 24"><path d="M4.5 4.5h15M12 20V9M7.5 13L12 8.5l4.5 4.5"/></svg>`,
   more: `<svg class="fill" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg>`,
 };
@@ -180,6 +195,7 @@ root.innerHTML = `
       <button class="nav-item" data-page="market"><span class="nav-ico green">${I.market}</span>行情</button>
       <button class="nav-item" data-page="mcp"><span class="nav-ico violet">${I.mcp}</span>MCP</button>
       <button class="nav-item" data-page="settings"><span class="nav-ico gray">${I.settings}</span>设置</button>
+      <button class="nav-item" data-page="about"><span class="nav-ico orange">${I.about}</span>关于</button>
     </nav>
     <div class="side-foot">
       <button class="quit-btn" id="quit">${I.power}退出 StockBar</button>
@@ -372,6 +388,49 @@ root.innerHTML = `
         </div>
       </div>
     </section>
+
+    <section class="page" data-page="about">
+      <header class="page-head">
+        <h1>关于</h1>
+        <p>StockBar 会向 GitHub 发布页检查新版本，发现后可直接在应用内下载安装，装完重启即生效。</p>
+      </header>
+
+      <h2 class="group-title">版本</h2>
+      <div class="group">
+        <div class="row">
+          <div class="row-label">当前版本</div>
+          <span class="row-value" id="about-version">--</span>
+        </div>
+        <div class="row">
+          <div class="row-label">启动时自动检查更新<small>只在发现新版本时提示，不会自己下载</small></div>
+          <label class="switch"><input type="checkbox" id="about-auto" /><i></i></label>
+        </div>
+      </div>
+
+      <h2 class="group-title">更新</h2>
+      <div class="group">
+        <div class="row">
+          <div class="row-label">状态</div>
+          <span class="up-state muted" id="up-state"><i></i><b>还没有检查过更新</b></span>
+        </div>
+        <div class="up-actions">
+          <button class="sec-btn" id="up-check">检查更新</button>
+          <button class="pri-btn" id="up-install" hidden>立即更新</button>
+        </div>
+        <div class="up-progress" id="up-progress" hidden>
+          <div class="up-track"><i id="up-fill"></i></div>
+          <span class="up-progress-text" id="up-progress-text"></span>
+        </div>
+        <div class="up-notes" id="up-notes" hidden>
+          <div class="up-notes-head" id="up-notes-title"></div>
+          <pre class="up-notes-body" id="up-notes-body"></pre>
+        </div>
+        <div class="up-foot">
+          <span class="up-hint">自动更新走不通时（比如应用装在只读位置），可以到发布页手动下载。</span>
+          <button class="sec-btn" id="up-page">打开发布页</button>
+        </div>
+      </div>
+    </section>
   </main>
 `;
 
@@ -405,6 +464,7 @@ function render(): void {
   setSeg("#seg-source", S.source);
   $<HTMLElement>("#source-active").textContent = activeFor(S);
   renderMcp();
+  renderAbout();
 }
 
 function setSeg(sel: string, v: string): void {
@@ -1066,6 +1126,130 @@ async function copyMcpConfig(): Promise<boolean> {
   }
 }
 
+// ---------- 关于页：版本与更新 ----------
+// 检查、下载、安装都在 Rust 侧（src-tauri/src/update.rs）；这里只管文案、进度与按钮状态。
+
+/** Rust 侧 DownloadEvent 的形状（见 update.rs；Channel 推过来的是驼峰字段） */
+interface DownloadEvent {
+  event: "started" | "progress" | "finished";
+  data?: { contentLength?: number | null; chunkLength?: number };
+}
+
+let upVersion = "";
+let upInfo: UpdateInfo | null = null;
+let upPhase: Phase = "idle";
+let upError = "";
+let upDownloaded = 0;
+let upTotal: number | null = null;
+/** 检查 / 下载 / 安装期间置位：按钮全禁，免得点两次下两份 */
+let upBusy = false;
+
+function renderAbout(): void {
+  const state = $("#up-state");
+  const st = statusOf(upPhase, upInfo, upError);
+  state.className = `up-state ${st.tone}`;
+  $("b", state).textContent = st.text;
+  $<HTMLInputElement>("#about-auto").checked = S.updateCheck;
+
+  const version = upVersion || upInfo?.currentVersion;
+  $<HTMLElement>("#about-version").textContent = version ? versionLabel(version) : "--";
+
+  $<HTMLButtonElement>("#up-check").disabled = upBusy;
+  // 有新版就露出「立即更新」；装失败后仍然露出 —— 待装的更新还在 Rust 那边，不必重新检查
+  const install = $<HTMLButtonElement>("#up-install");
+  install.hidden = !canInstall(upPhase, upInfo);
+  install.disabled = upBusy;
+  install.disabled = upBusy;
+
+  // 进度条只在下载与安装阶段出现；总大小未知（服务器没给 Content-Length）时用不确定样式
+  const running = upPhase === "downloading" || upPhase === "installing";
+  $("#up-progress").hidden = !running;
+  if (running) {
+    const pct = progressPct(upDownloaded, upTotal);
+    const fill = $("#up-fill");
+    fill.classList.toggle("unknown", pct == null);
+    // 总大小未知时清掉行内宽度，交给 .unknown 的动画样式
+    fill.style.width = pct == null ? "" : `${pct}%`;
+    $<HTMLElement>("#up-progress-text").textContent =
+      upPhase === "installing" ? "下载完成，正在安装…" : progressText(upDownloaded, upTotal);
+  }
+
+  // 更新说明：有才显示，顺带报一句发布时间
+  const notes = upInfo?.notes ?? "";
+  $("#up-notes").hidden = !notes;
+  if (notes) {
+    const date = formatDate(upInfo?.date ?? null);
+    const title = `${versionLabel(upInfo?.version ?? "")} 更新说明`;
+    $<HTMLElement>("#up-notes-title").textContent = date ? `${title} · ${date}` : title;
+    $<HTMLElement>("#up-notes-body").textContent = notes;
+  }
+}
+
+/** 检查更新：失败原因要如实显示，所以用会抛错的 callOrThrow（call 会把错误吞掉） */
+async function checkUpdate(): Promise<void> {
+  if (upBusy) return;
+  upBusy = true;
+  upError = "";
+  upPhase = "checking";
+  renderAbout();
+  try {
+    upInfo = await callOrThrow<UpdateInfo>("update_check");
+    upPhase = upInfo.available ? "available" : "latest";
+  } catch (e) {
+    upPhase = "error";
+    upError = e instanceof Error ? e.message : String(e);
+  } finally {
+    upBusy = false;
+    renderAbout();
+  }
+}
+
+/** 下载并安装：进度走 Channel 推过来，装完直接重启（macOS 上不重启跑的还是旧版本） */
+async function installUpdate(): Promise<void> {
+  if (upBusy || !upInfo?.available) return;
+  upBusy = true;
+  upError = "";
+  upDownloaded = 0;
+  upTotal = null;
+  upPhase = "downloading";
+  renderAbout();
+  const progress = new Channel<DownloadEvent>();
+  progress.onmessage = (msg) => {
+    if (msg.event === "started") {
+      upTotal = msg.data?.contentLength ?? null;
+    } else if (msg.event === "progress") {
+      upDownloaded += msg.data?.chunkLength ?? 0;
+    } else {
+      upPhase = "installing";
+    }
+    renderAbout();
+  };
+  try {
+    await callOrThrow<void>("update_install", { onEvent: progress });
+    upPhase = "done";
+    upBusy = false;
+    renderAbout();
+    await call("update_restart");
+  } catch (e) {
+    upBusy = false;
+    upPhase = "error";
+    upError = e instanceof Error ? e.message : String(e);
+    renderAbout();
+  }
+}
+
+/** 显示当前版本：不联网，窗口一打开就能看到（「启动时自动检查更新」关掉时也只做这一步） */
+async function initAbout(): Promise<void> {
+  if (upVersion) return;
+  upVersion = (await call<string>("app_version")) ?? "";
+  renderAbout();
+}
+
+/** 进「关于」页：先把版本号显示出来，再顺手查一次有没有新版 */
+async function openAbout(): Promise<void> {
+  await initAbout();
+  if (!upBusy && (upPhase === "idle" || upPhase === "error")) void checkUpdate();
+}
 // ---------- 交互 ----------
 
 function go(p: Page): void {
@@ -1074,7 +1258,11 @@ function go(p: Page): void {
   history.replaceState(null, "", `#${p}`);
   render();
   // 切到 MCP 页时顺手问一次桥状态：应用刚起来那会儿可能还没就绪
+  // 切到 MCP 页时顺手问一次桥状态：应用刚起来那会儿可能还没就绪
   if (p === "mcp") void loadMcp();
+  // 切到「关于」页时顺手查一次更新，用户点进来多半就是想看有没有新版
+  // 切到「关于」页时顺手查一次更新，用户点进来多半就是想看有没有新版
+  if (p === "about") void openAbout();
 }
 
 $(".nav").addEventListener("click", (e) => {
@@ -1095,6 +1283,15 @@ $("#mcp-on").addEventListener("change", (e) => {
   S.mcp = (e.target as HTMLInputElement).checked;
   commit();
   void applyMcp();
+});
+
+// 关于页：检查更新 / 立即更新 / 打开发布页，以及「启动时自动检查更新」开关
+$("#up-check").addEventListener("click", () => void checkUpdate());
+$("#up-install").addEventListener("click", () => void installUpdate());
+$("#up-page").addEventListener("click", () => void call("open_release_page"));
+$("#about-auto").addEventListener("change", (e) => {
+  S.updateCheck = (e.target as HTMLInputElement).checked;
+  commit();
 });
 
 $("#styles").addEventListener("click", (e) => {
@@ -1532,3 +1729,11 @@ window.setInterval(tickClock, 15_000);
 void poll();
 schedulePoll();
 void loadMcp();
+void initAbout();
+// 主面板发现新版本时会要求直接打开「关于」页：窗口已经开着就走事件，刚建好的走 settings_ready
+void listenAll<unknown>("goto-page", (p) => {
+  if (isPage(p)) go(p);
+});
+void call<unknown>("settings_ready").then((p) => {
+  if (isPage(p)) go(p);
+});

@@ -1,6 +1,6 @@
 [package]
 name = "stock-bar"
-version = "0.0.4"
+version = "0.0.5"
 description = "菜单栏盯盘小工具（东方财富行情）"
 edition = "2021"
 
@@ -21,6 +21,7 @@ tauri-plugin-single-instance = "2"
 tiny_http = "0.12"
 # 桥的令牌：用系统随机源，别自己拼（本来就在依赖树里）
 getrandom = "0.3"
+tauri-plugin-updater = "2"
 
 [profile.release]
 codegen-units = 1

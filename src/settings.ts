@@ -1,6 +1,8 @@
 // 主面板与设置窗口共享的设置：同源 localStorage 存储；
 // 跨窗口同步同时走 Tauri 事件与 `storage` 事件，任一生效即可（重复触发是幂等的）
 
+import type { DataSource } from "./api";
+
 import { IS_WIN, emitAll, listenAll } from "./tauri";
 
 const EVENT = "settings-changed";
@@ -26,6 +28,8 @@ export interface Settings {
   barColor: boolean;
   interval: number; // 秒
   greenUp: boolean; // true = 绿涨红跌
+  /** 行情数据源：自动降级 / 只用东方财富 / 只用腾讯 */
+  source: DataSource;
   theme: Theme;
   /** Windows：显示桌面悬浮行情条（托盘无法显示文字时的替代） */
   ticker: boolean;
@@ -121,6 +125,7 @@ export const DEFAULTS: Settings = {
   barColor: true,
   interval: 5,
   greenUp: false,
+  source: "auto",
   theme: "system",
   ticker: true,
 };
@@ -143,6 +148,10 @@ export function loadSettings(): Settings {
   s.watchlist = pinned.list;
   s.pins = pinned.pins;
   if (!s.barFields?.length) s.barFields = [...DEFAULTS.barFields];
+  // 旧数据没有 source（或值写坏了）时回到「自动」，别让界面出现空档
+  if (s.source !== "auto" && s.source !== "eastmoney" && s.source !== "tencent") {
+    s.source = DEFAULTS.source;
+  }
   return s;
 }
 

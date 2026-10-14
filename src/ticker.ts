@@ -36,7 +36,7 @@ function fit(): void {
 async function refresh(): Promise<void> {
   if (!S.bar.length) return render();
   try {
-    const got = await fetchQuotes(S.bar);
+    const got = await fetchQuotes(S.bar, S.source);
     got.forEach((q, k) => quotes.set(k, q));
   } catch {
     /* 网络失败保留上一次数据 */

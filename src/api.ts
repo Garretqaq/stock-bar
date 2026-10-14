@@ -37,23 +37,174 @@ function num(v: unknown): number | null {
   return null;
 }
 
-async function getJson(url: string): Promise<any> {
+/**
+ * 行情请求失败的原因分类，界面据此区分「源站故障」和「本地网络问题」：
+ * - `server`：行情接口自己出问题——返回 5xx/4xx、返回非 JSON，或者连接被对方掐断
+ * - `timeout`：超过 8 秒没有响应
+ * - `network`：整条链路都不通（断网、DNS 失败、被本地代理拦截）
+ */
+export type ApiErrorKind = "server" | "timeout" | "network";
+
+export class ApiError extends Error {
+  readonly kind: ApiErrorKind;
+  /** 仅 `kind === "server"` 且有响应时才有值 */
+  readonly status: number | null;
+
+  constructor(kind: ApiErrorKind, message: string, status: number | null = null) {
+    super(message);
+    this.name = "ApiError";
+    this.kind = kind;
+    this.status = status;
+  }
+}
+
+/** 把失败原因翻译成错误条文案；不认识的错误退回通用提示 */
+export function apiErrorText(e: unknown): string {
+  if (!(e instanceof ApiError)) return "行情获取失败，正在重试…";
+  if (e.kind === "server") return `行情源故障${e.status ? `（HTTP ${e.status}）` : ""}，正在重试…`;
+  if (e.kind === "timeout") return "请求超时，正在重试…";
+  return "网络异常，正在重试…";
+}
+
+/**
+ * 探活：对同一个域名的根路径发一次 no-cors 请求，只关心「有没有收到响应」。
+ * no-cors 不受 CORS 头影响，所以能拿到响应就说明 DNS、连接、TLS 都是通的；
+ * 探针本身失败说明是本地网络的问题。超时设短一点，别拖慢错误提示。
+ */
+async function hostResponds(url: string): Promise<boolean> {
   const ctl = new AbortController();
-  const timer = setTimeout(() => ctl.abort(), 8000);
+  const timer = setTimeout(() => ctl.abort(), 3000);
   try {
-    const resp = await fetch(url, { signal: ctl.signal, cache: "no-store" });
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    return await resp.json();
+    await fetch(new URL(url).origin + "/", {
+      mode: "no-cors",
+      cache: "no-store",
+      signal: ctl.signal,
+    });
+    return true;
+  } catch {
+    return false;
   } finally {
     clearTimeout(timer);
   }
 }
 
-/** 批量报价：一次请求取回所有 secid */
-export async function fetchQuotes(secids: string[]): Promise<Map<string, Quote>> {
-  const ids = [...new Set(secids.filter(Boolean))];
+// ---------- 数据源 ----------
+
+/**
+ * 行情数据源：
+ * - `eastmoney`：只用东方财富
+ * - `tencent`：只用腾讯
+ * - `auto`：优先东方财富，失败时自动切到腾讯
+ */
+export type DataSource = "auto" | "eastmoney" | "tencent";
+
+/** 最近一次成功取到行情的实际来源：界面显示「自动」时用它说明当前走的是哪家 */
+let activeSource: "eastmoney" | "tencent" | null = null;
+
+export function getActiveSource(): "eastmoney" | "tencent" | null {
+  return activeSource;
+}
+
+/**
+ * 带超时与失败分类的请求，返回原始字节。
+ * 不直接返回文本：东财与腾讯的 JSON 是 UTF-8，而腾讯报价接口是 GBK，得各自解码。
+ */
+async function getBytes(url: string): Promise<ArrayBuffer> {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 8000);
+  try {
+    const resp = await fetch(url, { signal: ctl.signal, cache: "no-store" });
+    if (!resp.ok) throw new ApiError("server", `HTTP ${resp.status}`, resp.status);
+    return await resp.arrayBuffer();
+  } catch (e) {
+    // 上面抛出的 ApiError 直接透传，别被下面的探活逻辑重新归类
+    if (e instanceof ApiError) throw e;
+    // AbortError 是 8 秒超时；其余（Failed to fetch / NetworkError）要再分辨一次
+    if ((e as Error | undefined)?.name === "AbortError") {
+      throw new ApiError("timeout", "请求超时");
+    }
+    // 浏览器把「CORS 失败」「连接被掐断」「压根断网」都报成同一个 TypeError，
+    // 所以探一次同域名的根路径：能收到响应就说明链路是通的，是行情接口自己挂了
+    const alive = await hostResponds(url);
+    throw new ApiError(alive ? "server" : "network", alive ? "行情接口无响应" : "网络异常");
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function getJson(url: string): Promise<any> {
+  const text = new TextDecoder().decode(await getBytes(url));
+  try {
+    return JSON.parse(text);
+  } catch {
+    // 源站返回了非 JSON（502 的 HTML 页面、空响应等），仍算源站故障
+    throw new ApiError("server", "响应不是 JSON");
+  }
+}
+
+/** 腾讯报价是 GBK；万一运行环境没有 gbk 解码器，退回 utf-8（只影响股票名，数值不受影响） */
+function decodeGbk(buf: ArrayBuffer): string {
+  try {
+    return new TextDecoder("gbk").decode(buf);
+  } catch {
+    return new TextDecoder().decode(buf);
+  }
+}
+
+async function getGbkText(url: string): Promise<string> {
+  return decodeGbk(await getBytes(url));
+}
+
+// ---------- secid ↔ 腾讯代码 ----------
+
+/**
+ * 海外指数（东财 100. 市场）→ 腾讯代码。
+ * 两家的代码并不同形，必须查表：腾讯的标普是 us.INX（不是 usSPX），
+ * 而 usDJIA / usDJI 都指向「道琼斯ETF-Global X」这种别的标的，会显示错价格。
+ * 表里没有的指数返回 null，宁可缺一条也不要显示错的价格。
+ */
+const INDEX_CODES: Record<string, string> = {
+  HSI: "hkHSI",
+  HSTECH: "hkHSTECH",
+  HSCEI: "hkHSCEI",
+  NDX: "usNDX",
+  DJIA: "usDJI",
+  SPX: "us.INX",
+  IXIC: "usIXIC",
+};
+
+/**
+ * 把东财 secid 转成腾讯代码。
+ * 腾讯的规则：sh/sz/bj + 代码，港股 hk+5 位，美股 us+代码，海外指数查 INDEX_CODES。
+ * 注意北交所在腾讯要写 bj（不是 sz），否则会返回 none_match。
+ */
+export function tencentCode(secid: string): string | null {
+  const m = marketOf(secid);
+  const c = codeOf(secid);
+  switch (m) {
+    case "1":
+      return `sh${c}`;
+    case "0":
+      // 腾讯把北交所归在 bj 前缀（东财用 0. 市场 + 8/4/92 开头的代码表示）
+      return /^(8|4|92)/.test(c) ? `bj${c}` : `sz${c}`;
+    case "116":
+      return `hk${c}`;
+    case "105":
+    case "106":
+    case "107":
+      return `us${c}`;
+    case "100":
+      return INDEX_CODES[c.toUpperCase()] ?? null;
+    default:
+      return null;
+  }
+}
+
+
+// ---------- 东方财富 ----------
+
+async function quotesFromEastmoney(ids: string[]): Promise<Map<string, Quote>> {
   const out = new Map<string, Quote>();
-  if (!ids.length) return out;
   const url =
     `https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&invt=2` +
     `&fields=f2,f3,f4,f12,f13,f14,f124&secids=${encodeURIComponent(ids.join(","))}` +
@@ -75,6 +226,139 @@ export async function fetchQuotes(secids: string[]): Promise<Map<string, Quote>>
     });
   }
   return out;
+}
+
+// ---------- 腾讯 ----------
+
+/**
+ * 腾讯报价：qt.gtimg.cn/q=<code1>,<code2>
+ * 响应形如 `v_sh600519="1~贵州茅台~600519~1283.61~1274.89~...";`，按 `~` 切分后：
+ * 1 名称、2 代码、3 最新价、4 昨收、30 时间、31 涨跌额、32 涨跌幅(%)。
+ * 注意：接口是 GBK 编码，且一次请求的代码数有限（实测 60 个只回 47 个），所以分批请求。
+ */
+const TENCENT_BATCH = 20;
+
+
+/**
+ * 墙上时间 → Unix 秒。直接用 Date.UTC 会被当成 UTC，
+ * 所以在目标时区里反查偏移量再修正（含夏令时，比如美股冬夏差一小时）。
+ */
+function wallTimeToUnix(
+  tz: string,
+  y: number, mo: number, d: number, h: number, mi: number, sec: number,
+): number {
+  const guess = Date.UTC(y, mo - 1, d, h, mi, sec);
+  const asUtc = tzPartsUtc(tz, new Date(guess));
+  const off = Math.round((asUtc - guess) / 60000);
+  return Math.floor((guess - off * 60000) / 1000);
+}
+
+/** 把某时刻在 tz 的墙上时间重新解释成 UTC 毫秒，用于求偏移量 */
+function tzPartsUtc(tz: string, at: Date): number {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: tz,
+    hourCycle: "h23",
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+  }).formatToParts(at);
+  const g = (t: string) => Number(parts.find((p) => p.type === t)?.value ?? 0);
+  return Date.UTC(g("year"), g("month") - 1, g("day"), g("hour") % 24, g("minute"), g("second"));
+}
+
+
+async function quotesFromTencent(ids: string[]): Promise<Map<string, Quote>> {
+  const out = new Map<string, Quote>();
+  // 腾讯代码 → 原始 secid：反解不出唯一市场号（尤其海外指数），所以靠正查表还原
+  const byCode = new Map<string, string>();
+  for (const id of ids) {
+    const tc = tencentCode(id);
+    if (tc && !byCode.has(tc)) byCode.set(tc, id);
+  }
+  const codes = [...byCode.keys()];
+  let lastErr: unknown;
+  for (let i = 0; i < codes.length; i += TENCENT_BATCH) {
+    const chunk = codes.slice(i, i + TENCENT_BATCH);
+    let text: string;
+    try {
+      text = await getGbkText(`https://qt.gtimg.cn/q=${chunk.join(",")}`);
+    } catch (e) {
+      // 某一批失败不该连累其它批：记下错误继续，全部批次都失败时再抛
+      lastErr = e;
+      continue;
+    }
+    for (const line of text.split(";")) {
+      const eq = line.indexOf('="');
+      if (eq < 0) continue;
+      const tcode = line.slice(0, eq).trim().replace(/^v_/, "");
+      const body = line.slice(eq + 2).replace(/";?\s*$/, "").trim();
+      if (!body || body.startsWith("pv_none_match")) continue;
+      const f = body.split("~");
+      if (f.length < 33) continue;
+      const secid = byCode.get(tcode);
+      if (!secid) continue;
+      out.set(secid, {
+        secid,
+        code: f[2],
+        market: Number(marketOf(secid)),
+        name: f[1] || f[2],
+        price: num(f[3]),
+        pct: num(f[32]),
+        change: num(f[31]),
+        time: tencentQuoteTime(secid, f[30]),
+      });
+    }
+  }
+  // 一条都没取到、且确实有批次失败过，才把错误抛给上层（交给 auto 换源或显示失败）
+  if (!out.size && lastErr) throw lastErr;
+  return out;
+}
+
+/** 报价时间按标的所在市场的时区解析 */
+function tencentQuoteTime(secid: string, raw: string): number | null {
+  const s = (raw ?? "").trim();
+  if (!s) return null;
+  const digits = s.replace(/\D/g, "");
+  if (digits.length < 12) return null;
+  const y = +digits.slice(0, 4);
+  const mo = +digits.slice(4, 6);
+  const d = +digits.slice(6, 8);
+  const h = digits.length >= 14 ? +digits.slice(8, 10) : +digits.slice(8, 10);
+  const mi = digits.length >= 14 ? +digits.slice(10, 12) : +digits.slice(10, 12);
+  const sec = digits.length >= 14 ? +digits.slice(12, 14) : 0;
+  if (!y || !mo || !d) return null;
+  return wallTimeToUnix(SESSIONS[regionOf(secid)].tz, y, mo, d, h, mi, sec);
+}
+
+/**
+ * 批量报价：按数据源取。
+ * `auto` 先试东财，失败（源站故障/超时/网络）时自动切腾讯；两家都失败才抛最后一个错误。
+ */
+export async function fetchQuotes(
+  secids: string[],
+  source: DataSource = "auto",
+): Promise<Map<string, Quote>> {
+  const ids = [...new Set(secids.filter(Boolean))];
+  if (!ids.length) return new Map();
+
+  const order: ("eastmoney" | "tencent")[] =
+    source === "tencent" ? ["tencent"] : source === "eastmoney" ? ["eastmoney"] : ["eastmoney", "tencent"];
+
+  let lastErr: unknown;
+  for (const which of order) {
+    try {
+      const got = which === "eastmoney" ? await quotesFromEastmoney(ids) : await quotesFromTencent(ids);
+      // 成功但一条都没解析出来，说明对方返回了空/异常数据，换下一家再试
+      if (got.size) {
+        activeSource = which;
+        return got;
+      }
+      lastErr = new ApiError("server", "返回数据为空");
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  activeSource = null;
+  throw lastErr ?? new ApiError("server", "行情获取失败");
 }
 
 /** JSONP：搜索接口不返回 CORS 头，fetch 读不到，改用 <script> 回调（零依赖） */
@@ -225,7 +509,7 @@ export function pickTrendDay(
  * 分时走势：push2his.eastmoney.com/api/qt/stock/trends2/get
  * `days` 传 2 时取两天（ndays=2）：画图仍只用最新一天，另一天用来算「与上一日同期」的成交额对比。
  */
-export async function fetchTrend(secid: string, days = 1): Promise<TrendData> {
+async function trendFromEastmoney(secid: string, days: number): Promise<TrendData> {
   const url =
     `https://push2his.eastmoney.com/api/qt/stock/trends2/get?secid=${encodeURIComponent(secid)}` +
     `&fields1=f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13` +
@@ -259,6 +543,140 @@ export async function fetchTrend(secid: string, days = 1): Promise<TrendData> {
   };
 }
 
+/**
+ * 午后开盘那一分钟是否只是上午收盘点的复制。
+ * 腾讯的日内序列在午休处会多给一条：A 股是 1130 和 1300 两条内容一样，
+ * 港股是 1200 和 1300 一样（上午收盘时间不同，但复制的那条都是午后开盘那一刻）。
+ * 判据用「午后开盘分钟 + 三个数值与上一条完全相同」，不靠写死时间对，
+ * 这样既不会误删其它分钟，又能让整日点数与东财一致（A 股 241、港股 331）。
+ */
+function isAfternoonOpenDup(region: Region, hm: string, parts: string[], prev: string[]): boolean {
+  const afternoonStart = SESSIONS[region].s[1]?.[0];
+  if (afternoonStart == null) return false;
+  const m = Number(hm.slice(0, 2)) * 60 + Number(hm.slice(2, 4));
+  if (m !== afternoonStart) return false;
+  // 价格 / 累计量 / 累计额三项都一样，才认定是复制点
+  return parts[1] === prev[1] && parts[2] === prev[2] && parts[3] === prev[3];
+}
+
+/**
+ * 腾讯分时：web.ifzq.gtimg.cn/appstock/app/day/query?code=<code>
+ * 返回最近 5 个交易日，每天一组 `"HHMM 价格 累计量 累计额"`（都是累计值，不是分钟增量）。
+ * 因此：
+ * - 价格直接用；
+ * - 均价由累计额/累计量反推（A 股量是手，需 ×100；港美股是股），指数不画均价线；
+ * - 成交额取每分钟增量（当日累计额差分），这样和东财的语义一致，
+ *   `cumAmount()` 的「按分钟累加 + 与上一日同期对比」逻辑可以原样复用。
+ * 注意美股没有分时数据（接口返回 param error），这种情况抛错交给上层显示「加载失败」。
+ */
+async function trendFromTencent(secid: string, days: number): Promise<TrendData> {
+  const tc = tencentCode(secid);
+  if (!tc) throw new ApiError("server", "该标的不支持腾讯分时");
+  const json = await getJson(`https://web.ifzq.gtimg.cn/appstock/app/day/query?code=${tc}`);
+  const node = json?.data?.[tc];
+  const groups: any[] = Array.isArray(node?.data) ? node.data : [];
+  if (!groups.length) throw new ApiError("server", "腾讯未返回分时数据");
+  const region = regionOf(secid);
+  // A 股的量单位是手，港美股是股；均价 = 累计额 / 累计量
+  const volUnit = region === "CN" ? 100 : 1;
+  // 指数不画均价线：腾讯给指数的「累计量」是另一套口径（恒生指数 amt/vol ≈ 1，
+  // 上证指数算出来是 14 而点位在 3800），画上去会把价格线压成一条细缝。个股才有真实均价。
+  const isIdx = isIndexSecid(secid);
+  // 腾讯按「新→旧」返回，而 pickTrendDay 假定最后一组是最新一天，所以先按日期升序排好
+  const sorted = [...groups].sort((a, b) => String(a?.date ?? "").localeCompare(String(b?.date ?? "")));
+  const raw: TrendRawPoint[] = [];
+  let fullDay = 0;
+  for (const g of sorted) {
+    const date = String(g?.date ?? "");
+    const iso = date.length === 8 ? `${date.slice(0, 4)}-${date.slice(4, 6)}-${date.slice(6, 8)}` : date;
+    let prevAmt = 0;
+    let prevParts: string[] | null = null;
+    let count = 0;
+    for (const line of (Array.isArray(g?.data) ? g.data : []) as string[]) {
+      const p = String(line).trim().split(/\s+/);
+      if (p.length < 4) continue;
+      const hm = p[0];
+      // 只保留交易时段内的点：A 股个股会多给 15:00 之后的盘后成交
+      if (!inSession(region, hm)) continue;
+      // 午后开盘那条常常是上午收盘点的复制（内容完全相同），丢掉它，
+      // 让整日点数与东财一致（A 股 241、港股 331），横轴刻度才不会错位
+      if (prevParts && isAfternoonOpenDup(region, hm, p, prevParts)) continue;
+      prevParts = p;
+      const price = num(p[1]);
+      const cumVol = num(p[2]);
+      const cumAmt = num(p[3]);
+      if (price == null) continue;
+      // 累计额偶发回退（接口给出坏行）：差分基准不能跟着回退，否则下一个正常点
+      // 的增量会把当天累计额算成两倍。回退时该分钟增量记 null，基准维持不变。
+      const bad = cumAmt == null || cumAmt < prevAmt;
+      const amount = bad ? null : cumAmt - prevAmt;
+      if (cumAmt != null && cumAmt >= prevAmt) prevAmt = cumAmt;
+      count++;
+      raw.push({
+        date: iso,
+        time: hm.padStart(4, "0"),
+        price,
+        avg: isIdx || bad || !cumVol ? null : cumAmt! / (cumVol * volUnit),
+        vol: cumVol,
+        amount,
+      });
+    }
+    // 完整交易日的分钟数：这 5 天里最长的一天（半日市/停牌那天会短一些）
+    if (count > fullDay) fullDay = count;
+  }
+  if (!raw.length) throw new ApiError("server", "腾讯未返回分时数据");
+  // 与东财 ndays 对齐：days=2 时留最后两天；days=1 只留最新一天
+  const dates = [...new Set(raw.map((p) => p.date))];
+  const keep = new Set(days >= 2 ? dates.slice(-2) : dates.slice(-1));
+  const kept = raw.filter((p) => keep.has(p.date));
+  // 横轴按「一个完整交易日」铺满。pickTrendDay 是从「两天之和」里减掉上一日的点数来推算的，
+  // 上一日偏短（半日市、停牌、数据缺口）时会算得比整日还长，所以这里以 fullDay 为准。
+  const day = pickTrendDay(kept, fullDay * Math.max(1, keep.size), days);
+  const total = Math.max(fullDay, day.points.length);
+  const qt = node?.qt?.[tc];
+  return {
+    secid,
+    name: Array.isArray(qt) ? String(qt[1] ?? "") : "",
+    preClose: Array.isArray(qt) ? num(qt[4]) : null,
+    total,
+    points: day.points,
+    amount: day.amount,
+    prevAmount: day.prevAmount,
+    prevDate: day.prevDate,
+  };
+}
+
+/** 某个分钟标签是否落在该市场的交易时段内 */
+function inSession(region: Region, hm: string): boolean {
+  const m = Number(hm.slice(0, 2)) * 60 + Number(hm.slice(2, 4));
+  if (!Number.isFinite(m)) return false;
+  return SESSIONS[region].s.some(([a, b]) => m >= a && m <= b);
+}
+
+/**
+ * 分时走势：按数据源取，`auto` 先试东财、失败再试腾讯。
+ * `days` 传 2 时取两天：画图仍只用最新一天，另一天用来算「与上一日同期」的成交额对比。
+ */
+export async function fetchTrend(
+  secid: string,
+  days = 1,
+  source: DataSource = "auto",
+): Promise<TrendData> {
+  const order: ("eastmoney" | "tencent")[] =
+    source === "tencent" ? ["tencent"] : source === "eastmoney" ? ["eastmoney"] : ["eastmoney", "tencent"];
+  let lastErr: unknown;
+  for (const which of order) {
+    try {
+      return which === "eastmoney"
+        ? await trendFromEastmoney(secid, days)
+        : await trendFromTencent(secid, days);
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw lastErr ?? new ApiError("server", "分时获取失败");
+}
+
 // ---------- secid 辅助 ----------
 
 export function codeOf(secid: string): string {
@@ -267,6 +685,13 @@ export function codeOf(secid: string): string {
 
 function marketOf(secid: string): string {
   return secid.slice(0, secid.indexOf("."));
+}
+
+/** 是否是指数（东财 100. 海外指数，或常见的大盘指数代码），用于跳过均价线 */
+function isIndexSecid(secid: string): boolean {
+  if (marketOf(secid) === "100") return true;
+  const c = codeOf(secid);
+  return /^(000001|399001|399006|000300|000905|000016)$/.test(c) && marketOf(secid) !== "105";
 }
 
 export function marketTag(secid: string): string {

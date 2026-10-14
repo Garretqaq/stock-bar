@@ -1,4 +1,13 @@
-import { codeOf, fetchQuotes, marketTag, searchStocks, type Quote, type SearchItem } from "./api";
+import {
+  codeOf,
+  fetchQuotes,
+  getActiveSource,
+  marketTag,
+  searchStocks,
+  type DataSource,
+  type Quote,
+  type SearchItem,
+} from "./api";
 import { barImage, barPct, barPrice, barText, shortName, tickerClass, tickerHtml } from "./bar";
 import { shiftIndex, slotAt, type RowRect } from "./drag";
 import {
@@ -96,6 +105,22 @@ const THEMES: { v: Theme; name: string; icon: string }[] = [
   { v: "system", name: "跟随系统", icon: I.laptop },
 ];
 const INTERVALS = [3, 5, 10, 30];
+
+/** 行情数据源选项（顺序即界面顺序） */
+const SOURCES: { v: DataSource; name: string }[] = [
+  { v: "auto", name: "自动" },
+  { v: "eastmoney", name: "东方财富" },
+  { v: "tencent", name: "腾讯" },
+];
+
+/** 「当前使用」那行显示的来源名字 */
+const SOURCE_NAME: Record<string, string> = {
+  eastmoney: "东方财富",
+  tencent: "腾讯",
+};
+
+/** 自动模式下实际在用的源，由 poll() 里 fetchQuotes/getActiveSource 回填 */
+let activeSource: string | null = null;
 
 /** 实时预览：macOS 仿菜单栏；Windows 仿桌面 + 任务栏，悬浮行情条浮在任务栏右上方 */
 const MAC_DESK = `
@@ -279,8 +304,14 @@ root.innerHTML = `
           </div>
         </div>
         <div class="row">
-          <div class="row-label">数据来源</div>
-          <span class="row-value">东方财富</span>
+          <div class="row-label">数据来源<small>源站故障时自动切换</small></div>
+          <div class="seg" id="seg-source" style="--n:${SOURCES.length}">
+            ${SOURCES.map((o) => `<button data-v="${o.v}">${o.name}</button>`).join("")}
+          </div>
+        </div>
+        <div class="row" id="row-source-active">
+          <div class="row-label">当前使用</div>
+          <span class="row-value" id="source-active">--</span>
         </div>
       </div>
     </section>
@@ -314,6 +345,8 @@ function render(): void {
   $$(".theme-card").forEach((b) => b.classList.toggle("on", b.dataset.v === S.theme));
   setSeg("#seg-color", S.greenUp ? "green" : "red");
   setSeg("#seg-interval", String(S.interval));
+  setSeg("#seg-source", S.source);
+  $<HTMLElement>("#source-active").textContent = activeFor(S);
 }
 
 function setSeg(sel: string, v: string): void {
@@ -322,6 +355,12 @@ function setSeg(sel: string, v: string): void {
   const i = Math.max(0, btns.findIndex((b) => b.dataset.v === v));
   seg.style.setProperty("--i", String(i));
   btns.forEach((b, j) => b.classList.toggle("on", j === i));
+}
+
+/** 「当前使用」的文案：手动选源就直接显示，自动模式显示实际命中的那家 */
+function activeFor(s: Settings): string {
+  if (s.source !== "auto") return SOURCE_NAME[s.source] ?? "--";
+  return activeSource ? `${SOURCE_NAME[activeSource] ?? activeSource}（自动）` : "自动选择中…";
 }
 
 /** 大盘指数卡片：点卡片即勾选（多选）；右上角图钉是「已在菜单栏」的只读标识 */
@@ -1053,6 +1092,14 @@ $("#seg-interval").addEventListener("click", (e) => {
   schedulePoll();
 });
 
+$("#seg-source").addEventListener("click", (e) => {
+  const v = (e.target as HTMLElement).closest<HTMLElement>("button")?.dataset.v as DataSource | undefined;
+  if (!v || v === S.source) return;
+  S.source = v;
+  commit();
+  void poll();
+});
+
 $("#quit").addEventListener("click", () => call("quit_app"));
 
 function shake(el: Element): void {
@@ -1065,11 +1112,13 @@ function shake(el: Element): void {
 
 async function poll(): Promise<void> {
   try {
-    const got = await fetchQuotes([...INDICES.map((it) => it.secid), ...S.watchlist]);
+    const got = await fetchQuotes([...INDICES.map((it) => it.secid), ...S.watchlist], S.source);
     got.forEach((q, k) => quotes.set(k, q));
+    activeSource = getActiveSource();
     renderMarket();
     renderOrder();
     renderPreview();
+    $<HTMLElement>("#source-active").textContent = activeFor(S);
   } catch {
     /* 预览数据失败不影响设置 */
   }

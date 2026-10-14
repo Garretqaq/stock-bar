@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "StockBar",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "identifier": "com.stockbar.eastmoney",
   "build": {
     "beforeDevCommand": "pnpm dev",
@@ -32,7 +32,7 @@
       "csp": {
         "default-src": "'self'",
         "script-src": "'self' https://searchapi.eastmoney.com",
-        "connect-src": "'self' ipc: http://ipc.localhost https://push2.eastmoney.com https://push2his.eastmoney.com",
+        "connect-src": "'self' ipc: http://ipc.localhost https://push2.eastmoney.com https://push2his.eastmoney.com https://qt.gtimg.cn https://web.ifzq.gtimg.cn",
         "img-src": "'self' asset: http://asset.localhost data: blob:",
         "style-src": "'self' 'unsafe-inline'",
         "font-src": "'self' data:",
@@ -42,7 +42,7 @@
       "devCsp": {
         "default-src": "'self'",
         "script-src": "'self' https://searchapi.eastmoney.com",
-        "connect-src": "'self' ipc: http://ipc.localhost https://push2.eastmoney.com https://push2his.eastmoney.com ws://localhost:1420 http://localhost:1420",
+        "connect-src": "'self' ipc: http://ipc.localhost https://push2.eastmoney.com https://push2his.eastmoney.com https://qt.gtimg.cn https://web.ifzq.gtimg.cn ws://localhost:1420 http://localhost:1420",
         "img-src": "'self' asset: http://asset.localhost data: blob:",
         "style-src": "'self' 'unsafe-inline'",
         "font-src": "'self' data:",

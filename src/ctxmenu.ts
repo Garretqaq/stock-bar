@@ -24,8 +24,12 @@ export function closeMenu(): void {
   cleanup = null;
 }
 
-/** 在 (x, y) 处弹出菜单；重复调用会先关掉上一个 */
-export function openMenu(x: number, y: number, items: MenuItem[]): void {
+/**
+ * 在 (x, y) 处弹出菜单；重复调用会先关掉上一个。
+ * ignoreScrollFrom：这个容器里自己的滚动不会挪动菜单的位置（比如菜单挂在筛选条末尾的「⋯」上，
+ * 筛选条横着滚，「⋯」是不动的），所以那种滚动不该把菜单收起来；页面 / 列表滚动照旧收起菜单。
+ */
+export function openMenu(x: number, y: number, items: MenuItem[], ignoreScrollFrom?: Element): void {
   closeMenu();
   if (!items.length) return;
 
@@ -42,10 +46,13 @@ export function openMenu(x: number, y: number, items: MenuItem[]): void {
   document.body.append(el);
   menu = el;
 
-  // 靠近窗口边缘时向内收，避免被裁掉
-  const r = el.getBoundingClientRect();
-  const px = Math.min(Math.max(6, x), Math.max(6, window.innerWidth - r.width - 6));
-  const py = Math.min(Math.max(6, y), Math.max(6, window.innerHeight - r.height - 6));
+  // 靠近窗口边缘时向内收，避免被裁掉。
+  // 用 offsetWidth / offsetHeight（布局尺寸）而不是 getBoundingClientRect：
+  // 入场动画带着 scale，量出来会偏小，菜单就会有一部分留在窗口外面点不到。
+  const w = el.offsetWidth;
+  const h = el.offsetHeight;
+  const px = Math.min(Math.max(6, x), Math.max(6, window.innerWidth - w - 6));
+  const py = Math.min(Math.max(6, y), Math.max(6, window.innerHeight - h - 6));
   el.style.left = `${Math.round(px)}px`;
   el.style.top = `${Math.round(py)}px`;
 
@@ -84,7 +91,13 @@ export function openMenu(x: number, y: number, items: MenuItem[]): void {
     e.stopPropagation();
     closeMenu();
   };
-  const onScroll = () => closeMenu();
+  // 页面滚动时菜单要收起（它挂在页面坐标上，跟着动就对不上了）；
+  // 但菜单自己滚动、以及 ignoreScrollFrom 里那种「菜单锚点不会动」的滚动，不该把菜单关掉
+  const onScroll = (e: Event) => {
+    const t = e.target as Node;
+    if (el.contains(t) || ignoreScrollFrom?.contains(t)) return;
+    closeMenu();
+  };
 
   document.addEventListener("pointerdown", onPointerDown, true);
   document.addEventListener("keydown", onKeyDown, true);

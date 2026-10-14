@@ -58,4 +58,24 @@ describe("右键菜单", () => {
     openMenu(0, 0, []);
     expect(menu()).toBeNull();
   });
+
+  it("页面滚动收起菜单，菜单自己滚动不收起", () => {
+    openMenu(0, 0, [{ label: "删除" }]);
+    // 菜单太高时自己要能滚（分组很多），这时不该把自己关掉
+    menu()!.dispatchEvent(new Event("scroll", { bubbles: true }));
+    expect(menu()).not.toBeNull();
+    document.body.dispatchEvent(new Event("scroll", { bubbles: true }));
+    expect(menu()).toBeNull();
+  });
+
+  it("ignoreScrollFrom 里的滚动不收起菜单（锚点不跟着动）", () => {
+    const strip = document.createElement("div");
+    document.body.append(strip);
+    openMenu(0, 0, [{ label: "删除" }], strip);
+    strip.dispatchEvent(new Event("scroll", { bubbles: true }));
+    expect(menu()).not.toBeNull();
+    document.body.dispatchEvent(new Event("scroll", { bubbles: true }));
+    expect(menu()).toBeNull();
+    strip.remove();
+  });
 });

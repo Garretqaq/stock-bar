@@ -25,6 +25,9 @@
   min-width: 132px;
   padding: 4px;
   border-radius: 10px;
+  /* 分组很多时菜单会比窗口还高：让它自己滚，别把后面的项顶到窗口外面点不到 */
+  max-height: calc(100vh - 12px);
+  overflow-y: auto;
   background: var(--menu-bg);
   border: 1px solid var(--menu-line);
   box-shadow: var(--menu-shadow);

@@ -114,6 +114,9 @@ function dirOf(p: number | null | undefined): Dir {
   return p > 0 ? "up" : "down";
 }
 
+/** 三个横杠 = 「还有更多分组」：横滑出去的分组从这里点（骨架里就要用，得先声明） */
+const ICON_MORE = `<svg viewBox="0 0 24 24"><path d="M6 12h1.6M11.2 12h1.6M16.4 12h1.6"/></svg>`;
+
 // ---------- 页面骨架 ----------
 
 const app = $("#app");
@@ -145,7 +148,10 @@ app.innerHTML = `
       <input id="search-input" placeholder="搜索代码 / 名称 / 拼音" autocomplete="off" spellcheck="false" />
       <div class="search-results" id="search-results"></div>
     </div>
-    <div class="gtabs" id="gtabs" hidden></div>
+    <div class="gtabs" id="gtabs" hidden>
+      <div class="gtab-scroll" id="gtab-scroll"></div>
+      <button class="gtab-more" id="gtab-more" hidden title="更多分组" aria-label="更多分组" aria-haspopup="menu">${ICON_MORE}</button>
+    </div>
     <section class="list" id="list"></section>
   </main>
 
@@ -673,8 +679,16 @@ const ICON_FOLDER = `<svg viewBox="0 0 24 24"><path d="M3 7.5A1.5 1.5 0 0 1 4.5 
 // ---------- 自选分组 ----------
 // 分组只决定自选列表怎么看：菜单栏（bar）与置顶（pins）都不受它影响。
 
+/** 筛选条的两块：横着滚的标签容器 + 放不下时才出现的「⋯」 */
+const tabScroll = $("#gtab-scroll");
+const tabMore = $("#gtab-more");
+
 /** 正在看的分组：null = 全部；未分组是空字符串，不能用假值判断 */
 let groupFilter: string | null = null;
+
+/** 按住拖动筛选条：tabDrag 是按下时的位置，tabDraggedAt 是最后一下拖动的时间 */
+let tabDrag: { x: number; left: number } | null = null;
+let tabDraggedAt = 0;
 
 /** 当前视图里的自选（顺序仍与整表一致） */
 function visibleIds(): string[] {
@@ -698,7 +712,7 @@ function groupTabs(): { gid: string | null; name: string; n: number }[] {
   ];
 }
 
-/** 筛选条内容没变就不重写 DOM，免得每次刷新都清掉滚动位置 */
+/** 筛选条内容没变就不重写 DOM，免得每次行情刷新都重建按钮（按下 / 悬停状态会被打断） */
 function renderTabs(): void {
   const box = $("#gtabs");
   const tabs = groupTabs();
@@ -709,31 +723,108 @@ function renderTabs(): void {
   box.hidden = !show;
   if (!show) {
     box.dataset.key = "";
-    if (box.innerHTML) box.innerHTML = "";
+    if (tabScroll.innerHTML) tabScroll.innerHTML = "";
+    tabMore.hidden = true;
     return;
   }
   const key = `${groupFilter ?? "*"}|${tabs.map((t) => `${t.gid}:${t.name}:${t.n}`).join(",")}`;
-  if (key === box.dataset.key) return;
-  box.dataset.key = key;
-  box.innerHTML = tabs
-    .map((t) => {
-      const on = t.gid === groupFilter;
-      return (
-        `<button class="gtab${on ? " on" : ""}" data-gid="${t.gid ?? "*"}" aria-pressed="${on}">` +
-        `${esc(t.name)}<b>${t.n}</b></button>`
-      );
-    })
-    .join("");
+  if (key !== box.dataset.key) {
+    box.dataset.key = key;
+    tabScroll.innerHTML = tabs
+      .map((t) => {
+        const on = t.gid === groupFilter;
+        return (
+          `<button class="gtab${on ? " on" : ""}" data-gid="${t.gid ?? "*"}" aria-pressed="${on}">` +
+          `${esc(t.name)}<b>${t.n}</b></button>`
+        );
+      })
+      .join("");
+  }
+  syncTabMore();
+  scrollTabIntoView();
+}
+
+/** 筛选条横着放不下才给末尾的「⋯」（放得下就不占位置）；窗口宽度变了也要重算 */
+function syncTabMore(): void {
+  tabMore.hidden = tabScroll.scrollWidth <= tabScroll.clientWidth + 1;
+}
+
+/** 选中的分组要留在视野里：从「⋯」里选中的分组可能还藏在右边 */
+function scrollTabIntoView(): void {
+  const on = $(".gtab.on", tabScroll);
+  if (!on || tabScroll.scrollWidth <= tabScroll.clientWidth) return;
+  const chip = on.getBoundingClientRect();
+  const box = tabScroll.getBoundingClientRect();
+  const d =
+    chip.left < box.left ? chip.left - box.left - 6 : chip.right > box.right ? chip.right - box.right + 6 : 0;
+  if (!d) return;
+  tabScroll.scrollTo({ left: tabScroll.scrollLeft + d, behavior: reduceMotion() ? "auto" : "smooth" });
+}
+
+/** 切到某个分组（null = 全部）：筛选条上的标签与末尾「⋯」的菜单共用这一处 */
+function pickGroup(gid: string | null): void {
+  if (gid === groupFilter) return;
+  groupFilter = gid;
+  renderList(); // 里面会重画筛选条，并把选中的那个滚进视野
 }
 
 $("#gtabs").addEventListener("click", (e) => {
+  // 拖动那一下松手会跟一个 click：别顺手把分组切了（拖动结束得够久了就当真点击）
+  if (tabDraggedAt && Date.now() - tabDraggedAt < 500) {
+    tabDraggedAt = 0;
+    return;
+  }
   const gid = (e.target as HTMLElement).closest<HTMLElement>(".gtab")?.dataset.gid;
   if (gid === undefined) return;
-  const next = gid === "*" ? null : gid;
-  if (next === groupFilter) return;
-  groupFilter = next;
-  renderList();
+  pickGroup(gid === "*" ? null : gid);
 });
+
+// 末尾「⋯」：横滑出去的分组从这里点，当前这个打勾。
+// 菜单挂在「⋯」上，筛选条自己横着滚不会挪动它，所以那种滚动不该把菜单收起来
+tabMore.addEventListener("click", () => {
+  const r = tabMore.getBoundingClientRect();
+  openMenu(
+    r.right,
+    r.bottom + 4,
+    groupTabs().map((t) => ({
+      label: `${t.gid === groupFilter ? "✓ " : ""}${t.name}`,
+      onPick: () => pickGroup(t.gid),
+    })),
+    tabScroll,
+  );
+});
+
+// 横向滑：鼠标滚轮（竖直方向）也能把筛选条推向右边；触控板横滑是浏览器原生的，这里不拦
+tabScroll.addEventListener(
+  "wheel",
+  (e) => {
+    if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) return; // 横向手势交给原生滚动
+    if (tabScroll.scrollWidth <= tabScroll.clientWidth) return; // 没溢出就正常滚页面
+    const before = tabScroll.scrollLeft;
+    tabScroll.scrollLeft = before + e.deltaY;
+    if (tabScroll.scrollLeft !== before) e.preventDefault(); // 已经到头就把滚动还给页面
+  },
+  { passive: false },
+);
+
+// 鼠标按住拖动也能往右滑：触控板有横滑手势，鼠标没有
+tabScroll.addEventListener("pointerdown", (e) => {
+  if (e.button !== 0 || tabScroll.scrollWidth <= tabScroll.clientWidth) return;
+  tabDrag = { x: e.clientX, left: tabScroll.scrollLeft };
+  tabDraggedAt = 0;
+});
+window.addEventListener("pointermove", (e) => {
+  if (!tabDrag) return;
+  const dx = e.clientX - tabDrag.x;
+  if (!tabDraggedAt && Math.abs(dx) < 4) return; // 手抖不算拖动
+  tabDraggedAt = Date.now();
+  tabScroll.scrollLeft = tabDrag.left - dx;
+});
+const endTabDrag = () => {
+  tabDrag = null;
+};
+window.addEventListener("pointerup", endTabDrag);
+window.addEventListener("pointercancel", endTabDrag);
 
 /** 右键菜单里的「移入分组」：一个目标一项（菜单没有子菜单），没建过分组或不是自选就整组不出现 */
 function groupMenuItems(id: string): MenuItem[] {
@@ -1114,6 +1205,7 @@ onSettingsChange((next) => {
 });
 window.addEventListener("resize", () => {
   if (trendOpen) renderTrendPanels();
+  syncTabMore(); // 面板宽度变了，筛选条可能要重新决定给不给「⋯」
 });
 
 function schedule(): void {

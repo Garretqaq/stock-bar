@@ -533,16 +533,23 @@ button {
 .gtabs[hidden] {
   display: none;
 }
-/* 分组筛选条：横着排，分组多了可以横向滚动（不显示滚动条）；
-   选中态用强调色浅底 + 强调色文字，和搜索框聚焦时是同一套语言 */
+/* 分组筛选条：单行横排，分组多了横向滚动（滚动条隐藏，末尾给「⋯」入口，
+   滚轮 / 按住拖动也能往右滑），选中态用强调色浅底 + 强调色文字 */
 .gtabs {
   display: flex;
+  align-items: center;
   gap: 6px;
   margin: 2px 0 6px;
+}
+.gtab-scroll {
+  display: flex;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
   overflow-x: auto;
   scrollbar-width: none;
 }
-.gtabs::-webkit-scrollbar {
+.gtab-scroll::-webkit-scrollbar {
   display: none;
 }
 .gtab {
@@ -576,6 +583,34 @@ button {
 }
 .gtab.on b {
   opacity: 1;
+}
+/* 末尾的「更多分组」：只在筛选条溢出时出现，点了把全部分组列成菜单 */
+.gtab-more {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  border-radius: 13px;
+  color: var(--sub);
+  background: var(--card);
+  transition: color 0.18s ease, background 0.18s ease;
+}
+/* display:inline-flex 会盖掉 [hidden] 的默认 display:none，得自己再写一条 */
+.gtab-more[hidden] {
+  display: none;
+}
+.gtab-more:hover {
+  color: var(--text);
+}
+.gtab-more svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.2;
+  stroke-linecap: round;
 }
 
 .list {

@@ -35,6 +35,7 @@ import {
   type Settings,
 } from "./settings";
 import { IN_TAURI, IS_WIN, UI_FONT, call, listenAll } from "./tauri";
+import { isDragClick, isDragMove, scrollDeltaFor } from "./tabs";
 import { openMenu, type MenuItem } from "./ctxmenu";
 import { McpError, prepareCommand } from "./mcp";
 import { hintText, type UpdateInfo } from "./update";
@@ -712,13 +713,18 @@ function groupTabs(): { gid: string | null; name: string; n: number }[] {
   ];
 }
 
-/** 筛选条内容没变就不重写 DOM，免得每次行情刷新都重建按钮（按下 / 悬停状态会被打断） */
+/**
+ * 筛选条内容没变就不重写 DOM，免得每次行情刷新都重建按钮（按下 / 悬停状态会被打断）。
+ * 注意这里不把选中的标签「拉回视野」：行情每隔几秒就刷新一次，那样会把用户自己滑到的
+ * 位置一次次拽回去，等于又点不到后面的分组了。只有选中项真的变了（见 pickGroup）才拉。
+ */
 function renderTabs(): void {
   const box = $("#gtabs");
   const tabs = groupTabs();
   // 正在看的分组已经不在筛选条上了（成员被移空、分组被删）：退回「全部」，
   // 否则会出现没有任何标签高亮、列表却还筛着的状态
-  if (groupFilter !== null && !tabs.some((t) => t.gid === groupFilter)) groupFilter = null;
+  const fellBack = groupFilter !== null && !tabs.some((t) => t.gid === groupFilter);
+  if (fellBack) groupFilter = null;
   const show = S.groups.length > 0;
   box.hidden = !show;
   if (!show) {
@@ -741,7 +747,8 @@ function renderTabs(): void {
       .join("");
   }
   syncTabMore();
-  scrollTabIntoView();
+  // 退回「全部」也算换了选中项：它多半藏在左边，得带进视野
+  if (fellBack) scrollTabIntoView();
 }
 
 /** 筛选条横着放不下才给末尾的「⋯」（放得下就不占位置）；窗口宽度变了也要重算 */
@@ -749,28 +756,30 @@ function syncTabMore(): void {
   tabMore.hidden = tabScroll.scrollWidth <= tabScroll.clientWidth + 1;
 }
 
-/** 选中的分组要留在视野里：从「⋯」里选中的分组可能还藏在右边 */
+/**
+ * 选中的分组要留在视野里：从「⋯」里选中的分组可能还藏在右边。
+ * 直接跳（不 smooth）：这是菜单里点一下的即时反馈，跳过去最干脆；
+ * 平滑滚动在有些 webview 里不推进（面板不可见时被节流），那就等于没滚 —— 标签还藏在右边。
+ */
 function scrollTabIntoView(): void {
   const on = $(".gtab.on", tabScroll);
   if (!on || tabScroll.scrollWidth <= tabScroll.clientWidth) return;
-  const chip = on.getBoundingClientRect();
-  const box = tabScroll.getBoundingClientRect();
-  const d =
-    chip.left < box.left ? chip.left - box.left - 6 : chip.right > box.right ? chip.right - box.right + 6 : 0;
+  const d = scrollDeltaFor(on.getBoundingClientRect(), tabScroll.getBoundingClientRect());
   if (!d) return;
-  tabScroll.scrollTo({ left: tabScroll.scrollLeft + d, behavior: reduceMotion() ? "auto" : "smooth" });
+  tabScroll.scrollLeft += d;
 }
 
 /** 切到某个分组（null = 全部）：筛选条上的标签与末尾「⋯」的菜单共用这一处 */
 function pickGroup(gid: string | null): void {
   if (gid === groupFilter) return;
   groupFilter = gid;
-  renderList(); // 里面会重画筛选条，并把选中的那个滚进视野
+  renderList(); // 重画筛选条
+  scrollTabIntoView(); // 选中的那个可能还藏在右边
 }
 
 $("#gtabs").addEventListener("click", (e) => {
-  // 拖动那一下松手会跟一个 click：别顺手把分组切了（拖动结束得够久了就当真点击）
-  if (tabDraggedAt && Date.now() - tabDraggedAt < 500) {
+  // 拖动那一下松手会跟一个 click：别顺手把分组切了
+  if (isDragClick(tabDraggedAt, Date.now())) {
     tabDraggedAt = 0;
     return;
   }
@@ -816,7 +825,7 @@ tabScroll.addEventListener("pointerdown", (e) => {
 window.addEventListener("pointermove", (e) => {
   if (!tabDrag) return;
   const dx = e.clientX - tabDrag.x;
-  if (!tabDraggedAt && Math.abs(dx) < 4) return; // 手抖不算拖动
+  if (!isDragMove(dx, tabDraggedAt > 0)) return; // 手抖不算拖动
   tabDraggedAt = Date.now();
   tabScroll.scrollLeft = tabDrag.left - dx;
 });

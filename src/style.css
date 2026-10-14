@@ -584,29 +584,32 @@ button {
 .gtab.on b {
   opacity: 1;
 }
-/* 末尾的「更多分组」：只在筛选条溢出时出现，点了把全部分组列成菜单 */
+/* 末尾的「更多分组」：只在筛选条溢出时出现，点了把全部分组列成菜单。
+   故意不跟分组标签一样做成实心胶囊 —— 一排标签里冒出一个圆按钮太抢眼，
+   这里只留一个小的 ☰（尺寸对齐分组标签的字号），悬停 / 聚焦时才浮出底色 */
 .gtab-more {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   flex: 0 0 auto;
-  width: 26px;
-  height: 26px;
-  border-radius: 13px;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
   color: var(--sub);
-  background: var(--card);
-  transition: color 0.18s ease, background 0.18s ease;
+  transition: color 0.16s ease, background 0.16s ease;
 }
 /* display:inline-flex 会盖掉 [hidden] 的默认 display:none，得自己再写一条 */
 .gtab-more[hidden] {
   display: none;
 }
-.gtab-more:hover {
+.gtab-more:hover,
+.gtab-more:focus-visible {
   color: var(--text);
+  background: var(--hover);
 }
 .gtab-more svg {
-  width: 16px;
-  height: 16px;
+  width: 13px;
+  height: 13px;
   fill: none;
   stroke: currentColor;
   stroke-width: 2.2;

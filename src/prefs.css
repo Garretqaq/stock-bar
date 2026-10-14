@@ -786,6 +786,83 @@ svg .fill {
 .gsec-head:hover .gsec-name {
   color: var(--accent);
 }
+/* 标题右侧的「⋯」：常显但很轻，悬停 / 聚焦时亮起来；点它和右键是同一套菜单 */
+.gsec-more {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  margin-left: auto;
+  border-radius: 6px;
+  color: var(--sub);
+  opacity: 0.45;
+  transition: opacity 0.16s ease, background 0.16s ease, color 0.16s ease;
+}
+.gsec-more svg {
+  width: 13px;
+  height: 13px;
+}
+.gsec-head:hover .gsec-more,
+.gsec-more:focus-visible {
+  opacity: 1;
+}
+.gsec-more:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+/* 删除分组前的就地确认：标题行整条换成提示 + 两个按钮，底色淡红，一眼看出「正在确认」 */
+.gsec-head.confirm {
+  gap: 8px;
+  margin-top: 6px;
+  padding: 8px;
+  border-radius: 7px;
+  background: color-mix(in srgb, #ff453a 8%, transparent);
+}
+.gsec-head.confirm .gsec-name {
+  color: var(--text);
+}
+.gsec-detail {
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--sub);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.gsec-acts {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+.gsec-btn {
+  flex: 0 0 auto;
+  height: 22px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--sub);
+  background: var(--group);
+  transition: color 0.16s ease, border-color 0.16s ease, background 0.16s ease;
+}
+.gsec-btn:hover {
+  color: var(--text);
+  border-color: var(--border);
+}
+/* 危险按钮用固定的红（跟随 --up 会在「绿涨红跌」下变成绿色） */
+.gsec-btn.danger {
+  color: #fff;
+  font-weight: 600;
+  background: #ff453a;
+  border-color: transparent;
+}
+.gsec-btn.danger:hover {
+  color: #fff;
+  background: #e03a30;
+  border-color: transparent;
+}
 /* 改名：就地换成输入框（宽度按最长分组名留够） */
 .gsec-input {
   width: 150px;
@@ -2391,4 +2468,24 @@ svg .fill {
   border-color: var(--ctrl-border);
   border-radius: 4px;
   background: var(--ctrl);
+}
+
+/* 分组标题的「⋯」与删除确认条：Windows 11 风格（方角控件） */
+.win .gsec-more {
+  border-radius: 4px;
+}
+.win .gsec-head.confirm {
+  border-radius: 4px;
+}
+.win .gsec-btn {
+  border-color: var(--ctrl-border);
+  border-radius: 4px;
+  background: var(--ctrl);
+}
+.win .gsec-btn.danger {
+  border-color: transparent;
+  background: #ff453a;
+}
+.win .gsec-btn.danger:hover {
+  background: #e03a30;
 }

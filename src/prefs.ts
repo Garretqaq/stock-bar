@@ -96,6 +96,7 @@ const I = {
   grip: `<svg class="fill" viewBox="0 0 24 24"><circle cx="9" cy="5" r="1.5"/><circle cx="15" cy="5" r="1.5"/><circle cx="9" cy="12" r="1.5"/><circle cx="15" cy="12" r="1.5"/><circle cx="9" cy="19" r="1.5"/><circle cx="15" cy="19" r="1.5"/></svg>`,
   pin: `<svg viewBox="0 0 24 24"><path d="M12 17v5M9 3h6l-1 7 4 3v2H6v-2l4-3z"/></svg>`,
   top: `<svg viewBox="0 0 24 24"><path d="M4.5 4.5h15M12 20V9M7.5 13L12 8.5l4.5 4.5"/></svg>`,
+  more: `<svg class="fill" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg>`,
 };
 
 // ---------- 骨架 ----------
@@ -418,6 +419,9 @@ function marketIds(): string[] {
 /** 「拖完那一下 click」的标记：DOM 重建会换掉 sortable 实例，各分组区块因此共用一份状态 */
 const marketSwallow = { take: false };
 
+/** 正在等确认删除的分组 id：删除分组是不可逆的，先就地让用户按第二次，见 groupHead() */
+let groupConfirm: string | null = null;
+
 /** 分组区块：未分组永远在最前，其后是用户建的分组（顺序即主面板筛选条的顺序） */
 function sections(): { gid: string; name: string; items: string[] }[] {
   return [
@@ -430,6 +434,32 @@ function sections(): { gid: string; name: string; items: string[] }[] {
   ];
 }
 
+/** 分组标题：正常态是「名字 + 只数 + ⋯」，确认态换成一条删除确认（把成员的去向先说清楚） */
+function groupHead(sec: { gid: string; name: string; items: string[] }): string {
+  if (sec.gid && sec.gid === groupConfirm) {
+    const n = sec.items.length;
+    return (
+      `<div class="gsec-head confirm" data-gid="${sec.gid}">` +
+      `<b class="gsec-name">删除「${esc(sec.name)}」？</b>` +
+      `<span class="gsec-detail">${n ? `${n} 只标的会移到未分组` : "分组是空的"}</span>` +
+      `<span class="gsec-acts">` +
+      `<button class="gsec-btn danger" data-del data-gid="${sec.gid}">删除</button>` +
+      `<button class="gsec-btn" data-cancel data-gid="${sec.gid}">取消</button>` +
+      `</span></div>`
+    );
+  }
+  return (
+    `<div class="gsec-head" data-gid="${sec.gid}">` +
+    `<b class="gsec-name">${esc(sec.name)}</b><span class="sec-count">${sec.items.length} 只</span>` +
+    // 未分组不给菜单：它固定在最前，不能改名、不能排序、也不能删
+    (sec.gid
+      ? `<button class="gsec-more" data-more data-gid="${sec.gid}" ` +
+        `title="重命名 / 上移下移 / 删除分组" aria-label="分组操作" aria-haspopup="menu">${I.more}</button>`
+      : "") +
+    `</div>`
+  );
+}
+
 /** 一个分组区块：flat = 还没建过分组，这时只有这一个区块、不画标题（保持原来的样子） */
 function groupSec(sec: { gid: string; name: string; items: string[] }, flat: boolean): string {
   const rows = sec.items.length
@@ -437,10 +467,7 @@ function groupSec(sec: { gid: string; name: string; items: string[] }, flat: boo
     : `<div class="stocks-empty">${flat ? "还没有自选，用上面的搜索框添加" : "这个分组还没有标的"}</div>`;
   return (
     `<div class="gsec">` +
-    (flat
-      ? ""
-      : `<div class="gsec-head" data-gid="${sec.gid}"${sec.gid ? ' title="右键：重命名 / 上移下移 / 删除分组"' : ""}>` +
-        `<b class="gsec-name">${esc(sec.name)}</b><span class="sec-count">${sec.items.length} 只</span></div>`) +
+    (flat ? "" : groupHead(sec)) +
     `<div class="sec-body" data-gid="${sec.gid}">${rows}</div>` +
     `</div>`
   );
@@ -473,12 +500,16 @@ function paintMark(row: HTMLElement, id: string): void {
 }
 
 let groupsKey = "";
-/** 分组结构（分组、名称、成员、置顶）变化才重建 DOM；行情刷新只原地改文字 */
+/** 分组结构（分组、名称、成员、置顶）或删除确认态变化才重建 DOM；行情刷新只原地改文字 */
 function renderGroups(): void {
+  // 别的窗口把这个分组删了：确认态跟着作废，免得确认条挂在一个不存在的分组上
+  if (groupConfirm && !S.groups.some((g) => g.id === groupConfirm)) groupConfirm = null;
   const box = $("#watch-groups");
   const secs = sections();
   const flat = S.groups.length === 0; // 没建过分组：只有一个区块，不画标题
-  const key = `${flat}|${secs.map((s) => `${s.gid}:${s.name}:${s.items.join(",")}`).join("|")}|${S.pins.join(",")}`;
+  const key =
+    `${flat}|${groupConfirm ?? ""}|` +
+    `${secs.map((s) => `${s.gid}:${s.name}:${s.items.join(",")}`).join("|")}|${S.pins.join(",")}`;
   if (key === groupsKey) return;
   groupsKey = key;
   box.innerHTML = secs.map((s) => groupSec(s, flat)).join("");
@@ -711,33 +742,72 @@ function moveGroupTo(gid: string, to: number): void {
   commit();
 }
 
-/** 删除分组：成员回落到未分组（自选一只都不少） */
+/** 删除分组：成员回落到未分组（自选一只都不少）；真正删之前先走一次就地确认 */
 function removeGroupAt(gid: string): void {
   const n = itemsOf(S.watchlist, S.groupOf, S.groups, gid).length;
   const next = removeGroup(S.groups, S.groupOf, gid);
   S.groups = next.groups;
   S.groupOf = next.groupOf;
+  groupConfirm = null; // 别让确认态留到下一个（可能复用同一个 id 的）分组上
   lastPick = -1; // 成员换了区块，Shift 区间选择的锚点作废
   commit();
   hint(n ? `已删除分组，${n} 只标的移入未分组` : "已删除分组");
 }
 
+/** 分组标题的操作菜单：⋯ 按钮与右键共用（重命名 / 上移下移 / 删除分组） */
+function openGroupMenu(gid: string, x: number, y: number): void {
+  const at = S.groups.findIndex((g) => g.id === gid);
+  if (at < 0) return;
+  openMenu(x, y, [
+    { label: "重命名", onPick: () => startRename(gid) },
+    { label: "上移", disabled: at <= 0, onPick: () => moveGroupTo(gid, at - 1) },
+    { label: "下移", disabled: at >= S.groups.length - 1, onPick: () => moveGroupTo(gid, at + 1) },
+    { label: "删除分组…", danger: true, onPick: () => startDeleteConfirm(gid) },
+  ]);
+}
+
+/** 删除分组前就地确认：标题行换成确认条，把「成员会去哪」先说清楚，再等第二次确认 */
+function startDeleteConfirm(gid: string): void {
+  if (!S.groups.some((g) => g.id === gid)) return;
+  groupConfirm = gid;
+  groupsKey = ""; // 确认态不参与内容比较，这里手动作废一次
+  renderMarket();
+}
+
+function cancelDeleteConfirm(): void {
+  if (!groupConfirm) return;
+  groupConfirm = null;
+  groupsKey = "";
+  renderMarket();
+}
+
 $("#add-group").addEventListener("click", () => addGroup());
 
-// 分组标题的右键菜单：重命名 / 上移下移 / 删除（未分组固定在最前，没有菜单）
+// 分组标题的操作菜单：⋯ 按钮点开、右键同样可以（未分组固定在最前，没有菜单）
 $("#watch-groups").addEventListener("contextmenu", (e) => {
   const head = (e.target as HTMLElement).closest<HTMLElement>(".gsec-head");
   if (!head) return;
   e.preventDefault(); // 分组标题上不弹系统右键菜单（未分组没有菜单，也一样）
   const gid = head.dataset.gid;
-  if (!gid) return;
-  const at = S.groups.findIndex((g) => g.id === gid);
-  openMenu(e.clientX, e.clientY, [
-    { label: "重命名", onPick: () => startRename(gid) },
-    { label: "上移", disabled: at <= 0, onPick: () => moveGroupTo(gid, at - 1) },
-    { label: "下移", disabled: at >= S.groups.length - 1, onPick: () => moveGroupTo(gid, at + 1) },
-    { label: "删除分组", danger: true, onPick: () => removeGroupAt(gid) },
-  ]);
+  // 确认条上不再叠一层菜单：两个「删除」入口打架只会更危险
+  if (!gid || groupConfirm === gid) return;
+  openGroupMenu(gid, e.clientX, e.clientY);
+});
+
+// 标题上的 ⋯ 按钮与确认条上的两个按钮（确认条是重建出来的，所以走事件委托）
+$("#watch-groups").addEventListener("click", (e) => {
+  const t = e.target as HTMLElement;
+  const more = t.closest<HTMLElement>("[data-more]");
+  if (more?.dataset.gid) {
+    const r = more.getBoundingClientRect();
+    openGroupMenu(more.dataset.gid, r.right, r.bottom + 4);
+    return;
+  }
+  const btn = t.closest<HTMLElement>("[data-del], [data-cancel]");
+  const gid = btn?.dataset.gid;
+  if (!btn || !gid) return;
+  if (btn.hasAttribute("data-del")) removeGroupAt(gid);
+  else cancelDeleteConfirm();
 });
 
 // ---------- 行情页：新增自选搜索 ----------
@@ -1084,8 +1154,10 @@ document.addEventListener("keydown", (e) => {
     marketIds().forEach((id) => picked.add(id));
     lastPick = -1;
     renderMarket();
-  } else if (e.key === "Escape" && picked.size) {
-    clearPick();
+  } else if (e.key === "Escape") {
+    // 先收拾删除确认，再管多选
+    if (groupConfirm) cancelDeleteConfirm();
+    else if (picked.size) clearPick();
   }
 });
 

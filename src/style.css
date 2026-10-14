@@ -533,7 +533,7 @@ button {
 .gtabs[hidden] {
   display: none;
 }
-/* 分组筛选条：单行横排，分组多了横向滚动（滚动条隐藏，末尾给「⋯」入口，
+/* 分组筛选条：单行横排，分组多了横向滚动（滚动条隐藏，末尾给 ☰ 入口，
    滚轮 / 按住拖动也能往右滑），选中态用强调色浅底 + 强调色文字 */
 .gtabs {
   display: flex;
@@ -605,8 +605,8 @@ button {
   color: var(--text);
 }
 .gtab-more svg {
-  width: 15px;
-  height: 15px;
+  width: 16px;
+  height: 16px;
   fill: none;
   stroke: currentColor;
   stroke-width: 2.2;

@@ -26,8 +26,8 @@ export function closeMenu(): void {
 
 /**
  * 在 (x, y) 处弹出菜单；重复调用会先关掉上一个。
- * ignoreScrollFrom：这个容器里自己的滚动不会挪动菜单的位置（比如菜单挂在筛选条末尾的「⋯」上，
- * 筛选条横着滚，「⋯」是不动的），所以那种滚动不该把菜单收起来；页面 / 列表滚动照旧收起菜单。
+ * ignoreScrollFrom：这个容器里自己的滚动不会挪动菜单的位置（比如菜单挂在筛选条末尾的 ☰ 上，
+ * 筛选条横着滚，☰ 是不动的），所以那种滚动不该把菜单收起来；页面 / 列表滚动照旧收起菜单。
  */
 export function openMenu(x: number, y: number, items: MenuItem[], ignoreScrollFrom?: Element): void {
   closeMenu();

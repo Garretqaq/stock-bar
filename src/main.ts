@@ -115,8 +115,8 @@ function dirOf(p: number | null | undefined): Dir {
   return p > 0 ? "up" : "down";
 }
 
-/** 三个横杠 = 「还有更多分组」：横滑出去的分组从这里点（骨架里就要用，得先声明） */
-const ICON_MORE = `<svg viewBox="0 0 24 24"><path d="M6 12h1.6M11.2 12h1.6M16.4 12h1.6"/></svg>`;
+/** ☰（三条叠着的横杠）= 「还有更多分组」：横滑出去的分组从这里点（骨架里就要用，得先声明） */
+const ICON_MORE = `<svg viewBox="0 0 24 24"><path d="M4.5 7.5h15M4.5 12h15M4.5 16.5h15"/></svg>`;
 
 // ---------- 页面骨架 ----------
 
@@ -680,7 +680,7 @@ const ICON_FOLDER = `<svg viewBox="0 0 24 24"><path d="M3 7.5A1.5 1.5 0 0 1 4.5 
 // ---------- 自选分组 ----------
 // 分组只决定自选列表怎么看：菜单栏（bar）与置顶（pins）都不受它影响。
 
-/** 筛选条的两块：横着滚的标签容器 + 放不下时才出现的「⋯」 */
+/** 筛选条的两块：横着滚的标签容器 + 放不下时才出现的 ☰ */
 const tabScroll = $("#gtab-scroll");
 const tabMore = $("#gtab-more");
 
@@ -751,13 +751,13 @@ function renderTabs(): void {
   if (fellBack) scrollTabIntoView();
 }
 
-/** 筛选条横着放不下才给末尾的「⋯」（放得下就不占位置）；窗口宽度变了也要重算 */
+/** 筛选条横着放不下才给末尾的 ☰（放得下就不占位置）；窗口宽度变了也要重算 */
 function syncTabMore(): void {
   tabMore.hidden = tabScroll.scrollWidth <= tabScroll.clientWidth + 1;
 }
 
 /**
- * 选中的分组要留在视野里：从「⋯」里选中的分组可能还藏在右边。
+ * 选中的分组要留在视野里：从 ☰ 里选中的分组可能还藏在右边。
  * 直接跳（不 smooth）：这是菜单里点一下的即时反馈，跳过去最干脆；
  * 平滑滚动在有些 webview 里不推进（面板不可见时被节流），那就等于没滚 —— 标签还藏在右边。
  */
@@ -769,7 +769,7 @@ function scrollTabIntoView(): void {
   tabScroll.scrollLeft += d;
 }
 
-/** 切到某个分组（null = 全部）：筛选条上的标签与末尾「⋯」的菜单共用这一处 */
+/** 切到某个分组（null = 全部）：筛选条上的标签与末尾 ☰ 的菜单共用这一处 */
 function pickGroup(gid: string | null): void {
   if (gid === groupFilter) return;
   groupFilter = gid;
@@ -788,8 +788,8 @@ $("#gtabs").addEventListener("click", (e) => {
   pickGroup(gid === "*" ? null : gid);
 });
 
-// 末尾「⋯」：横滑出去的分组从这里点，当前这个打勾。
-// 菜单挂在「⋯」上，筛选条自己横着滚不会挪动它，所以那种滚动不该把菜单收起来
+// 末尾 ☰：横滑出去的分组从这里点，当前这个打勾。
+// 菜单挂在 ☰ 上，筛选条自己横着滚不会挪动它，所以那种滚动不该把菜单收起来
 tabMore.addEventListener("click", () => {
   const r = tabMore.getBoundingClientRect();
   openMenu(
@@ -1214,7 +1214,7 @@ onSettingsChange((next) => {
 });
 window.addEventListener("resize", () => {
   if (trendOpen) renderTrendPanels();
-  syncTabMore(); // 面板宽度变了，筛选条可能要重新决定给不给「⋯」
+  syncTabMore(); // 面板宽度变了，筛选条可能要重新决定给不给 ☰
 });
 
 function schedule(): void {

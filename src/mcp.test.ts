@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
 import type { Quote, SearchItem } from "./api";
-import { McpError, prepareCommand, runCommand, type McpDeps } from "./mcp";
+import {
+  MCP_SCRIPT_PLACEHOLDER,
+  McpError,
+  bridgeState,
+  clientConfig,
+  prepareCommand,
+  runCommand,
+  type McpDeps,
+  type McpInfo,
+} from "./mcp";
 import { BAR_MAX, DEFAULTS, UNGROUPED, isIndex, pinCount, type Settings } from "./settings";
 
 /** 测试用的底子：只有两只自选，分组为空，菜单栏放一只 */
@@ -466,5 +475,47 @@ describe("MCP 命令：两段式（在最新设置上执行）", () => {
   it("带点的关键词还是会去搜索（不是一律当 secid）", async () => {
     await expect(run(base(), "watchlist.add", { target: "BRK.B" })).rejects.toThrow(/没搜到/);
     await expect(run(base(), "watchlist.add", { target: "600519" })).rejects.toThrow(/没搜到/);
+  });
+});
+
+describe("设置面板的 MCP 卡片", () => {
+  const info = (over: Partial<McpInfo> = {}): McpInfo => ({
+    running: true,
+    ready: true,
+    port: 51234,
+    endpoint: "/tmp/mcp-endpoint.json",
+    script: "/Applications/StockBar.app/Contents/Resources/mcp/stockbar-mcp.mjs",
+    ...over,
+  });
+
+  it("开关打开且桥在跑、主面板就绪时报出端口", () => {
+    expect(bridgeState(info(), true)).toEqual({ text: "运行中 · 端口 51234", on: true });
+  });
+
+  it("桥在跑但主面板还没就绪时显示启动中", () => {
+    expect(bridgeState(info({ ready: false }), true)).toEqual({ text: "启动中 · 端口 51234", on: false });
+  });
+
+  it("开关关掉时显示已关闭，不看桥的状态", () => {
+    expect(bridgeState(info(), false)).toEqual({ text: "已关闭", on: false });
+    expect(bridgeState(null, false)).toEqual({ text: "已关闭", on: false });
+  });
+
+  it("开关开着但桥没起来（或状态拿不到）时显示未运行", () => {
+    expect(bridgeState(info({ running: false, port: null }), true)).toEqual({ text: "未运行", on: false });
+    expect(bridgeState(null, true)).toEqual({ text: "未运行", on: false });
+  });
+
+  it("配置片段用真实脚本路径，且是多行 JSON", () => {
+    const text = clientConfig("/repo/mcp/stockbar-mcp.mjs");
+    expect(text).toContain("\n");
+    expect(JSON.parse(text)).toEqual({
+      mcpServers: { stockbar: { command: "node", args: ["/repo/mcp/stockbar-mcp.mjs"] } },
+    });
+  });
+
+  it("拿不到脚本路径时填占位符，仍然是合法 JSON", () => {
+    const cfg = JSON.parse(clientConfig(null));
+    expect(cfg.mcpServers.stockbar.args[0]).toBe(MCP_SCRIPT_PLACEHOLDER);
   });
 });

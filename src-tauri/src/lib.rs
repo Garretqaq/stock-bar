@@ -418,6 +418,19 @@ fn mcp_reply(id: u64, payload: String) {
     bridge::reply(id, payload);
 }
 
+/// 设置面板的 MCP 卡片：桥状态（端口 / 就绪）与 MCP 服务脚本路径
+#[tauri::command]
+fn mcp_info(app: AppHandle) -> bridge::McpInfo {
+    bridge::info(&app)
+}
+
+/// 设置面板的 MCP 开关：按设置开 / 关本地桥，返回开关之后的状态（一次往返就能刷新卡片）
+#[tauri::command]
+fn mcp_set_enabled(app: AppHandle, on: bool) -> bridge::McpInfo {
+    bridge::set_enabled(&app, on);
+    bridge::info(&app)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
@@ -436,7 +449,9 @@ pub fn run() {
             hide_window,
             quit_app,
             mcp_ready,
-            mcp_reply
+            mcp_reply,
+            mcp_info,
+            mcp_set_enabled
         ])
         .setup(|app| {
             // macOS：不在 Dock 显示，只做菜单栏应用
@@ -451,8 +466,8 @@ pub fn run() {
                 let _ = win.set_size(tauri::LogicalSize::new(376.0, 576.0));
             }
 
-            // MCP 本地桥：外部客户端改自选/分组的入口（命令仍由前端执行）
-            bridge::start(app.handle().clone());
+            // MCP 本地桥不在这里起：开关是用户设置（存在 localStorage 里，Rust 读不到），
+            // 由主面板启动后按设置调 mcp_set_enabled 打开或保持关闭。见 bridge.rs 的 set_enabled()。
 
             let quit = MenuItem::with_id(app, "quit", "退出 StockBar", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&quit])?;

@@ -10,6 +10,7 @@ import {
 } from "./api";
 import { barImage, barPct, barPrice, barText, shortName, tickerClass, tickerHtml } from "./bar";
 import { shiftIndex, slotAt, type RowRect } from "./drag";
+import { bridgeState, clientConfig, type McpInfo } from "./mcp";
 import {
   BAR_MAX,
   GROUP_NAME_MAX,
@@ -52,9 +53,9 @@ import { openMenu, type MenuItem } from "./ctxmenu";
 
 let S: Settings = loadSettings();
 const quotes = new Map<string, Quote>();
-type Page = "dashboard" | "market" | "settings";
+type Page = "dashboard" | "market" | "mcp" | "settings";
 const HASH = location.hash.replace("#", "");
-let page: Page = HASH === "settings" || HASH === "market" ? HASH : "dashboard";
+let page: Page = HASH === "settings" || HASH === "market" || HASH === "mcp" ? HASH : "dashboard";
 let pollTimer: number | undefined;
 
 // ---------- 行情页：多选（临时状态，不写入设置） ----------
@@ -83,6 +84,7 @@ const I = {
   logo: `<svg viewBox="0 0 24 24"><path d="M3 17l6-6 4 4 8-8"/><path d="M15 7h6v6"/></svg>`,
   market: `<svg viewBox="0 0 24 24"><path d="M8 2.5v3M8 19.5v2"/><rect x="5" y="6" width="6" height="13" rx="1.5"/><path d="M16 2.5v5M16 17.5v4"/><rect x="13" y="8" width="6" height="9" rx="1.5"/></svg>`,
   dashboard: `<svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>`,
+  mcp: `<svg viewBox="0 0 24 24"><path d="M11 3.5l1.7 4.6 4.6 1.7-4.6 1.7L11 16.1 9.3 11.5 4.7 9.8l4.6-1.7z"/><path d="M18.5 14.5l.7 1.9 1.9.7-1.9.7-.7 1.9-.7-1.9-1.9-.7 1.9-.7z"/></svg>`,
   settings: `<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>`,
   sun: `<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>`,
   moon: `<svg viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>`,
@@ -176,6 +178,7 @@ root.innerHTML = `
     <nav class="nav">
       <button class="nav-item" data-page="dashboard"><span class="nav-ico blue">${I.dashboard}</span>仪表盘</button>
       <button class="nav-item" data-page="market"><span class="nav-ico green">${I.market}</span>行情</button>
+      <button class="nav-item" data-page="mcp"><span class="nav-ico violet">${I.mcp}</span>MCP</button>
       <button class="nav-item" data-page="settings"><span class="nav-ico gray">${I.settings}</span>设置</button>
     </nav>
     <div class="side-foot">
@@ -271,6 +274,45 @@ root.innerHTML = `
       </div>
     </section>
 
+    <section class="page" data-page="mcp">
+      <header class="page-head">
+        <h1>MCP</h1>
+        <p>让支持 MCP 的 AI 客户端（Claude Code、Claude Desktop 等）按你的话改自选与分组。命令由应用执行，校验、分组与置顶规则和手点完全一致，改完界面与菜单栏立即同步。</p>
+      </header>
+
+      <h2 class="group-title">本地桥<span class="title-hint">关掉后端口不再监听</span></h2>
+      <div class="group">
+        <div class="row">
+          <div class="row-label">允许 AI 客户端改自选<small>需要 Node 22+，且应用正在运行</small></div>
+          <div class="mcp-right">
+            <span class="mcp-state" id="mcp-state"><i></i><b>检测中…</b></span>
+            <label class="switch"><input type="checkbox" id="mcp-on" /><i></i></label>
+          </div>
+        </div>
+        <div class="mcp-box" id="mcp-box">
+          <div class="mcp-head">
+            <div class="row-label">客户端配置<small>贴进客户端的 MCP 配置里；路径已指向应用自带的脚本</small></div>
+            <button class="sec-btn" id="mcp-copy">复制配置</button>
+          </div>
+          <pre class="mcp-code" id="mcp-code" tabindex="0"></pre>
+          <div class="mcp-hint" id="mcp-hint"></div>
+        </div>
+      </div>
+
+      <h2 class="group-title">能做什么</h2>
+      <div class="group">
+        <div class="mcp-caps">
+          <ul>
+            <li>查看自选与分组，以及每组里放了什么</li>
+            <li>按代码 / 名称 / 拼音搜索标的</li>
+            <li>加入、移除自选，调整顺序与置顶</li>
+            <li>新建 / 改名 / 删除 / 排序分组，把自选移进移出分组</li>
+          </ul>
+          <div class="mcp-hint">大盘指数是内置的，不能通过 MCP 增删。</div>
+        </div>
+      </div>
+    </section>
+
     <section class="page" data-page="settings">
       <header class="page-head">
         <h1>设置</h1>
@@ -362,6 +404,7 @@ function render(): void {
   setSeg("#seg-interval", String(S.interval));
   setSeg("#seg-source", S.source);
   $<HTMLElement>("#source-active").textContent = activeFor(S);
+  renderMcp();
 }
 
 function setSeg(sel: string, v: string): void {
@@ -961,6 +1004,68 @@ function syncTitleBar(): void {
   );
 }
 
+// ---------- 设置页：MCP 卡片 ----------
+// 状态与配置都来自 Rust 的 mcp_info 命令：桥只在应用运行时存在，拿不到就按「未运行 + 占位符」显示。
+
+let mcpInfo: McpInfo | null = null;
+let mcpCopyTimer: number | undefined;
+
+function renderMcp(): void {
+  const state = $("#mcp-state");
+  const st = bridgeState(mcpInfo, S.mcp);
+  state.classList.toggle("on", st.on);
+  $("b", state).textContent = st.text;
+  $<HTMLInputElement>("#mcp-on").checked = S.mcp;
+  // 关掉时整块置灰：配置还能看、还能复制，只是不再是「生效中」的样子
+  $("#mcp-box").classList.toggle("dim", !S.mcp);
+  const script = mcpInfo?.script ?? null;
+  $<HTMLElement>("#mcp-code").textContent = clientConfig(script);
+  $<HTMLElement>("#mcp-hint").textContent = !S.mcp
+    ? "MCP 已关闭：打开上面的开关后，AI 客户端才能改自选与分组。"
+    : script
+      ? "路径已指向应用自带的 mcp 服务脚本；StockBar 运行中才能改自选，改完界面与菜单栏立即同步。"
+      : "把上面的路径换成你 clone 的仓库里的 mcp/stockbar-mcp.mjs；StockBar 运行中才能改自选，改完界面与菜单栏立即同步。";
+}
+
+async function loadMcp(): Promise<void> {
+  mcpInfo = (await call<McpInfo>("mcp_info")) ?? null;
+  renderMcp();
+}
+
+/**
+ * 按设置开 / 关本地桥。命令直接返回开关之后的状态，一次往返就能刷新卡片。
+ * 期间用户又拨了开关就以最新那次为准（结果回来时发现设置变了就丢掉）。
+ */
+async function applyMcp(): Promise<void> {
+  const on = S.mcp;
+  const info = await call<McpInfo>("mcp_set_enabled", { on });
+  if (S.mcp !== on) return;
+  mcpInfo = info ?? null;
+  renderMcp();
+}
+
+/** 复制配置：WebView 里 clipboard API 可能被拒，退回「选中 + execCommand」 */
+async function copyMcpConfig(): Promise<boolean> {
+  const text = clientConfig(mcpInfo?.script ?? null);
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    /* 走下面的老办法 */
+  }
+  const pre = $("#mcp-code");
+  const range = document.createRange();
+  range.selectNodeContents(pre);
+  const sel = window.getSelection();
+  sel?.removeAllRanges();
+  sel?.addRange(range);
+  try {
+    return document.execCommand("copy");
+  } catch {
+    return false;
+  }
+}
+
 // ---------- 交互 ----------
 
 function go(p: Page): void {
@@ -968,11 +1073,28 @@ function go(p: Page): void {
   page = p;
   history.replaceState(null, "", `#${p}`);
   render();
+  // 切到 MCP 页时顺手问一次桥状态：应用刚起来那会儿可能还没就绪
+  if (p === "mcp") void loadMcp();
 }
 
 $(".nav").addEventListener("click", (e) => {
   const p = (e.target as HTMLElement).closest<HTMLElement>(".nav-item")?.dataset.page as Page | undefined;
   if (p) go(p);
+});
+
+$("#mcp-copy").addEventListener("click", async (e) => {
+  const btn = e.currentTarget as HTMLButtonElement;
+  const ok = await copyMcpConfig();
+  btn.textContent = ok ? "已复制" : "复制失败，请手动选中";
+  window.clearTimeout(mcpCopyTimer);
+  mcpCopyTimer = window.setTimeout(() => (btn.textContent = "复制配置"), 1800);
+});
+
+// MCP 开关：先落设置（卡片立刻变成「已关闭 / 检测中」），再让 Rust 开 / 关桥
+$("#mcp-on").addEventListener("change", (e) => {
+  S.mcp = (e.target as HTMLInputElement).checked;
+  commit();
+  void applyMcp();
 });
 
 $("#styles").addEventListener("click", (e) => {
@@ -1409,3 +1531,4 @@ tickClock();
 window.setInterval(tickClock, 15_000);
 void poll();
 schedulePoll();
+void loadMcp();

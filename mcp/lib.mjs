@@ -23,7 +23,8 @@ const INSTRUCTIONS =
   "用户报的是股票名或代码时，先用 search_instrument 拿到 secid 再操作。" +
   "改动立即生效，无需用户再确认；分组要先存在（用 create_group 新建），" +
   "「未分组」是内置分组，不能改名、排序或删除。" +
-  "应用必须正在运行（macOS 菜单栏 / Windows 托盘有图标），否则会报找不到运行信息。";
+  "应用必须正在运行（macOS 菜单栏 / Windows 托盘有图标），且设置窗口「MCP」页的开关是打开的，" +
+  "否则会报找不到运行信息。";
 
 /** 连不上、令牌过期、应用没运行等「环境问题」；这类错误原样交给模型看 */
 export class BridgeError extends Error {
@@ -204,7 +205,8 @@ async function loadEndpoint(opts) {
     raw = await readFile(path, "utf8");
   } catch {
     throw new BridgeError(
-      `没找到 StockBar 的运行信息（${path}）。请先启动 StockBar（菜单栏或托盘出现图标）再重试。`,
+      `没找到 StockBar 的运行信息（${path}）。请先启动 StockBar（菜单栏或托盘出现图标）；` +
+        `如果已经在运行，检查设置窗口「MCP」页的开关是不是被关掉了。`,
     );
   }
   let info;

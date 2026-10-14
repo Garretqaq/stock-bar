@@ -70,6 +70,18 @@ describe("loadSettings", () => {
     expect(loadSettings().barFields).toEqual(DEFAULTS.barFields);
   });
 
+  it("旧数据没有 mcp 字段时默认开启", () => {
+    put({ watchlist: ["0.300750"] });
+    expect(loadSettings().mcp).toBe(true);
+  });
+
+  it("mcp 关掉的状态会被保留，写坏的值回到默认", () => {
+    put({ mcp: false });
+    expect(loadSettings().mcp).toBe(false);
+    put({ mcp: "no" });
+    expect(loadSettings().mcp).toBe(DEFAULTS.mcp);
+  });
+
   it("saveSettings 写入后能原样读回", () => {
     const s = { ...DEFAULTS, interval: 30, theme: "dark" as const };
     saveSettings(s);

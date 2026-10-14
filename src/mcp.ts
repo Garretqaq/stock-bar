@@ -569,3 +569,43 @@ export async function runCommand(
 ): Promise<McpResult> {
   return (await prepareCommand(s, op, args, deps)).apply(s);
 }
+
+// ---------- 设置面板的 MCP 卡片 ----------
+
+/** 找不到随应用打包的脚本时，配置里用这个占位符，提示用户换成自己 clone 的位置 */
+export const MCP_SCRIPT_PLACEHOLDER = "/path/to/stock-bar/mcp/stockbar-mcp.mjs";
+
+/** Rust 侧 `mcp_info` 命令的返回：本地桥状态 + MCP 服务脚本路径 */
+export interface McpInfo {
+  /** 本地桥是否在监听 */
+  running: boolean;
+  /** 主面板是否已注册好监听：没就绪时命令会被明确拒绝 */
+  ready: boolean;
+  /** 监听端口；桥没起来就是 null */
+  port: number | null;
+  /** 连接信息文件（端口 + 令牌）路径 */
+  endpoint: string | null;
+  /** MCP 服务脚本路径；找不到就是 null */
+  script: string | null;
+}
+
+/**
+ * 桥状态文案与「亮着」与否：给设置面板的卡片用。
+ * on 是设置里的开关（前端知道），info 是桥的真实状态（Rust 报的）：
+ * 开关开着但桥没起来（端口被占之类）算「未运行」，这是要用户看到的异常。
+ */
+export function bridgeState(info: McpInfo | null, on: boolean): { text: string; on: boolean } {
+  if (!on) return { text: "已关闭", on: false };
+  if (!info?.running) return { text: "未运行", on: false };
+  const port = info.port ? ` · 端口 ${info.port}` : "";
+  return info.ready ? { text: `运行中${port}`, on: true } : { text: `启动中${port}`, on: false };
+}
+
+/** MCP 客户端配置片段：script 为空时填占位符，由用户换成仓库位置 */
+export function clientConfig(script: string | null): string {
+  return JSON.stringify(
+    { mcpServers: { stockbar: { command: "node", args: [script ?? MCP_SCRIPT_PLACEHOLDER] } } },
+    null,
+    2,
+  );
+}

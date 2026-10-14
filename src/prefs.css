@@ -244,6 +244,9 @@ svg .fill {
 .nav-ico.green {
   background: linear-gradient(145deg, #34d07f, #17a35b);
 }
+.nav-ico.violet {
+  background: linear-gradient(145deg, #b07cff, #7b3ff2);
+}
 .nav-item:hover .nav-ico {
   transform: scale(1.06);
 }
@@ -1744,6 +1747,102 @@ svg .fill {
   }
 }
 
+/* ---------- 设置页：MCP 卡片 ---------- */
+
+.mcp-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  color: var(--sub);
+}
+.mcp-state i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--flat);
+}
+/* 亮起的圆点用固定的系统绿：不跟 --up / --down 走（「绿涨红跌」下它们会翻过来） */
+.mcp-state.on {
+  color: var(--text);
+}
+.mcp-state.on i {
+  background: #34c759;
+  box-shadow: 0 0 0 3px color-mix(in srgb, #34c759 22%, transparent);
+}
+.mcp-state b {
+  font-weight: 500;
+}
+/* 状态 + 开关：状态在左、开关在右，和上面几行的「标签 + 控件」对齐 */
+.mcp-right {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.mcp-box {
+  padding: 12px 0 14px;
+  border-top: 1px solid var(--line);
+  transition: opacity 0.25s ease;
+}
+/* 关掉 MCP 时整块置灰（配置还能看、还能复制），和 .row.dim 一个观感 */
+.mcp-box.dim {
+  opacity: 0.42;
+}
+.mcp-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.mcp-code {
+  padding: 10px 12px;
+  border-radius: 9px;
+  background: var(--track);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 11.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-all;
+  /* 全局关掉了选中：这里是给人复制的内容，得能选中 */
+  user-select: text;
+  cursor: text;
+}
+.mcp-hint {
+  margin-top: 9px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--sub);
+}
+
+/* MCP 页「能做什么」：纯说明，跟着分组卡片的排版走 */
+.mcp-caps {
+  padding: 14px 0 15px;
+}
+.mcp-caps ul {
+  display: grid;
+  gap: 7px;
+  list-style: none;
+}
+.mcp-caps li {
+  position: relative;
+  padding-left: 16px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+.mcp-caps li::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 7px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--sub);
+}
+.mcp-caps .mcp-hint {
+  margin-top: 11px;
+}
+
 /* ==================== Windows：Windows 11「设置」风格 ==================== */
 /* 只在 <html class="win"> 下生效。原生标题栏（不仿红绿灯、无自绘拖动区）、
    左侧导航用强调色竖条标记选中项、每项设置一张 4px 圆角卡片、Segoe UI Variable、
@@ -1972,6 +2071,8 @@ svg .fill {
 .win .group > .row,
 .win .group > .styles,
 .win .group > .themes,
+.win .group > .mcp-box,
+.win .group > .mcp-caps,
 .win .group.stocks {
   background: var(--group);
   border: 1px solid var(--group-border);
@@ -1986,6 +2087,18 @@ svg .fill {
   margin: 0;
   padding: 16px;
 }
+.win .group > .mcp-box {
+  padding: 12px 16px 14px;
+  /* 卡片之间已经有间隔，不用再画分隔线 */
+  border-top: 0;
+}
+.win .group > .mcp-caps {
+  padding: 14px 16px 15px;
+}
+.win .mcp-code {
+  border-radius: 4px;
+  background: var(--ctrl);
+}
 .win .group.stocks {
   display: block;
   padding: 4px 8px 6px;
@@ -1996,7 +2109,8 @@ svg .fill {
 .win .row-label small {
   font-size: 12px;
 }
-.win .row.dim {
+.win .row.dim,
+.win .mcp-box.dim {
   opacity: 0.5;
 }
 

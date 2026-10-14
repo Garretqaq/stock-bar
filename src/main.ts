@@ -1175,6 +1175,9 @@ void (async () => {
   });
   // 监听确实挂上之后再告诉 Rust 侧可以接命令（异常情况下也不至于让请求石沉大海）
   await call("mcp_ready");
+  // 桥的开关是用户设置（存在 localStorage 里，Rust 读不到），按当前设置开 / 关：
+  // 关着的时候连端口都不监听，连接信息文件也会删掉
+  await call("mcp_set_enabled", { on: S.mcp });
 })();
 
 renderAll();

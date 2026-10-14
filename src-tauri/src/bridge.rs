@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::net::TcpListener;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -22,6 +22,8 @@ use tauri::{AppHandle, Emitter, Manager};
 
 /// 连接信息文件名（与 mcp/stockbar-mcp.mjs 里的路径规则对应）
 const ENDPOINT_FILE: &str = "mcp-endpoint.json";
+/// MCP 服务脚本：打包时按 bundle.resources 放进资源目录的 mcp/ 下，设置面板的卡片要把它报给用户
+const SCRIPT_FILE: &str = "stockbar-mcp.mjs";
 /// 命令事件名；前端监听它
 const CHANNEL: &str = "mcp-request";
 /// 执行命令的窗口：主面板一直存在（只是隐藏），设置窗口与行情条不一定开着
@@ -45,6 +47,10 @@ static PENDING: LazyLock<Mutex<HashMap<u64, Sender<String>>>> = LazyLock::new(||
 static ENDPOINT: LazyLock<Mutex<Option<PathBuf>>> = LazyLock::new(|| Mutex::new(None));
 /// 请求序号
 static SEQ: AtomicU64 = AtomicU64::new(1);
+/// 监听端口（0 = 桥没起来）。设置面板的 MCP 卡片拿它显示状态
+static PORT: AtomicU16 = AtomicU16::new(0);
+/// 正在跑的服务（None = 桥关着）。关桥时先 unblock 让服务线程退出，再丢掉它释放端口
+static SERVER: LazyLock<Mutex<Option<Arc<tiny_http::Server>>>> = LazyLock::new(|| Mutex::new(None));
 
 /// 一条命令的转发函数：Ok 是前端产出的 JSON 文本，Err 是给用户看的中文原因
 type Dispatch = dyn Fn(&str, Value) -> Result<String, String> + Send + Sync;
@@ -58,8 +64,22 @@ struct Request {
     args: Value,
 }
 
-/// 启动本地桥。绑定失败（极少见）只记日志：应用本身照常可用，只是 MCP 用不了。
-pub fn start(app: AppHandle) {
+/// 按设置开 / 关本地桥（幂等）。关掉后端口不再监听、连接信息文件也删掉，
+/// 外部客户端拿到的是「没找到运行信息」——和「应用没在运行」是同一个提示。
+pub fn set_enabled(app: &AppHandle, on: bool) {
+    if on {
+        enable(app);
+    } else {
+        disable();
+    }
+}
+
+/// 起桥：绑定回环端口、写连接信息文件、开服务线程。已经开着就什么都不做。
+pub fn enable(app: &AppHandle) {
+    // 已经开着就直接返回；锁坏了也当开着，宁可不重复起
+    if SERVER.lock().map(|s| s.is_some()).unwrap_or(true) {
+        return;
+    }
     let listener = match TcpListener::bind(LOOPBACK) {
         Ok(l) => l,
         Err(e) => {
@@ -68,19 +88,36 @@ pub fn start(app: AppHandle) {
         }
     };
     let port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
+    let server = match tiny_http::Server::from_listener(listener, None) {
+        Ok(s) => Arc::new(s),
+        Err(e) => {
+            eprintln!("[mcp] 本地桥启动失败：{e}");
+            return;
+        }
+    };
     let token = random_token();
-    if let Some(path) = write_endpoint(&app, port, &token) {
+    if let Some(path) = write_endpoint(app, port, &token) {
         if let Ok(mut slot) = ENDPOINT.lock() {
             *slot = Some(path);
         }
     }
+    PORT.store(port as u16, Ordering::Relaxed);
+    if let Ok(mut slot) = SERVER.lock() {
+        *slot = Some(Arc::clone(&server));
+    }
     let handle = app.clone();
     let dispatch: Arc<Dispatch> = Arc::new(move |op, args| dispatch_to_panel(&handle, op, args));
-    std::thread::spawn(move || serve(listener, token, dispatch));
+    std::thread::spawn(move || serve(server, token, dispatch));
 }
 
-/// 退出前收拾连接信息文件（删不掉也不影响：新实例启动会覆盖）
-pub fn shutdown() {
+/// 停桥：unblock 让服务线程退出（incoming_requests 就此结束），丢掉最后一份 Server 释放端口，
+/// 再删掉连接信息文件。
+pub fn disable() {
+    let server = SERVER.lock().ok().and_then(|mut slot| slot.take());
+    if let Some(server) = server {
+        server.unblock();
+    }
+    PORT.store(0, Ordering::Relaxed);
     if let Ok(mut slot) = ENDPOINT.lock() {
         if let Some(path) = slot.take() {
             let _ = std::fs::remove_file(path);
@@ -88,9 +125,62 @@ pub fn shutdown() {
     }
 }
 
+/// 退出前收拾：停桥（顺带删掉连接信息文件）
+pub fn shutdown() {
+    disable();
+}
+
 /// 主面板就绪（由 lib.rs 里的 mcp_ready 命令调用）
 pub fn mark_ready() {
     READY.store(true, Ordering::Relaxed);
+}
+
+/// 给设置面板看的桥状态（lib.rs 的 mcp_info 命令返回它）
+#[derive(Serialize)]
+pub struct McpInfo {
+    /// 本地桥是否在监听（也就是设置里的 MCP 开关是否真的打开了）
+    running: bool,
+    /// 主面板是否已注册好监听：没就绪时命令会被明确拒绝
+    ready: bool,
+    /// 监听端口；桥没起来就是 null
+    port: Option<u16>,
+    /// 连接信息文件（端口 + 令牌）路径，退出应用时删除
+    endpoint: Option<String>,
+    /// MCP 服务脚本路径；找不到就是 null，前端退回占位符让用户自己填
+    script: Option<String>,
+}
+
+/// 收集桥状态。脚本路径优先用打包进资源目录的那份（安装后直接可用），
+/// 开发时资源目录里通常没有，再退回仓库里的 mcp/。
+pub fn info(app: &AppHandle) -> McpInfo {
+    let port = PORT.load(Ordering::Relaxed);
+    McpInfo {
+        running: SERVER.lock().map(|s| s.is_some()).unwrap_or(false),
+        ready: READY.load(Ordering::Relaxed),
+        port: (port != 0).then_some(port),
+        endpoint: ENDPOINT
+            .lock()
+            .ok()
+            .and_then(|slot| slot.as_ref().map(|p| p.display().to_string())),
+        script: script_path(app).map(|p| p.display().to_string()),
+    }
+}
+
+fn script_path(app: &AppHandle) -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Ok(dir) = app.path().resource_dir() {
+        candidates.push(dir.join("mcp").join(SCRIPT_FILE));
+    }
+    // 开发期（tauri dev）资源目录里未必有拷贝，退回仓库里的脚本；
+    // 只在 debug 构建里编进去，免得把构建机的路径带进发行包
+    #[cfg(debug_assertions)]
+    candidates.push(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("mcp")
+            .join(SCRIPT_FILE),
+    );
+    candidates.into_iter().find(|p| p.is_file())
 }
 
 /// 前端回信：payload 是它自己拼好的 JSON 文本，原样交给 HTTP 响应
@@ -151,14 +241,8 @@ fn forget(id: u64) {
 
 // ---------- HTTP ----------
 
-fn serve(listener: TcpListener, token: String, dispatch: Arc<Dispatch>) {
-    let server = match tiny_http::Server::from_listener(listener, None) {
-        Ok(s) => Arc::new(s),
-        Err(e) => {
-            eprintln!("[mcp] 本地桥启动失败：{e}");
-            return;
-        }
-    };
+/// 服务循环：unblock()（停桥时调用）会让 incoming_requests 结束，线程随之退出
+fn serve(server: Arc<tiny_http::Server>, token: String, dispatch: Arc<Dispatch>) {
     let token = Arc::new(token);
     // 每个请求单开线程：转发要等前端（可能联网），别让并发请求互相排队
     for mut request in server.incoming_requests() {
@@ -298,13 +382,21 @@ mod tests {
         }
     }
 
-    fn start_test_server() -> (u16, String) {
+    /// 起一个真的测试服务：返回端口、令牌，以及服务本体（要测「停桥释放端口」得拿着它）
+    fn test_server() -> (u16, String, Arc<tiny_http::Server>) {
         let listener = TcpListener::bind(LOOPBACK).expect("绑定回环端口");
         let port = listener.local_addr().unwrap().port();
+        let server = Arc::new(tiny_http::Server::from_listener(listener, None).expect("起测试服务"));
         let token = random_token();
         let dispatch: Arc<Dispatch> = Arc::new(echo_dispatch);
         let t = token.clone();
-        std::thread::spawn(move || serve(listener, t, dispatch));
+        let s = Arc::clone(&server);
+        std::thread::spawn(move || serve(s, t, dispatch));
+        (port, token, server)
+    }
+
+    fn start_test_server() -> (u16, String) {
+        let (port, token, _) = test_server();
         (port, token)
     }
 
@@ -408,5 +500,25 @@ mod tests {
     fn 交给前端的预算比超时上限短() {
         // 前端先在 deadline 前收手，Rust 再多等一会儿收它的回信
         assert!(Duration::from_millis(PANEL_BUDGET_MS) < REPLY_TIMEOUT);
+    }
+
+    #[test]
+    fn 停桥后端口立刻释放() {
+        let (port, token, server) = test_server();
+        // 起着的时候服务是通的（令牌对得上就 200）
+        assert_eq!(http(port, &token, "GET", "/health", "").0, 200);
+        assert!(
+            TcpListener::bind(("127.0.0.1", port)).is_err(),
+            "停桥前端口应该是占着的"
+        );
+
+        // 停桥 = unblock + 丢掉最后一份 Server：服务线程退出后端口就能再绑上
+        server.unblock();
+        drop(server);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while TcpListener::bind(("127.0.0.1", port)).is_err() {
+            assert!(std::time::Instant::now() < deadline, "停桥后端口没释放");
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 }

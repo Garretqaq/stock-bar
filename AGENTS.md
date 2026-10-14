@@ -26,7 +26,7 @@ cd src-tauri && cargo check   # Rust 侧检查
 
 ```
 index.html      → src/main.ts   + src/style.css   主面板（托盘弹出的 360×560 无边框小窗，label="main"）
-settings.html   → src/prefs.ts  + src/prefs.css   设置窗口（仪表盘 / 行情 / 设置三页，label="settings"，由 Rust 动态创建）
+settings.html   → src/prefs.ts  + src/prefs.css   设置窗口（仪表盘 / 行情 / MCP / 设置四页，label="settings"，由 Rust 动态创建）
 ticker.html     → src/ticker.ts + src/ticker.css  Windows 悬浮行情条（label="ticker"，由 set_ticker 动态创建/关闭）
 src/api.ts       东方财富接口：批量报价 ulist.np、分时 trends2、搜索 suggest（JSONP）、secid/市场/交易时段工具函数
 src/settings.ts  Settings 类型、默认值、localStorage 读写和旧数据迁移、跨窗口同步、主题和涨跌配色、自选分组的纯函数（`itemsOf` / `moveInView` / `normalizeGroups` 等）
@@ -34,9 +34,9 @@ src/bar.ts       菜单栏内容生成：单行文字 barText / 双行紧凑 can
 src/tauri.ts     Tauri 桥接层：call / emitAll / listenAll（非 Tauri 环境自动降级为空操作），平台判断 IS_WIN、canvas 字体栈 UI_FONT
 src/ctxmenu.ts   通用右键菜单 openMenu / closeMenu（样式 ctxmenu.css，主面板与设置窗口共用）
 src/drag.ts      拖动排序的纯计算：slotAt（指针落在第几格）/ shiftIndex（拖动中其他行让开多少），设置窗口的仪表盘与行情页共用
-src/mcp.ts       MCP 命令处理：看 / 搜 / 增删自选、置顶、排序、分组增删改排序的纯逻辑（搜索与报价由调用方注入）
+src/mcp.ts       MCP 命令处理：看 / 搜 / 增删自选、置顶、排序、分组增删改排序的纯逻辑（搜索与报价由调用方注入）；另含设置面板 MCP 卡片用的 clientConfig()（客户端配置 JSON）与 bridgeState()（状态文案）
 src-tauri/src/lib.rs   托盘、弹窗定位（按鼠标位置把面板夹进工作区，见「坑」）、失焦自动收起、单实例、所有 #[tauri::command]
-src-tauri/src/bridge.rs    MCP 本地桥：回环地址上的 HTTP 入口、令牌与连接信息文件、命令转发与回信配对
+src-tauri/src/bridge.rs    MCP 本地桥：回环地址上的 HTTP 入口、令牌与连接信息文件、命令转发与回信配对；info() 给设置面板报桥状态与脚本路径
 src-tauri/capabilities/default.json   三个窗口（main / settings / ticker）的权限
 .github/workflows/build.yml   双端打包：推 v* 标签构建 macOS（通用二进制）+ Windows 安装包并创建 Release 草稿，或手动触发上传 Artifacts
 mcp/lib.mjs + mcp/stockbar-mcp.mjs   零依赖 MCP 服务（stdio JSON-RPC）：工具表、端点发现、把命令转给本地桥（`pnpm mcp` 可直接跑）
@@ -59,8 +59,10 @@ Vite 是多页面打包，入口在 `vite.config.ts` 的 `rollupOptions.input` �
 
 **MCP 本地桥（外部配置）**
 - 外部 MCP 客户端（`mcp/stockbar-mcp.mjs`，stdio JSON-RPC）改自选与分组走这条链路：HTTP 桥（`bridge.rs`，只监听 `127.0.0.1` 的随机端口）→ Tauri 事件 `mcp-request` → 主面板 → `src/mcp.ts` 的 `prepareCommand()` / `apply()` → `saveSettings()` → 前端再调 `mcp_reply` 回信。**命令永远由前端执行**，所以 MCP 改动的校验、规整、广播与手点界面完全一致（设置窗口、菜单栏都会跟着刷新）。
-- 桥只在应用运行时存在：连接信息（随机端口 + 令牌）写在 app data 目录的 `mcp-endpoint.json`（macOS 为 `~/Library/Application Support/com.stockbar.eastmoney/`，权限 0600），退出时删掉；令牌只用来挡本机其他进程。
+- 桥只在应用运行时、且设置里的 MCP 开关打开时才存在：连接信息（随机端口 + 令牌）写在 app data 目录的 `mcp-endpoint.json`（macOS 为 `~/Library/Application Support/com.stockbar.eastmoney/`，权限 0600），退出或关掉开关时删掉；令牌只用来挡本机其他进程。
 - 前端注册好监听后才调 `mcp_ready` 置位 READY，之前到达的命令会被明确拒绝（「还在启动」），而不是静默超时。等前端回信的上限是 32 秒，请求里带一个早 4 秒的 `deadline`：命令来不及了就不改设置、直接回「超时」，免得出现「客户端收到失败、设置其实改了」。
+- 设置窗口左侧导航里有一页独立的「MCP」（`prefs.ts`，排在「设置」上面，`data-page="mcp"`；切到它时 `go()` 会重新问一次状态）：状态来自 `mcp_info` 命令（`bridge.rs` 的 `info()`：端口 / 是否就绪 / 脚本路径），配置片段由 `src/mcp.ts` 的 `clientConfig()` 生成、一键复制。`mcp/stockbar-mcp.mjs` 与 `mcp/lib.mjs` 由 `tauri.conf.json` 的 `bundle.resources` 打进 `resource_dir()/mcp/`（macOS 是 `StockBar.app/Contents/Resources/mcp/`），页面给出的路径安装后直接可用；debug 构建里退回仓库的 `mcp/`，两者都找不到就给占位符让用户自己填。改 resources 的落点要连带改 `bridge.rs` 里按 `SCRIPT_FILE` 拼的查找路径。
+- **开关**（设置里的 `mcp`，默认开）决定桥起不起：Rust 读不到 localStorage，所以桥不在 `setup()` 里起 —— 主面板注册好监听后调 `mcp_set_enabled` 按设置开 / 关，MCP 页拨开关时也调它（命令返回开关后的状态，页面一次往返就刷新）。`bridge.rs` 的 `enable()` 绑端口 + 写连接信息文件，`disable()` 用 `tiny_http` 的 `unblock()` 让服务线程退出、丢掉 `SERVER` 里的最后一份 `Server` 释放端口，再删掉连接信息文件；因此关掉时是「端口根本不存在」，外部客户端拿到的是与「应用没在运行」相同的提示。
 - 命令分两段：`prepareCommand()` 先做要联网的部分（搜索 / 报价 / 确认成员还在），返回一个 `apply(latest)` 闭包，由主面板在**当时最新**的 `S` 上执行 —— 命令等网线的这几秒里设置窗口改过的东西（主题、刷新间隔、自选本身）不会被打回旧快照；`runCommand()` 是「准备完立刻执行」的便捷入口，只有测试与简单调用用。
 - op 名是 `watchlist.*` / `groups.*` / `instrument.*`（见 `src/mcp.ts` 的 `prepareCommand` switch），MCP 工具名、描述与入参 schema 在 `mcp/lib.mjs` 的 `TOOLS` 里：**新增能力要两边一起加**。参数校验在命令处理里做，不信 schema 的「required」。
 - 标的用「secid 或关键词」指代：`resolveTarget()` 先认 secid 正则，否则走搜索；命中多只就报错并把候选列出来，让模型用 secid 再问一次。加入自选前会用一次报价确认代码不是编的（报价接口本身挂了就放行，并在结果里说明「未能校验」）。
@@ -80,7 +82,7 @@ Vite 是多页面打包，入口在 `vite.config.ts` 的 `rollupOptions.input` �
 - 主面板在 Windows 关闭系统阴影、窗口放大到 376×576，由 CSS 留 8px 边距自己画圆角阴影；WebView2 的 `backdrop-filter` 透不到桌面，所以 `.win .panel` 用不透明底。设置窗口在 Windows 用原生标题栏（不渲染仿红绿灯和拖动区，标题栏深浅随应用主题 `setTheme`），整体是 Windows 11「设置」风格：`prefs.css` 末尾的 `.win` 区块（导航强调色竖条、每项一张 4px 圆角卡片、带「开/关」文字的开关、方形复选框），预览是桌面 + 任务栏 + 悬浮行情条（内容与真实行情条共用 `bar.ts` 的 `tickerHtml`）。开发时 `pnpm dev` 打开 `settings.html?win` 可在浏览器预览 Windows 布局。
 
 **Rust 侧**
-- 前端可以调用的命令：`set_tray_text`、`set_tray_image`、`open_settings`、`set_ticker`、`fit_ticker`、`ticker_click`、`hide_window`、`quit_app`、`mcp_ready`、`mcp_reply`。新增命令要同时改两处：在 `generate_handler![]` 里注册，前端通过 `call()` 调用。MCP 的两条命令壳写在 `lib.rs`、实现放在 `bridge.rs`（原因见「坑」）。
+- 前端可以调用的命令：`set_tray_text`、`set_tray_image`、`open_settings`、`set_ticker`、`fit_ticker`、`ticker_click`、`hide_window`、`quit_app`、`mcp_ready`、`mcp_reply`、`mcp_info`、`mcp_set_enabled`。新增命令要同时改两处：在 `generate_handler![]` 里注册，前端通过 `call()` 调用。MCP 的命令壳写在 `lib.rs`、实现放在 `bridge.rs`（原因见「坑」）。
 - 用 `LAST_HIDDEN_MS` 做防抖（macOS 250ms，Windows/Linux 400ms，见 `TOGGLE_DEBOUNCE_MS`），实现"再点一次图标收起小窗"（点击时窗口会先失焦、自动隐藏）。改托盘点击逻辑时不要破坏这个行为。
 - 主面板每次弹出都会收到 `panel-shown` 事件，触发入场动画并立即刷新数据。
 - 新建窗口或使用新的插件 API 时，记得在 `capabilities/default.json` 里加上对应的 window label 和 permission。

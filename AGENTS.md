@@ -35,7 +35,7 @@ src/tauri.ts     Tauri 桥接层：call / emitAll / listenAll（非 Tauri 环境
 src/ctxmenu.ts   通用右键菜单 openMenu / closeMenu（样式 ctxmenu.css，主面板与设置窗口共用）
 src/drag.ts      拖动排序的纯计算：slotAt（指针落在第几格）/ shiftIndex（拖动中其他行让开多少），设置窗口的仪表盘与行情页共用
 src/mcp.ts       MCP 命令处理：看 / 搜 / 增删自选、置顶、排序、分组增删改排序的纯逻辑（搜索与报价由调用方注入）
-src-tauri/src/lib.rs   托盘、弹窗定位（macOS 用 positioner，Windows/Linux 按托盘位置 + 屏幕工作区自己算）、失焦自动收起、单实例、所有 #[tauri::command]
+src-tauri/src/lib.rs   托盘、弹窗定位（按鼠标位置把面板夹进工作区，见「坑」）、失焦自动收起、单实例、所有 #[tauri::command]
 src-tauri/src/bridge.rs    MCP 本地桥：回环地址上的 HTTP 入口、令牌与连接信息文件、命令转发与回信配对
 src-tauri/capabilities/default.json   三个窗口（main / settings / ticker）的权限
 .github/workflows/build.yml   双端打包：推 v* 标签构建 macOS（通用二进制）+ Windows 安装包并创建 Release 草稿，或手动触发上传 Artifacts
@@ -109,6 +109,7 @@ Vite 是多页面打包，入口在 `vite.config.ts` 的 `rollupOptions.input` �
 - MCP 的名字是三处对齐的：事件名 `mcp-request`、命令 `mcp_reply`、回信的载荷形状散在 `bridge.rs` / `main.ts` / `mcp/lib.mjs` 里，改一处要三处一起改；新增一条 op 同理（`src/mcp.ts` 的 switch + `mcp/lib.mjs` 的工具表）。
 - `#[tauri::command]` 定义在子模块里时 `generate_handler!` 的宏路径很难伺候（命令宏落在 crate 根，`bridge::mcp_ready` 这类路径解析不到），所以命令壳统一写在 `lib.rs`，实现函数放 `bridge.rs`。
 - MCP 相关改动不碰 CSP：那些请求由 Rust 侧处理，不经过 webview。`mcp-endpoint.json` 里是端口与令牌，不要提交进仓库或日志。
+- 面板定位不要交回 `tauri-plugin-positioner`：它在多显示器 / 缩放不一致的机器上会把窗口丢到屏幕外（实测主屏 2304 点宽，窗口被放到 x=2795，点菜单栏图标看着就是「点了没反应」）。macOS 现在按鼠标位置（点图标时鼠标就在图标上）自己算 `panel_position()`，并夹进工作区；positioner 只在连屏幕都问不出来时兜底。
 
 ## 发布流程
 

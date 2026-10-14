@@ -102,12 +102,56 @@ fn place_near(win: &WebviewWindow, anchor: Option<Anchor>) {
     let _ = win.set_position(tauri::PhysicalPosition::new(x.round() as i32, y.round() as i32));
 }
 
+/// 面板该放在哪儿（物理像素）：优先「鼠标正下方居中」—— 点菜单栏图标时鼠标就在图标上，
+/// 然后夹进工作区，保证整块面板都在屏幕里。纯计算，方便单测；work 是工作区的 (左, 上, 右, 下)。
+#[cfg(target_os = "macos")]
+fn panel_position(
+    cursor: Option<(f64, f64)>,
+    work: (f64, f64, f64, f64),
+    size: (f64, f64),
+    gap: f64,
+) -> (f64, f64) {
+    let (l, t, r, b) = work;
+    let (w, h) = size;
+    // 拿不到鼠标位置就贴右边（菜单栏图标都在右边）
+    let x = cursor.map_or(r - w - gap, |(cx, _)| cx - w / 2.0);
+    let x = x.min(r - w - gap).max(l + gap);
+    let y = (t + gap).min(b - h - gap).max(t + gap);
+    (x.round(), y.round())
+}
+
+/// macOS：面板挂在菜单栏图标下方。
+/// 不用 positioner 算出来的坐标：多显示器 / 缩放不一致的机器上它会把窗口丢到屏幕外
+/// （实测主屏 2304 宽、窗口被放到 x=2795，点图标看着就是「点了没反应」）。
+#[cfg(target_os = "macos")]
+fn place_panel(win: &WebviewWindow) {
+    let Ok(size) = win.outer_size() else { return };
+    let cursor = win.cursor_position().ok();
+    let monitor = cursor
+        .and_then(|c| win.monitor_from_point(c.x, c.y).ok().flatten())
+        .or_else(|| win.primary_monitor().ok().flatten());
+    let Some(monitor) = monitor else {
+        // 连屏幕都问不出来（几乎不会发生）：退回 positioner，至少别什么都不做
+        let _ = win.move_window(Position::TrayBottomCenter);
+        return;
+    };
+    let wa = monitor.work_area();
+    let (l, t) = (wa.position.x as f64, wa.position.y as f64);
+    let (x, y) = panel_position(
+        cursor.map(|c| (c.x, c.y)),
+        (l, t, l + wa.size.width as f64, t + wa.size.height as f64),
+        (size.width as f64, size.height as f64),
+        6.0 * monitor.scale_factor(),
+    );
+    let _ = win.set_position(tauri::PhysicalPosition::new(x as i32, y as i32));
+}
+
 fn show_panel(win: &WebviewWindow, anchor: Option<Anchor>) {
     // macOS 菜单栏在顶部：窗口挂在图标正下方
     #[cfg(target_os = "macos")]
     {
         let _ = anchor;
-        let _ = win.move_window(Position::TrayBottomCenter);
+        place_panel(win);
     }
     // Windows/Linux：任务栏位置不固定，按托盘图标（或悬浮条）位置和屏幕工作区自己算
     #[cfg(not(target_os = "macos"))]
@@ -467,4 +511,33 @@ pub fn run() {
             bridge::shutdown();
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 用户那台机器的主屏：2304×1296 点 @2x、菜单栏 81 点 → 物理工作区 (0, 162) ~ (4608, 2540)
+    #[cfg(target_os = "macos")]
+    const WORK: (f64, f64, f64, f64) = (0.0, 162.0, 4608.0, 2540.0);
+    #[cfg(target_os = "macos")]
+    const SIZE: (f64, f64) = (720.0, 1120.0);
+    #[cfg(target_os = "macos")]
+    const GAP: f64 = 12.0;
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn 面板跟在鼠标下方并夹进工作区() {
+        // 鼠标停在菜单栏图标上：面板水平居中在它下面，上沿贴菜单栏下沿再加间距
+        assert_eq!(panel_position(Some((2969.0, 100.0)), WORK, SIZE, GAP), (2609.0, 174.0));
+        // 鼠标贴左 / 贴右：都不会跑出工作区
+        assert_eq!(panel_position(Some((10.0, 100.0)), WORK, SIZE, GAP), (12.0, 174.0));
+        assert_eq!(panel_position(Some((4600.0, 100.0)), WORK, SIZE, GAP), (3876.0, 174.0));
+        // positioner 那种离谱坐标（整块跑到屏幕右边外面）会被夹回来
+        assert_eq!(panel_position(Some((5938.0, 100.0)), WORK, SIZE, GAP), (3876.0, 174.0));
+        // 拿不到鼠标位置：贴右边
+        assert_eq!(panel_position(None, WORK, SIZE, GAP), (3876.0, 174.0));
+        // 面板比工作区还高：至少顶在工作区上沿，别把标题栏顶到屏幕外
+        assert_eq!(panel_position(Some((1000.0, 100.0)), WORK, (720.0, 3000.0), GAP).1, 174.0);
+    }
 }

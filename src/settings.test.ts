@@ -70,14 +70,14 @@ describe("loadSettings", () => {
     expect(loadSettings().barFields).toEqual(DEFAULTS.barFields);
   });
 
-  it("旧数据没有 mcp 字段时默认开启", () => {
+  it("旧数据没有 mcp 字段时默认关闭", () => {
     put({ watchlist: ["0.300750"] });
-    expect(loadSettings().mcp).toBe(true);
+    expect(loadSettings().mcp).toBe(false);
   });
 
-  it("mcp 关掉的状态会被保留，写坏的值回到默认", () => {
-    put({ mcp: false });
-    expect(loadSettings().mcp).toBe(false);
+  it("mcp 打开的状态会被保留，写坏的值回到默认", () => {
+    put({ mcp: true });
+    expect(loadSettings().mcp).toBe(true);
     put({ mcp: "no" });
     expect(loadSettings().mcp).toBe(DEFAULTS.mcp);
   });

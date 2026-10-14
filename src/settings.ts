@@ -302,7 +302,7 @@ export const DEFAULTS: Settings = {
   source: "auto",
   theme: "system",
   ticker: true,
-  mcp: true,
+  mcp: false,
   updateCheck: true,
 };
 
@@ -332,7 +332,8 @@ export function loadSettings(): Settings {
   if (s.source !== "auto" && s.source !== "eastmoney" && s.source !== "tencent") {
     s.source = DEFAULTS.source;
   }
-  // MCP 开关：旧数据没有这个字段（或写坏了）时按默认「开启」，别让已经配好的客户端忽然失效
+  // MCP 开关：旧数据没有这个字段（或写坏了）时按默认「关闭」—— 本地桥是可选功能，
+  // 默认不开；要用的人去设置窗口的 MCP 页打开一次，开关状态之后就存在设置里了
   if (typeof raw.mcp !== "boolean") s.mcp = DEFAULTS.mcp;
   // 更新检查开关：旧数据没有这个字段（或写坏了）时按默认「开启」，别让用户收不到新版本
   if (typeof raw.updateCheck !== "boolean") s.updateCheck = DEFAULTS.updateCheck;

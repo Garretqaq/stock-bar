@@ -15,6 +15,7 @@ import {
   INDICES,
   applyAppearance,
   isDark,
+  isIndex,
   loadSettings,
   loadTickerPos,
   onSettingsChange,
@@ -66,6 +67,13 @@ function fmtChange(v: number | null | undefined): string {
   return `${v > 0 ? "+" : ""}${v.toFixed(2)}`;
 }
 
+/** 成交额（元）折算成「亿」，千亿以上不再留小数 */
+function fmtAmount(v: number | null | undefined): string {
+  if (v == null) return "--";
+  const yi = v / 1e8;
+  return yi >= 1000 ? `${Math.round(yi)}亿` : `${yi.toFixed(1)}亿`;
+}
+
 function nameOf(secid: string): string {
   return quotes.get(secid)?.name ?? codeOf(secid);
 }
@@ -99,7 +107,7 @@ app.innerHTML = `
 
   <main class="body" id="body">
     <section class="indices" id="indices"></section>
-    <div class="trend trend-index" id="trend-index"><div class="trend-card"><div class="trend-head"><span class="trend-title"></span><span class="trend-meta"></span></div><canvas></canvas></div></div>
+    <div class="trend trend-index" id="trend-index"><div class="trend-card"><div class="trend-head"><span class="trend-title"></span><span class="trend-meta"></span></div><canvas></canvas><div class="trend-foot"></div></div></div>
 
     <div class="search">
       <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
@@ -187,7 +195,8 @@ function openHolders(id: string): HTMLElement[] {
 async function loadTrend(id: string, animate: boolean): Promise<void> {
   const seq = ++trendSeq;
   try {
-    const data = await fetchTrend(id);
+    // 大盘指数多取一天：用来算「与上一日同期」的成交额对比
+    const data = await fetchTrend(id, isIndex(id) ? 2 : 1);
     if (seq !== trendSeq || trendOpen !== id) return;
     trendCache.set(id, data);
     trendErr.delete(id);
@@ -252,6 +261,28 @@ function fmtTime(t: string): string {
 function trendTotal(data: TrendData): number {
   return Math.max(data.total ?? 0, data.points.length);
 }
+/**
+ * 大盘指数面板底部的成交额：当日累计，以及与上一交易日相同时长相比的增减。
+ * 个股的行内分时面板没有 .trend-foot，自然不显示。
+ */
+function renderAmount(holder: HTMLElement, data: TrendData | undefined): void {
+  const foot = holder.querySelector<HTMLElement>(".trend-foot");
+  if (!foot) return;
+  const amt = data?.amount ?? null;
+  const prev = data?.prevAmount ?? null;
+  const pct = amt != null && prev != null && prev > 0 ? (amt / prev - 1) * 100 : null;
+  // 内容里只有数字和固定的 class，不需要转义；没变化就不重写，免得展开动画每帧都动 DOM
+  const html =
+    amt == null
+      ? ""
+      : `<span>成交额 <b>${fmtAmount(amt)}</b></span>` +
+        (pct == null ? "" : `<span>较上日同期 <b class="${dirOf(pct)}">${fmtPct(pct)}</b></span>`);
+  const title = pct == null ? "" : `上日同期（${data?.prevDate ?? "--"}）${fmtAmount(prev)}`;
+  if (foot.innerHTML === html && foot.title === title) return;
+  foot.innerHTML = html;
+  if (title) foot.title = title;
+  else foot.removeAttribute("title");
+}
 
 /** Canvas：渐变面积 + 价格线 + 均价线 + 昨收虚线 + 十字光标 */
 function drawTrend(holder: HTMLElement, progress = 1): void {
@@ -279,6 +310,7 @@ function drawTrend(holder: HTMLElement, progress = 1): void {
   const sub = cssVar("--sub", "#8e8e93");
   const data = trendCache.get(id);
   holder.classList.toggle("loading", !data && !trendErr.has(id));
+  renderAmount(holder, data);
   if (!data || !data.points.length) {
     if (meta) meta.textContent = "";
     if (data || trendErr.has(id)) {
@@ -583,6 +615,7 @@ function renderList(): void {
 /** 从自选与菜单栏中一并移除一只股票（列表行的右键删除） */
 function removeStock(id: string): void {
   S.watchlist = S.watchlist.filter((x) => x !== id);
+  S.pins = S.pins.filter((x) => x !== id);
   S.bar = S.bar.filter((x) => x !== id);
   if (S.selected === id) S.selected = S.watchlist[0] ?? INDICES[0].secid;
   if (trendOpen === id) trendOpen = null;
@@ -818,8 +851,13 @@ matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
 // 设置窗口改了设置 → 主面板与菜单栏立即同步
 onSettingsChange((next) => {
   const intervalChanged = next.interval !== S.interval;
-  // 保留本窗口的选中项，避免被对方覆盖
-  S = { ...next, selected: S.selected };
+  // 保留本窗口的选中项，避免被对方覆盖；已在设置窗口里被删掉的标的退回列表首项
+  const keep = S.selected;
+  S = {
+    ...next,
+    selected: next.watchlist.includes(keep) || isIndex(keep) ? keep : (next.watchlist[0] ?? INDICES[0].secid),
+  };
+  if (trendOpen && !S.watchlist.includes(trendOpen) && !isIndex(trendOpen)) trendOpen = null;
   applyColorMode();
   renderAll();
   void updateTray();

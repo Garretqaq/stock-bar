@@ -130,6 +130,8 @@ export interface TrendPoint {
   price: number;
   avg: number | null;
   vol: number | null;
+  /** 该分钟的成交额（元） */
+  amount: number | null;
 }
 
 export interface TrendData {
@@ -139,34 +141,121 @@ export interface TrendData {
   /** 整个交易日的分钟点数（A 股 241），用于让折线随时间铺满横轴 */
   total: number | null;
   points: TrendPoint[];
+
+  /** 当日累计成交额（元） */
+  amount: number | null;
+  /** 上一交易日相同时长内的累计成交额（元）；没有可比数据时为 null */
+  prevAmount: number | null;
+  /** 上一交易日的日期（"2026-10-13"），用来说明对比的是哪一天 */
+  prevDate: string | null;
 }
 
-/** 分时走势：push2his.eastmoney.com/api/qt/stock/trends2/get */
-export async function fetchTrend(secid: string): Promise<TrendData> {
+/** 分时原始行：带日期，用于把两天数据分开（画图只取最新一天） */
+export interface TrendRawPoint extends TrendPoint {
+  date: string; // "2026-10-13"
+}
+
+/**
+ * 前 `count` 条的成交额之和；不传 `count` 就是全部。
+ * 一条成交额都没有（字段缺失）时返回 null，调用方据此不显示。
+ */
+export function cumAmount(points: { amount: number | null }[], count?: number): number | null {
+  let sum = 0;
+  let seen = false;
+  for (const p of count == null ? points : points.slice(0, count)) {
+    if (p.amount == null) continue;
+    sum += p.amount;
+    seen = true;
+  }
+  return seen ? sum : null;
+}
+
+/**
+ * 把分时原始行切成「最新一天作图 + 与上一日同期成交额对比」。
+ * `days` 传 2 时接口返回两天：只画最新一天；成交额按分钟累加，
+ * 上一日只累加到与当日同样的时长（同一天的分钟结构一致，按条数对齐即可），
+ * 盘中才能直接看出放量还是缩量。目前只给 A 股大盘指数用，它们的交易日不跨自然日。
+ */
+export function pickTrendDay(
+  raw: TrendRawPoint[],
+  trendsTotal: number | null,
+  days: number,
+): {
+  points: TrendPoint[];
+  total: number;
+  amount: number | null;
+  prevAmount: number | null;
+  prevDate: string | null;
+} {
+  const toPoints = (list: TrendRawPoint[]): TrendPoint[] =>
+    list.map((p) => ({ time: p.time, price: p.price, avg: p.avg, vol: p.vol, amount: p.amount }));
+  if (days < 2) {
+    // 单日：原样交给图表，不做成交额对比
+    return {
+      points: toPoints(raw),
+      total: Math.max(trendsTotal ?? 0, raw.length),
+      amount: null,
+      prevAmount: null,
+      prevDate: null,
+    };
+  }
+  // 按日期分组（接口按时间顺序返回，相邻同日期即同一天）
+  const groups: TrendRawPoint[][] = [];
+  for (const p of raw) {
+    const cur = groups[groups.length - 1];
+    if (cur && cur[0].date === p.date) cur.push(p);
+    else groups.push([p]);
+  }
+  const last = groups[groups.length - 1] ?? [];
+  const prev = groups[groups.length - 2] ?? [];
+  const all = trendsTotal ?? last.length;
+  // trendsTotal 是两天之和：减掉上一日的点数就是当日全天的分钟数；接口只给单日时按单日算
+  const fullDay = prev.length > 0 && all > prev.length ? all - prev.length : all;
+  return {
+    points: toPoints(last),
+    total: Math.max(last.length, fullDay),
+    amount: cumAmount(last),
+    // 上一日至少要走到当日同样的时长，否则（半日市、数据缺口）对比会失真
+    prevAmount: prev.length >= last.length && last.length > 0 ? cumAmount(prev, last.length) : null,
+    prevDate: prev.length > 0 ? prev[0].date : null,
+  };
+}
+
+/**
+ * 分时走势：push2his.eastmoney.com/api/qt/stock/trends2/get
+ * `days` 传 2 时取两天（ndays=2）：画图仍只用最新一天，另一天用来算「与上一日同期」的成交额对比。
+ */
+export async function fetchTrend(secid: string, days = 1): Promise<TrendData> {
   const url =
     `https://push2his.eastmoney.com/api/qt/stock/trends2/get?secid=${encodeURIComponent(secid)}` +
     `&fields1=f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13` +
-    `&fields2=f51,f52,f53,f54,f55,f56,f57,f58&ut=${UT}&ndays=1&iscr=0`;
+    `&fields2=f51,f52,f53,f54,f55,f56,f57,f58&ut=${UT}&ndays=${days}&iscr=0`;
   const json = await getJson(url);
   const d = json?.data;
   const trends: string[] = Array.isArray(d?.trends) ? d.trends : [];
-  const points: TrendPoint[] = trends.map((line) => {
+  const raw: TrendRawPoint[] = trends.map((line) => {
     // 字段：时间,开,收,高,低,成交量,成交额,均价；时间形如 "2026-10-13 09:30"
     const f = String(line).split(",");
-    const hm = (f[0].split(" ")[1] ?? f[0]).replace(":", "");
+    const [date, hm] = f[0].split(" ");
     return {
-      time: hm.padStart(4, "0"),
+      date: date ?? "",
+      time: (hm ?? f[0]).replace(":", "").padStart(4, "0"),
       price: num(f[2]) ?? num(f[1]) ?? 0,
       avg: num(f[7]),
       vol: num(f[5]),
+      amount: num(f[6]),
     };
   });
+  const day = pickTrendDay(raw, num(d?.trendsTotal), days);
   return {
     secid,
     name: String(d?.name ?? ""),
     preClose: num(d?.preClose),
-    total: num(d?.trendsTotal),
-    points,
+    total: day.total,
+    points: day.points,
+    amount: day.amount,
+    prevAmount: day.prevAmount,
+    prevDate: day.prevDate,
   };
 }
 

@@ -1,5 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { codeOf, fetchQuotes, marketTag, regionOf, sessionStatus } from "./api";
+import {
+  codeOf,
+  cumAmount,
+  fetchQuotes,
+  marketTag,
+  pickTrendDay,
+  regionOf,
+  sessionStatus,
+  type TrendRawPoint,
+} from "./api";
 
 const sec = (iso: string) => Date.parse(iso) / 1000;
 
@@ -110,5 +119,85 @@ describe("fetchQuotes", () => {
   it("HTTP 错误会抛出", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response("", { status: 502 })));
     await expect(fetchQuotes(["1.600519"])).rejects.toThrow("HTTP 502");
+  });
+});
+
+describe("分时成交额", () => {
+  const p = (date: string, time: string, amount: number | null): TrendRawPoint => ({
+    date,
+    time,
+    price: 3000,
+    avg: null,
+    vol: null,
+    amount,
+  });
+  // 上一交易日 4 分钟（完整一天），当日只走到第 2 分钟；接口的 trendsTotal 是两天之和
+  const raw: TrendRawPoint[] = [
+    p("2026-10-13", "0930", 1e9),
+    p("2026-10-13", "0931", 2e9),
+    p("2026-10-13", "0932", 3e9),
+    p("2026-10-13", "1500", 4e9),
+    p("2026-10-14", "0930", 5e9),
+    p("2026-10-14", "0931", 6e9),
+  ];
+
+  it("cumAmount 按条数累加，不传条数就是全部", () => {
+    expect(cumAmount(raw.slice(0, 4))).toBe(10e9);
+    expect(cumAmount(raw.slice(0, 4), 2)).toBe(3e9);
+    // 中间夹着 null 的分钟不影响后面的累加
+    const gap = [p("d", "0930", 1e9), p("d", "0931", null), p("d", "0932", 2e9)];
+    expect(cumAmount(gap, 3)).toBe(3e9);
+    expect(cumAmount([p("d", "0930", null)])).toBeNull();
+  });
+
+  it("days=1 时原样交给图表，不做成交额对比", () => {
+    const day = pickTrendDay(raw.slice(4), 4, 1);
+    expect(day.points.map((x) => x.time)).toEqual(["0930", "0931"]);
+    expect(day.total).toBe(4);
+    expect([day.amount, day.prevAmount, day.prevDate]).toEqual([null, null, null]);
+  });
+
+  it("days=2 时只画最新一天，横轴按整日分钟数铺满", () => {
+    const day = pickTrendDay(raw, 8, 2); // 两天各 4 分钟
+    expect(day.points.map((x) => x.time)).toEqual(["0930", "0931"]);
+    expect(day.total).toBe(4);
+  });
+
+  it("算出当日累计与上一日相同时长的累计", () => {
+    const day = pickTrendDay(raw, 8, 2);
+    expect(day.amount).toBe(11e9);
+    // 上一日只累加到当日同样的时长（2 分钟），后面的 09:32、15:00 不算
+    expect(day.prevAmount).toBe(3e9);
+    expect(day.prevDate).toBe("2026-10-13");
+  });
+
+  it("接口只给单日 trendsTotal 时横轴不退化", () => {
+    expect(pickTrendDay(raw, 4, 2).total).toBe(4);
+  });
+
+  it("只有一天数据时没有同期对比", () => {
+    const day = pickTrendDay(raw.slice(4), 4, 2);
+    expect(day.amount).toBe(11e9);
+    expect(day.prevAmount).toBeNull();
+    expect(day.prevDate).toBeNull();
+    expect(day.total).toBe(4);
+  });
+
+  it("上一日比当日短（半日市等）时不做对比，避免失真", () => {
+    const half = [
+      p("2026-10-13", "0930", 1e9),
+      p("2026-10-13", "0931", 1e9),
+      p("2026-10-14", "0930", 2e9),
+      p("2026-10-14", "0931", 2e9),
+      p("2026-10-14", "0932", 2e9),
+    ];
+    const day = pickTrendDay(half, 8, 2);
+    expect(day.amount).toBe(6e9);
+    expect(day.prevAmount).toBeNull();
+  });
+
+  it("成交额字段缺失时返回 null，界面据此不显示", () => {
+    const day = pickTrendDay([p("2026-10-13", "0930", null), p("2026-10-14", "0930", null)], 2, 2);
+    expect([day.amount, day.prevAmount]).toEqual([null, null]);
   });
 });

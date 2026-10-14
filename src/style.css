@@ -710,6 +710,36 @@ button {
 .trend-meta b {
   font-weight: 600;
 }
+
+/* 成交额：当日累计 + 与上一日同一时刻的增减（只在大盘指数面板里出现） */
+.trend-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  height: 15px;
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--sub);
+  white-space: nowrap;
+}
+/* 没有成交额数据时不占高度 */
+.trend-foot:empty {
+  display: none;
+}
+.trend-foot b {
+  font-weight: 600;
+  color: var(--text);
+}
+.trend-foot b.up {
+  color: var(--up);
+}
+.trend-foot b.down {
+  color: var(--down);
+}
+.trend-foot b.flat {
+  color: var(--flat);
+}
 .trend canvas {
   display: block;
   width: 100%;

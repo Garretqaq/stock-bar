@@ -240,9 +240,9 @@ svg .fill {
 }
 .nav-ico.gray {
   background: linear-gradient(145deg, #a1a1a6, #6e6e73);
+}
 .nav-ico.green {
   background: linear-gradient(145deg, #34d07f, #17a35b);
-}
 }
 .nav-item:hover .nav-ico {
   transform: scale(1.06);
@@ -714,7 +714,7 @@ svg .fill {
   outline-offset: 2px;
 }
 
-/* ---------- 菜单栏股票列表 ---------- */
+/* ---------- 行情页：标的列表 ---------- */
 
 .stocks {
   padding: 4px 8px 6px;
@@ -731,60 +731,285 @@ svg .fill {
   border-top: 1px solid var(--line);
 }
 .sec-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   padding: 10px 8px 4px;
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.5px;
   color: var(--sub);
 }
-.stock.is-index .tag {
+.sec-count {
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0;
+  background: var(--track);
+}
+
+/* 大盘指数卡片：点卡片即勾选（多选）。方向色只在顶部渐隐一层，数字落在近白底上更好读；
+   勾选框与「已在菜单栏」的图钉并到名称行两端，避免角标浮在卡片上 */
+.sec-cards {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  padding: 6px 0 8px;
+}
+.idx {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  padding: 11px 12px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--group);
+  cursor: pointer;
+  transition: background 0.3s ease, border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s var(--ease-out);
+}
+.idx:hover {
+  border-color: color-mix(in srgb, var(--sub) 34%, var(--line));
+  transform: translateY(-1px);
+}
+.idx:active {
+  transform: scale(0.985);
+}
+.idx[data-dir="up"] {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--up) 10%, transparent), transparent 64%),
+    var(--group);
+}
+.idx[data-dir="down"] {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--down) 10%, transparent), transparent 64%),
+    var(--group);
+}
+.idx.picked {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent);
+}
+.idx-head {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 16px;
+  margin-bottom: 3px;
+}
+.idx-head .pick {
+  position: absolute;
+  left: 0;
+}
+.idx-head .bar-mark {
+  position: absolute;
+  right: 0;
+}
+.idx-name {
+  max-width: 100%;
+  /* 给两端的勾选框 / 图钉留位，名字长了也不会压上去 */
+  padding: 0 22px;
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.idx-price {
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1.15;
+  letter-spacing: -0.4px;
+}
+.idx-chg {
+  display: flex;
+  gap: 7px;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+.idx-chg i {
+  font-style: normal;
+}
+
+/* 多选框：鼠标点击统一走行/卡片的委托（要支持 Shift 区间），键盘直接用原生输入框 */
+.pick {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+.pick input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+  pointer-events: none;
+}
+.pick i {
+  position: relative;
+  width: 16px;
+  height: 16px;
+  border: 1.5px solid color-mix(in srgb, var(--sub) 55%, transparent);
+  border-radius: 5px;
+  transition: background 0.16s ease, border-color 0.16s ease;
+}
+.pick i::after {
+  content: "";
+  position: absolute;
+  left: 3.9px;
+  top: 1.2px;
+  width: 3.6px;
+  height: 7.2px;
+  border-right: 1.6px solid #fff;
+  border-bottom: 1.6px solid #fff;
+  transform: rotate(45deg) scale(0);
+  transition: transform 0.22s var(--ease-out);
+}
+.pick input:checked + i {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.pick input:checked + i::after {
+  transform: rotate(45deg) scale(1);
+}
+.pick input:focus-visible + i {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* 悬停给个可点的暗示（已勾选保持强调色，不参与） */
+.idx:hover .pick input:not(:checked) + i,
+.stock:hover .pick input:not(:checked) + i {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--sub));
+}
+
+/* 已在菜单栏：只读标识（图钉 + 顺序号），顺序在仪表盘里拖动调整 */
+.bar-mark {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  height: 14px;
+  padding: 0 4px 0 2px;
+  border-radius: 3.5px;
+  font-size: 9.5px;
+  font-weight: 600;
   color: var(--accent);
   background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
+.bar-mark[hidden] {
+  display: none;
+}
+.bar-mark svg {
+  width: 10px;
+  height: 10px;
+  stroke-width: 2.2;
+}
+
 .stock {
   display: grid;
-  grid-template-columns: 22px 1fr auto 74px auto;
+  grid-template-columns: 14px 22px minmax(0, 1fr) auto 74px 24px;
   align-items: center;
   gap: 12px;
   height: 56px;
   padding: 0 8px;
   border-top: 1px solid var(--line);
   border-radius: 8px;
-  transition: background 0.25s ease, opacity 0.25s ease;
+  cursor: pointer;
+  transition: background 0.25s ease, transform 0.18s var(--ease-out);
 }
 .stock:first-child {
   border-top-color: transparent;
 }
+
+/* 置顶行：一点强调色底，和下面的普通自选区分开（放在 .on / .picked 之前，让选中态仍然盖得住） */
+.stock.pinned {
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
+}
 .stock.on {
   background: color-mix(in srgb, var(--accent) 6%, transparent);
 }
-.stock.locked {
-  opacity: 0.5;
+.stock.picked {
+  background: color-mix(in srgb, var(--accent) 11%, transparent);
 }
-.stock-order {
+
+.stock:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+/* 拖动中的那一行：跟手（去掉过渡）并浮在其他行上面 */
+.stock.dragging {
+  position: relative;
+  z-index: 2;
+  transition: none;
+  background: var(--group);
+  box-shadow: var(--shadow);
+}
+
+.stock-pin {
   display: grid;
   place-items: center;
-  width: 20px;
-  height: 20px;
-  border-radius: 50%;
-  font-size: 11px;
-  font-weight: 700;
-  color: #fff;
-  border: 1.5px dashed var(--line);
-  transition: background 0.25s ease, border-color 0.25s ease;
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  color: var(--sub);
+  opacity: 0.5;
+  transition: opacity 0.16s ease, background 0.16s ease, color 0.16s ease;
 }
-.stock.on .stock-order {
-  background: var(--accent);
-  border: 1.5px solid var(--accent);
-  animation: pop 0.38s var(--ease-out);
+.stock-pin svg {
+  width: 13px;
+  height: 13px;
+  stroke-width: 2.2;
 }
-@keyframes pop {
-  from {
-    transform: scale(0.4);
-  }
-  60% {
-    transform: scale(1.15);
-  }
+.stock:hover .stock-pin {
+  opacity: 1;
+}
+.stock-pin:hover {
+  background: var(--hover);
+}
+.stock-pin.on {
+  color: var(--accent);
+  opacity: 1;
+  background: color-mix(in srgb, var(--accent) 13%, transparent);
+}
+/* 置顶区的最后一行与普通自选之间加一道分界 */
+.stock.pinned.last-pinned {
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--line);
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+/* 自选行的拖动把手：只管拖动，点它不当成勾选 */
+.stock-handle {
+  display: grid;
+  place-items: center;
+  color: var(--sub);
+  opacity: 0.5;
+  cursor: grab;
+  /* 触屏从把手起拖时不交给滚动，否则浏览器会中途 pointercancel */
+  touch-action: none;
+  transition: opacity 0.16s ease;
+}
+.stock:hover .stock-handle,
+.stock:focus-visible .stock-handle {
+  opacity: 1;
+}
+.stock-handle svg {
+  width: 12px;
+  height: 12px;
+}
+/* 拖动中：整列不许选中文字，光标保持抓取态 */
+.sec-body.dragging {
+  cursor: grabbing;
+  user-select: none;
 }
 .stock-main {
   min-width: 0;
@@ -841,6 +1066,329 @@ svg .fill {
 }
 .stocks-empty {
   padding: 26px 0;
+  text-align: center;
+  font-size: 12.5px;
+  color: var(--sub);
+}
+
+/* ---------- 行情页：新增自选（内联搜索） ---------- */
+
+.add-box {
+  position: relative;
+  padding: 6px 8px 2px;
+}
+.add-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  padding: 0 10px;
+  border-radius: 9px;
+  background: var(--track);
+  transition: background 0.2s ease, box-shadow 0.2s ease;
+}
+.add-search svg {
+  width: 14px;
+  height: 14px;
+  color: var(--sub);
+}
+.add-search input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  font-size: 13px;
+  color: var(--text);
+}
+.add-search input::placeholder {
+  color: var(--sub);
+}
+.add-search:focus-within {
+  background: color-mix(in srgb, var(--accent) 8%, var(--track));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 40%, transparent);
+}
+.add-results {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  top: 46px;
+  z-index: 20;
+  max-height: 264px;
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px solid var(--group-border);
+  border-radius: 10px;
+  background: var(--group);
+  box-shadow: var(--shadow);
+  opacity: 0;
+  transform: translateY(-4px);
+  pointer-events: none;
+  transition: opacity 0.18s ease, transform 0.18s var(--ease-out);
+}
+.add-results.show {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+}
+.sr {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 44px;
+  padding: 0 8px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.sr:hover {
+  background: var(--hover);
+}
+.sr-main {
+  flex: 1;
+  min-width: 0;
+}
+.sr-name {
+  font-size: 13px;
+  font-weight: 600;
+}
+.sr-meta {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 1px;
+  font-size: 11px;
+  color: var(--sub);
+}
+.sr-add {
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  border-radius: 7px;
+  font-size: 15px;
+  font-weight: 600;
+  color: #fff;
+  background: var(--accent);
+  transition: background 0.18s ease, transform 0.14s var(--ease-out);
+}
+.sr-add:not(.added):active {
+  transform: scale(0.92);
+}
+.sr-add.added {
+  width: auto;
+  padding: 0 8px;
+  font-size: 11.5px;
+  color: var(--sub);
+  background: var(--track);
+}
+.sr-empty {
+  padding: 14px 0;
+  text-align: center;
+  font-size: 12.5px;
+  color: var(--sub);
+}
+
+/* ---------- 行情页：多选操作条 ---------- */
+
+.selbar {
+  position: sticky;
+  bottom: 0;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 0;
+  padding: 0 12px;
+  overflow: hidden;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--accent) 14%, var(--group));
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.14);
+  opacity: 0;
+  transform: translateY(8px);
+  pointer-events: none;
+  visibility: hidden;
+  transition:
+    height 0.3s var(--ease-out),
+    opacity 0.24s ease,
+    transform 0.3s var(--ease-out),
+    margin 0.3s var(--ease-out),
+    visibility 0s linear 0.3s;
+}
+.selbar.on {
+  height: 50px;
+  margin-top: 14px;
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+  visibility: visible;
+  transition-delay: 0s;
+}
+/* 页面入场动画会把 opacity / transform 锁在动画末帧，这两块自己管动效 */
+.page.on > .selbar,
+.page.on > .mhint {
+  animation: none;
+}
+.selbar-count {
+  font-size: 12.5px;
+  color: var(--sub);
+  white-space: nowrap;
+}
+.selbar-count b {
+  font-size: 13px;
+  color: var(--text);
+}
+.selbar-acts {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+.sel-act {
+  height: 28px;
+  padding: 0 12px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text);
+  background: var(--group);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+  transition: background 0.18s ease, opacity 0.18s ease, transform 0.12s var(--ease-out);
+}
+.sel-act:hover:not([disabled]) {
+  background: color-mix(in srgb, var(--accent) 16%, var(--group));
+}
+.sel-act:active:not([disabled]) {
+  transform: scale(0.95);
+}
+.sel-act[disabled] {
+  opacity: 0.35;
+}
+.sel-act.danger {
+  color: #fff;
+  background: #ff453a;
+}
+.sel-act.danger:hover:not([disabled]) {
+  background: #e03a30;
+}
+.sel-act.ghost {
+  color: var(--sub);
+  background: transparent;
+  box-shadow: none;
+}
+.sel-act.ghost:hover {
+  background: var(--hover);
+}
+
+/* 批量操作后的短提示 */
+.mhint {
+  height: 0;
+  margin: 0 4px;
+  overflow: hidden;
+  font-size: 12px;
+  color: var(--sub);
+  opacity: 0;
+  transition: height 0.24s var(--ease-out), opacity 0.2s ease, margin 0.24s var(--ease-out);
+}
+.mhint.on {
+  height: 18px;
+  margin-bottom: 6px;
+  opacity: 1;
+}
+
+/* ---------- 仪表盘：菜单栏顺序列表（可拖动排序） ---------- */
+
+.ordgroup {
+  padding: 6px 8px;
+}
+.ordlist {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  user-select: none;
+}
+.ord {
+  display: grid;
+  grid-template-columns: 16px 18px minmax(0, 1fr) auto 70px 24px;
+  align-items: center;
+  gap: 10px;
+  height: 50px;
+  padding: 0 8px;
+  border-radius: 10px;
+  background: var(--track);
+  cursor: grab;
+  transition: transform 0.18s var(--ease-out), background 0.2s ease, box-shadow 0.2s ease;
+}
+.ord:hover {
+  background: var(--hover);
+}
+.ord:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.ordlist.dragging {
+  cursor: grabbing;
+}
+.ord.dragging {
+  z-index: 2;
+  transition: none;
+  background: var(--group);
+  box-shadow: var(--shadow);
+}
+.ord-handle {
+  display: grid;
+  place-items: center;
+  color: var(--sub);
+  /* 触屏从把手起拖时不交给滚动，否则浏览器会中途 pointercancel */
+  touch-action: none;
+}
+.ord-handle svg {
+  width: 14px;
+  height: 14px;
+}
+.ord-order {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  font-size: 10.5px;
+  font-weight: 700;
+  color: #fff;
+  background: var(--accent);
+}
+.ord-name {
+  font-size: 13.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ord-price {
+  font-size: 13.5px;
+  font-weight: 600;
+  text-align: right;
+}
+.ord-pct {
+  min-width: 66px;
+}
+.ord-del {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  color: var(--sub);
+  transition: background 0.16s ease, color 0.16s ease;
+}
+.ord-del svg {
+  width: 12px;
+  height: 12px;
+  stroke-width: 2.4;
+}
+.ord-del:hover {
+  color: #fff;
+  background: #ff453a;
+}
+.ord-empty {
+  padding: 22px 0;
   text-align: center;
   font-size: 12.5px;
   color: var(--sub);
@@ -1685,19 +2233,77 @@ svg .fill {
   color: var(--on-accent);
 }
 
-/* 股票列表 */
+/* 标的列表与卡片 */
 .win .stock {
   border-radius: 4px;
 }
 .win .stock.on {
   background: color-mix(in srgb, var(--accent) 8%, transparent);
 }
-.win .stock.on .stock-order {
-  color: var(--on-accent);
+.win .stock.picked {
+  background: color-mix(in srgb, var(--accent) 13%, transparent);
 }
 .win .pill {
   border-radius: 4px;
 }
 .win .tag {
   border-radius: 3px;
+}
+.win .stock-pin {
+  border-radius: 4px;
+}
+.win .sec-cards {
+  gap: 6px;
+}
+.win .idx {
+  border-color: var(--ctrl-border);
+  border-radius: 4px;
+  background: var(--ctrl);
+}
+.win .idx[data-dir="up"] {
+  background: linear-gradient(180deg, color-mix(in srgb, var(--up) 9%, transparent), transparent 64%), var(--ctrl);
+}
+.win .idx[data-dir="down"] {
+  background: linear-gradient(180deg, color-mix(in srgb, var(--down) 9%, transparent), transparent 64%), var(--ctrl);
+}
+.win .pick i {
+  border-radius: 4px;
+}
+.win .bar-mark {
+  border-radius: 3px;
+}
+
+/* 新增自选的搜索框 */
+.win .add-search {
+  border: 1px solid var(--ctrl-border);
+  border-radius: 4px;
+  background: var(--ctrl);
+}
+.win .add-results {
+  border-radius: 4px;
+}
+.win .sr {
+  border-radius: 4px;
+}
+.win .sr-add {
+  border-radius: 4px;
+}
+
+/* 多选操作条与顺序列表 */
+.win .selbar {
+  border-radius: 4px;
+}
+.win .sel-act {
+  border: 1px solid var(--ctrl-border);
+  border-radius: 4px;
+  box-shadow: none;
+}
+.win .sel-act.ghost {
+  border-color: transparent;
+}
+.win .ord {
+  border-radius: 4px;
+}
+.win .ord-del {
+  border-radius: 4px;
 }

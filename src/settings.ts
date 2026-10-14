@@ -15,6 +15,8 @@ export type BarField = "name" | "price" | "pct";
 
 export interface Settings {
   watchlist: string[];
+  /** 置顶的自选（id）：这些排在自选列表最前，拖动也不会被挤下去 */
+  pins: string[];
   selected: string;
   /** 显示在菜单栏上的股票（有序） */
   bar: string[];
@@ -40,8 +42,78 @@ export const INDICES: { secid: string; name: string }[] = [
 export const isIndex = (id: string) => INDICES.some((it) => it.secid === id);
 export const BAR_MAX = 3;
 
+/**
+ * 批量加入菜单栏：按传入顺序填满剩余名额。
+ * 已在菜单栏里的标的直接跳过（不算放不下）；名额满了的记进 overflow。
+ */
+export function addToBar(
+  bar: string[],
+  ids: string[],
+  max = BAR_MAX,
+): { bar: string[]; added: string[]; overflow: string[] } {
+  const next = [...bar];
+  const added: string[] = [];
+  const overflow: string[] = [];
+  for (const id of ids) {
+    if (next.includes(id)) continue;
+    if (next.length >= max) overflow.push(id);
+    else {
+      next.push(id);
+      added.push(id);
+    }
+  }
+  return { bar: next, added, overflow };
+}
+
+/** 把 from 处的元素移到 to 处；越界或原地不动时返回原列表的副本 */
+export function moveItem<T>(list: T[], from: number, to: number): T[] {
+  const next = [...list];
+  if (from === to || from < 0 || to < 0 || from >= next.length || to >= next.length) return next;
+  const [item] = next.splice(from, 1);
+  next.splice(to, 0, item);
+  return next;
+}
+
+/** 置顶区长度：自选列表开头连续被置顶的只数（置顶的只会排在最前） */
+export function pinCount(list: string[], pins: string[]): number {
+  let n = 0;
+  while (n < list.length && pins.includes(list[n])) n++;
+  return n;
+}
+
+/** 把置顶的排到最前、其余按原顺序跟在后面；pins 里已不在自选中的 id 丢掉 */
+export function normalizePins(list: string[], pins: string[]): { list: string[]; pins: string[] } {
+  const keep = pins.filter((id) => list.includes(id));
+  return {
+    list: [...list.filter((id) => keep.includes(id)), ...list.filter((id) => !keep.includes(id))],
+    pins: keep,
+  };
+}
+
+/** 置顶：挪到自选最前 */
+export function pinItem(list: string[], pins: string[], id: string): { list: string[]; pins: string[] } {
+  if (!list.includes(id) || pins.includes(id)) return { list: [...list], pins: [...pins] };
+  return { list: [id, ...list.filter((x) => x !== id)], pins: [...pins, id] };
+}
+
+/** 取消置顶：落到置顶区之后的第一位（尽量少挪） */
+export function unpinItem(list: string[], pins: string[], id: string): { list: string[]; pins: string[] } {
+  if (!pins.includes(id)) return { list: [...list], pins: [...pins] };
+  const next = list.filter((x) => x !== id);
+  next.splice(pinCount(next, pins), 0, id);
+  return { list: next, pins: pins.filter((x) => x !== id) };
+}
+
+/** 拖动落点：置顶的只能在置顶区里挪，其余只能在置顶区之后挪 */
+export function clampBlock(list: string[], pins: string[], from: number, to: number): number {
+  const n = pinCount(list, pins);
+  const pinned = from < n;
+  return Math.min(Math.max(to, pinned ? 0 : n), pinned ? Math.max(n - 1, 0) : Math.max(list.length - 1, 0));
+}
+
 export const DEFAULTS: Settings = {
   watchlist: ["1.600519", "0.300750", "116.00700", "105.NVDA", "105.AAPL"],
+  pins: [],
   selected: "1.600519",
   bar: ["1.600519"],
   barStyle: "text",
@@ -65,6 +137,11 @@ export function loadSettings(): Settings {
   if (!Array.isArray(raw.bar)) s.bar = "pinned" in raw ? (s.pinned ? [s.pinned] : []) : [...DEFAULTS.bar];
   delete s.pinned;
   s.bar = s.bar.filter((id) => isIndex(id) || s.watchlist.includes(id)).slice(0, BAR_MAX);
+
+  // 置顶的排到最前（旧数据或别处写入可能乱序）；pins 里已不在自选的 id 丢掉
+  const pinned = normalizePins(s.watchlist, Array.isArray(s.pins) ? s.pins : []);
+  s.watchlist = pinned.list;
+  s.pins = pinned.pins;
   if (!s.barFields?.length) s.barFields = [...DEFAULTS.barFields];
   return s;
 }

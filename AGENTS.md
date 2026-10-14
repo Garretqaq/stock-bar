@@ -16,7 +16,7 @@ cd src-tauri && cargo check   # Rust 侧检查
 ```
 
 - 包管理器用 **pnpm**（`packageManager` 字段已锁定版本），不要用 npm 或 yarn。
-- 单元测试用 **vitest**（happy-dom 环境），测试文件为 `src/*.test.ts`，覆盖 api / bar / settings / ctxmenu 里的纯逻辑。没有 lint 或格式化配置。
+- 单元测试用 **vitest**（happy-dom 环境），测试文件为 `src/*.test.ts`，覆盖 api / bar / settings / ctxmenu / drag 里的纯逻辑。没有 lint 或格式化配置。
 - 改完之后至少跑通 `pnpm check`（类型检查加单元测试）和 `pnpm build`；改了 Rust 就再跑一次 `cargo check`。改了纯逻辑要补对应测试。
 - Vite 开发端口固定为 1420（`strictPort`），和 `tauri.conf.json` 里的 `devUrl` 一一对应，两边必须一起改。
 
@@ -31,9 +31,10 @@ src/settings.ts  Settings 类型、默认值、localStorage 读写和旧数据�
 src/bar.ts       菜单栏内容生成：单行文字 barText / 双行紧凑 canvas PNG barImage
 src/tauri.ts     Tauri 桥接层：call / emitAll / listenAll（非 Tauri 环境自动降级为空操作），平台判断 IS_WIN、canvas 字体栈 UI_FONT
 src/ctxmenu.ts   通用右键菜单 openMenu / closeMenu（样式 ctxmenu.css，主面板与设置窗口共用）
+src/drag.ts      拖动排序的纯计算：slotAt（指针落在第几格）/ shiftIndex（拖动中其他行让开多少），设置窗口的仪表盘与行情页共用
 src-tauri/src/lib.rs   托盘、弹窗定位（macOS 用 positioner，Windows/Linux 按托盘位置 + 屏幕工作区自己算）、失焦自动收起、单实例、所有 #[tauri::command]
 src-tauri/capabilities/default.json   三个窗口（main / settings / ticker）的权限
-.github/workflows/build-windows.yml   Windows 打包：推 v* 标签发 Release 草稿，或手动触发上传 Artifacts
+.github/workflows/build.yml   双端打包：推 v* 标签构建 macOS（通用二进制）+ Windows 安装包并创建 Release 草稿，或手动触发上传 Artifacts
 ```
 
 Vite 是多页面打包，入口在 `vite.config.ts` 的 `rollupOptions.input` 里，新增页面要在这里登记。
@@ -45,6 +46,7 @@ Vite 是多页面打包，入口在 `vite.config.ts` 的 `rollupOptions.input` �
 - 写设置只用 `saveSettings()`，它会同时广播 Tauri 事件 `settings-changed`。接收方通过 `onSettingsChange()` 收到通知，同时监听 `storage` 事件和 Tauri 事件，因此回调必须**幂等**。用 TOKEN 区分来源，自己发出的广播会被忽略。
 - `Settings` 新增字段时：在 `DEFAULTS` 里补上默认值；字段形状变化时在 `loadSettings()` 里写迁移逻辑（可以参考已有的 `pinned → bar` 迁移）。不要轻易修改 `STORE_KEY`，否则用户已有的设置会全部丢失。
 - 主面板收到同步时会保留自己的 `selected`，不会被设置窗口的值覆盖。
+- `watchlist` 的顺序就是显示顺序，置顶的（`pins`）始终在最前，由 `normalizePins()` 在 `loadSettings()` 里保证。新增或删除自选时要同步 `pins`，拖动排序的落点用 `clampBlock()` 限制在各自区块内。
 
 **菜单栏（托盘）**
 - 托盘只由主面板 `main.ts` 的 `updateTray()` 负责更新。它用签名 `traySig` 去重，内容没变就不推送。设置窗口只用 `bar.ts` 做本地预览，不调用托盘命令。
@@ -69,6 +71,7 @@ Vite 是多页面打包，入口在 `vite.config.ts` 的 `rollupOptions.input` �
 - secid 格式是 `市场.代码`：`1` 沪、`0` 深（代码以 8/4/92 开头的算北交所）、`116` 港股、`105/106/107` 美股、`100` 海外指数。
 - 东方财富在没有数据时返回 `"-"`，要统一用 `num()` 转成 `null`。界面上所有数值都要处理 `null` 的情况（显示 `--`）。
 - 搜索接口不返回 CORS 头，只能走 JSONP。报价和分时接口用 `fetch`，超时 8 秒。
+- 分时 `trends2` 只有大盘指数取两天（`fetchTrend(id, isIndex(id) ? 2 : 1)`），个股仍是单日、行为不变。`pickTrendDay()` 只把最新一天交给图表，另一天用来算「与上一日同期」的成交额（`TrendData.amount` / `prevAmount` / `prevDate`，按分钟成交额 `f57` 累加，按条数对齐同一时长）。横轴全天分钟数由 `trendsTotal` 减上一日点数得到。主面板里只有大盘指数的分时面板有 `.trend-foot` 节点，个股行内面板没有。
 - `ut` 和 `token` 是接口自带的公开常量，不是密钥。
 - `sessionStatus(region, now, lastTrade)` 按时区判断交易时段；没有节假日日历，而是用报价里的最后成交时间 `Quote.time`（接口字段 `f124`）推断：工作日开盘 10 分钟后最后成交仍不在当天，就显示「休市」。开盘前无法提前得知当天是否休市。
 

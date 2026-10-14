@@ -18,17 +18,24 @@ import {
 import { barImage, barText, canvasPng } from "./bar";
 import {
   INDICES,
+  UNGROUPED,
   applyAppearance,
+  dropGroupOf,
+  groupIdOf,
+  groupNameOf,
+  groupTargets,
   isDark,
   isIndex,
+  itemsOf,
   loadSettings,
   loadTickerPos,
   onSettingsChange,
   saveSettings,
+  setGroup,
   type Settings,
 } from "./settings";
 import { IN_TAURI, IS_WIN, UI_FONT, call, listenAll } from "./tauri";
-import { openMenu } from "./ctxmenu";
+import { openMenu, type MenuItem } from "./ctxmenu";
 
 let S: Settings = loadSettings();
 const save = () => saveSettings(S);
@@ -132,6 +139,7 @@ app.innerHTML = `
       <input id="search-input" placeholder="搜索代码 / 名称 / 拼音" autocomplete="off" spellcheck="false" />
       <div class="search-results" id="search-results"></div>
     </div>
+    <div class="gtabs" id="gtabs" hidden></div>
     <section class="list" id="list"></section>
   </main>
 
@@ -648,10 +656,91 @@ function sourceLabel(): string {
 const prevPrice = new Map<string, number>();
 
 const ICON_PIN = `<svg viewBox="0 0 24 24"><path d="M12 17v5M9 3h6l-1 7 4 3v2H6v-2l4-3z"/></svg>`;
+const ICON_FOLDER = `<svg viewBox="0 0 24 24"><path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l2 2.5h7A1.5 1.5 0 0 1 19 10v7a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 3 17z"/></svg>`;
 
-/** 结构（自选 / 置顶）变化才重建 DOM；行情刷新只原地改文字，动效与展开状态不被打断 */
+// ---------- 自选分组 ----------
+// 分组只决定自选列表怎么看：菜单栏（bar）与置顶（pins）都不受它影响。
+
+/** 正在看的分组：null = 全部；未分组是空字符串，不能用假值判断 */
+let groupFilter: string | null = null;
+
+/** 当前视图里的自选（顺序仍与整表一致） */
+function visibleIds(): string[] {
+  return groupFilter === null ? S.watchlist : itemsOf(S.watchlist, S.groupOf, S.groups, groupFilter);
+}
+
+/**
+ * 筛选条上的分组：没建过分组时整条不出现。
+ * 成员数为 0 的分组也留着 —— 刚建好的空分组不该立刻消失。
+ */
+function groupTabs(): { gid: string | null; name: string; n: number }[] {
+  const un = itemsOf(S.watchlist, S.groupOf, S.groups, UNGROUPED).length;
+  return [
+    { gid: null, name: "全部", n: S.watchlist.length },
+    ...(un ? [{ gid: UNGROUPED as string | null, name: "未分组", n: un }] : []),
+    ...S.groups.map((g) => ({
+      gid: g.id as string | null,
+      name: g.name,
+      n: itemsOf(S.watchlist, S.groupOf, S.groups, g.id).length,
+    })),
+  ];
+}
+
+/** 筛选条内容没变就不重写 DOM，免得每次刷新都清掉滚动位置 */
+function renderTabs(): void {
+  const box = $("#gtabs");
+  const tabs = groupTabs();
+  // 正在看的分组已经不在筛选条上了（成员被移空、分组被删）：退回「全部」，
+  // 否则会出现没有任何标签高亮、列表却还筛着的状态
+  if (groupFilter !== null && !tabs.some((t) => t.gid === groupFilter)) groupFilter = null;
+  const show = S.groups.length > 0;
+  box.hidden = !show;
+  if (!show) {
+    box.dataset.key = "";
+    if (box.innerHTML) box.innerHTML = "";
+    return;
+  }
+  const key = `${groupFilter ?? "*"}|${tabs.map((t) => `${t.gid}:${t.name}:${t.n}`).join(",")}`;
+  if (key === box.dataset.key) return;
+  box.dataset.key = key;
+  box.innerHTML = tabs
+    .map((t) => {
+      const on = t.gid === groupFilter;
+      return (
+        `<button class="gtab${on ? " on" : ""}" data-gid="${t.gid ?? "*"}" aria-pressed="${on}">` +
+        `${esc(t.name)}<b>${t.n}</b></button>`
+      );
+    })
+    .join("");
+}
+
+$("#gtabs").addEventListener("click", (e) => {
+  const gid = (e.target as HTMLElement).closest<HTMLElement>(".gtab")?.dataset.gid;
+  if (gid === undefined) return;
+  const next = gid === "*" ? null : gid;
+  if (next === groupFilter) return;
+  groupFilter = next;
+  renderList();
+});
+
+/** 右键菜单里的「移入分组」：一个目标一项（菜单没有子菜单），没建过分组就整组不出现 */
+function groupMenuItems(id: string): MenuItem[] {
+  if (!S.groups.length) return [];
+  return groupTargets(S.groups, S.groupOf, id).map((t) => ({
+    label: `移入「${t.name}」`,
+    onPick: () => {
+      S.groupOf = setGroup(S.groupOf, id, t.gid);
+      save();
+      renderAll();
+    },
+  }));
+}
+
+/** 结构（自选 / 分组 / 置顶 / 筛选）变化才重建 DOM；行情刷新只原地改文字，动效与展开状态不被打断 */
 function renderList(): void {
   const box = $("#list");
+  renderTabs();
+  const ids = visibleIds();
   if (!S.watchlist.length) {
     box.dataset.key = "";
     box.innerHTML =
@@ -659,21 +748,41 @@ function renderList(): void {
       `<div>搜索并添加你的第一只股票</div></div>`;
     return;
   }
-  const key = `${S.watchlist.join(",")}|${S.bar.join(",")}`;
+  if (!ids.length) {
+    box.dataset.key = "";
+    box.innerHTML =
+      `<div class="empty list-empty">${ICON_FOLDER}` +
+      `<div>「${esc(groupNameOf(S.groups, groupFilter ?? UNGROUPED))}」还没有标的</div>` +
+      `<div class="list-tip">在设置 › 行情里右键「移入分组」</div></div>`;
+    return;
+  }
+  // 分组名也要进 key：改名后没有别的变化，标签也得跟着换；
+  // groupFilter 同理 —— 一个分组装下全部自选时，切「全部 / 该分组」的 ids 完全一样
+  const gids = ids.map((id) => groupIdOf(S.groupOf, S.groups, id));
+  const key =
+    `${groupFilter ?? "*"}|${ids.join(",")}|${S.bar.join(",")}|` +
+    gids.map((g) => groupNameOf(S.groups, g)).join(",");
   if (box.dataset.key !== key) {
     box.dataset.key = key;
-    box.innerHTML = S.watchlist
-      .map(
-        (id, i) =>
+    box.innerHTML = ids
+      .map((id, i) => {
+        const gid = gids[i];
+        // 只在「全部」里标出分组：筛选到某个分组时这个标签是多余的
+        const gtag =
+          gid && groupFilter === null
+            ? `<span class="tag gtag">${esc(groupNameOf(S.groups, gid))}</span>`
+            : "";
+        return (
           `<div class="row" data-id="${esc(id)}" style="--i:${i + INDICES.length}">` +
           `<div class="row-main"><div class="row-name"></div>` +
-          `<div class="row-meta"><span class="tag">${marketTag(id)}</span>${esc(codeOf(id))}` +
+          `<div class="row-meta"><span class="tag">${marketTag(id)}</span>${gtag}${esc(codeOf(id))}` +
           `${S.bar.includes(id) ? `<span class="pin-mark" title="已显示在菜单栏（在设置 › 行情中调整）">${ICON_PIN}</span>` : ""}</div></div>` +
           `<div class="row-price"></div>` +
           `<div class="pill flat">--</div>` +
           `</div>` +
-          `<div class="trend${trendOpen === id ? " show" : ""}" data-id="${esc(id)}">${trendInner()}</div>`,
-      )
+          `<div class="trend${trendOpen === id ? " show" : ""}" data-id="${esc(id)}">${trendInner()}</div>`
+        );
+      })
       .join("");
   }
 
@@ -707,6 +816,7 @@ function removeStock(id: string): void {
   S.watchlist = S.watchlist.filter((x) => x !== id);
   S.pins = S.pins.filter((x) => x !== id);
   S.bar = S.bar.filter((x) => x !== id);
+  S.groupOf = dropGroupOf(S.groupOf, [id]);
   if (S.selected === id) S.selected = S.watchlist[0] ?? INDICES[0].secid;
   if (trendOpen === id) trendOpen = null;
   save();
@@ -726,6 +836,7 @@ $("#list").addEventListener("contextmenu", (e) => {
   const id = (e.target as HTMLElement).closest<HTMLElement>(".row")?.dataset.id;
   if (!id) return;
   openMenu(e.clientX, e.clientY, [
+    ...groupMenuItems(id),
     ...(S.bar.includes(id)
       ? [
           {
@@ -819,6 +930,8 @@ searchBox.addEventListener("click", (e) => {
   if (!id) return;
   if (!S.watchlist.includes(id)) {
     S.watchlist.push(id);
+    // 正在看某个分组时，新加的标的直接进这个分组（「未分组」则不加归属）
+    if (groupFilter) S.groupOf = setGroup(S.groupOf, id, groupFilter);
     save();
   }
   searchInput.value = "";

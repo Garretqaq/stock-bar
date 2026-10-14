@@ -12,17 +12,28 @@ import { barImage, barPct, barPrice, barText, shortName, tickerClass, tickerHtml
 import { shiftIndex, slotAt, type RowRect } from "./drag";
 import {
   BAR_MAX,
+  GROUP_NAME_MAX,
   INDICES,
+  UNGROUPED,
   addToBar,
   applyAppearance,
   clampBlock,
+  dropGroupOf,
+  groupNameOf,
+  groupTargets,
   isDark,
+  itemsOf,
   loadSettings,
+  moveInView,
   moveItem,
+  newGroup,
   onSettingsChange,
   pinCount,
   pinItem,
+  removeGroup,
+  renameGroup,
   saveSettings,
+  setGroup,
   unpinItem,
   type BarField,
   type BarStyle,
@@ -33,7 +44,7 @@ import { IN_TAURI, IS_WIN, call } from "./tauri";
 import appIcon from "./assets/app-icon.png";
 // 与 Rust 托盘共用同一张图标（src-tauri/icons/tray.png），避免两份图不一致
 import trayIcon from "../src-tauri/icons/tray.png";
-import { openMenu } from "./ctxmenu";
+import { openMenu, type MenuItem } from "./ctxmenu";
 
 // ---------- 状态 ----------
 
@@ -222,7 +233,7 @@ root.innerHTML = `
     <section class="page" data-page="market">
       <header class="page-head">
         <h1>行情</h1>
-        <p>管理${BAR}上要显示的标的：勾选可批量操作，拖动自选左侧把手可调整顺序，行尾按钮可置顶，右键某一行可加入${BAR}或删除自选。</p>
+        <p>管理${BAR}上要显示的标的：勾选可批量操作，拖动自选左侧把手可调整顺序，行尾按钮可置顶，右键某一行可加入${BAR}、移入分组或删除自选；右键分组标题可重命名、上移下移或删除分组。</p>
       </header>
 
       <h2 class="group-title">${BAR}显示 <span class="count" id="bar-count"></span><span class="title-hint">大盘与自选共用名额，${BAR}顺序在仪表盘调整</span></h2>
@@ -233,7 +244,7 @@ root.innerHTML = `
           <div class="sec-cards" id="stocks-idx"></div>
         </div>
         <div class="stock-sec">
-          <div class="sec-head">自选股票 <span class="sec-count" id="watch-count"></span><span class="title-hint" id="drag-hint" hidden>拖动左侧把手调整顺序</span></div>
+          <div class="sec-head">自选股票 <span class="sec-count" id="watch-count"></span><span class="title-hint" id="drag-hint" hidden>拖动左侧把手调整顺序</span><button class="sec-btn" id="add-group">＋ 新建分组</button></div>
           <div class="add-box">
             <div class="add-search">
               ${I.search}
@@ -241,7 +252,7 @@ root.innerHTML = `
             </div>
             <div class="add-results" id="add-results"></div>
           </div>
-          <div class="sec-body" id="stocks-watch"></div>
+          <div class="sec-groups" id="watch-groups"></div>
         </div>
       </div>
 
@@ -395,8 +406,43 @@ function stockRow(id: string): string {
 
 /** 页面上可勾选的标的（大盘在前）：顺序决定 Shift 区间与批量加入菜单栏的先后 */
 function marketIds(): string[] {
-  return [...INDICES.map((it) => it.secid), ...S.watchlist];
+  return [...INDICES.map((it) => it.secid), ...sections().flatMap((s) => s.items)];
 }
+
+// ---------- 行情页：自选分组 ----------
+// 分组只决定自选怎么分堆：菜单栏（bar）名额与置顶（pins）都不受它影响。
+
+/** 「拖完那一下 click」的标记：DOM 重建会换掉 sortable 实例，各分组区块因此共用一份状态 */
+const marketSwallow = { take: false };
+
+/** 分组区块：未分组永远在最前，其后是用户建的分组（顺序即主面板筛选条的顺序） */
+function sections(): { gid: string; name: string; items: string[] }[] {
+  return [
+    { gid: UNGROUPED, name: "未分组", items: itemsOf(S.watchlist, S.groupOf, S.groups, UNGROUPED) },
+    ...S.groups.map((g) => ({
+      gid: g.id,
+      name: g.name,
+      items: itemsOf(S.watchlist, S.groupOf, S.groups, g.id),
+    })),
+  ];
+}
+
+/** 一个分组区块：flat = 还没建过分组，这时只有这一个区块、不画标题（保持原来的样子） */
+function groupSec(sec: { gid: string; name: string; items: string[] }, flat: boolean): string {
+  const rows = sec.items.length
+    ? sec.items.map((id) => stockRow(id)).join("")
+    : `<div class="stocks-empty">${flat ? "还没有自选，用上面的搜索框添加" : "这个分组还没有标的"}</div>`;
+  return (
+    `<div class="gsec">` +
+    (flat
+      ? ""
+      : `<div class="gsec-head" data-gid="${sec.gid}"${sec.gid ? ' title="右键：重命名 / 上移下移 / 删除分组"' : ""}>` +
+        `<b class="gsec-name">${esc(sec.name)}</b><span class="sec-count">${sec.items.length} 只</span></div>`) +
+    `<div class="sec-body" data-gid="${sec.gid}">${rows}</div>` +
+    `</div>`
+  );
+}
+
 
 function setPick(id: string, on: boolean): void {
   if (on) picked.add(id);
@@ -423,22 +469,47 @@ function paintMark(row: HTMLElement, id: string): void {
   $<HTMLInputElement>(".pick input", row).checked = picked.has(id);
 }
 
-let stocksKey = "";
+let groupsKey = "";
+/** 分组结构（分组、名称、成员、置顶）变化才重建 DOM；行情刷新只原地改文字 */
+function renderGroups(): void {
+  const box = $("#watch-groups");
+  const secs = sections();
+  const flat = S.groups.length === 0; // 没建过分组：只有一个区块，不画标题
+  const key = `${flat}|${secs.map((s) => `${s.gid}:${s.name}:${s.items.join(",")}`).join("|")}|${S.pins.join(",")}`;
+  if (key === groupsKey) return;
+  groupsKey = key;
+  box.innerHTML = secs.map((s) => groupSec(s, flat)).join("");
+  // 每个区块各自拖动排序：顺序写回整表，其他分组的相对先后不动
+  for (const body of $$(".sec-body", box)) {
+    const live = () => $$(".stock", body).map((r) => r.dataset.id!);
+    sortable(
+      {
+        list: body,
+        row: ".stock",
+        handle: ".stock-handle",
+        rowDrag: false,
+        movable: () => live().length > 1,
+        clamp: (from, to) => clampBlock(live(), S.pins, from, to),
+        apply: (from, to) => {
+          S.watchlist = moveInView(S.watchlist, live(), from, to);
+          lastPick = -1; // 顺序变了，Shift 区间选择的锚点作废
+          commit();
+        },
+        render: renderMarket,
+      },
+      marketSwallow,
+    );
+  }
+}
+
 function renderMarket(): void {
   const box = $("#stocks");
-  const pinnedCount = pinCount(S.watchlist, S.pins); // 置顶区长度（loadSettings 保证置顶的都在最前）
   $("#bar-count").textContent = `${S.bar.length} / ${BAR_MAX}`;
   $("#watch-count").textContent = S.watchlist.length ? `${S.watchlist.length} 只` : "";
   $("#drag-hint").hidden = S.watchlist.length < 2; // 只有一行时没什么可拖的
   const idxBox = $("#stocks-idx");
   if (!idxBox.childElementCount) idxBox.innerHTML = INDICES.map((it) => idxCard(it)).join("");
-  const key = `${S.watchlist.join(",")}|${S.pins.join(",")}`;
-  if (key !== stocksKey) {
-    stocksKey = key;
-    $("#stocks-watch").innerHTML = S.watchlist.length
-      ? S.watchlist.map((id) => stockRow(id)).join("")
-      : `<div class="stocks-empty">还没有自选，用上面的搜索框添加</div>`;
-  }
+  renderGroups();
   for (const it of INDICES) {
     const card = $(`.idx[data-id="${it.secid}"]`, idxBox);
     const q = quotes.get(it.secid);
@@ -453,26 +524,31 @@ function renderMarket(): void {
     card.dataset.dir = d;
     paintMark(card, it.secid);
   }
-  $$(".stock", box).forEach((row, i) => {
-    const id = row.dataset.id!;
-    const q = quotes.get(id);
-    $(".stock-name", row).textContent = q?.name ?? codeOf(id);
-    $(".stock-price", row).textContent = barPrice(q?.price);
-    const pinned = S.pins.includes(id);
-    row.classList.toggle("pinned", pinned);
-    // 置顶区的最后一行画一道分界，和下面的普通自选分开
-    row.classList.toggle("last-pinned", pinned && i === pinnedCount - 1);
-    const pct = $(".stock-pct", row);
-    pct.textContent = barPct(q, false);
-    pct.className = `pill stock-pct ${dirOf(q?.pct)}`;
-    const pin = $(".stock-pin", row);
-    const label = pinned ? "取消置顶" : "置顶";
-    pin.classList.toggle("on", pinned);
-    pin.setAttribute("aria-pressed", String(pinned));
-    pin.title = label;
-    pin.setAttribute("aria-label", label);
-    paintMark(row, id);
-  });
+  // 每行的行情与状态：按区块走，置顶分界线要按区块内的位置算
+  for (const sec of sections()) {
+    const body = $(`.sec-body[data-gid="${sec.gid}"]`, box);
+    const pinnedCount = pinCount(sec.items, S.pins); // 该区块的置顶区长度
+    $$(".stock", body).forEach((row, i) => {
+      const id = row.dataset.id!;
+      const q = quotes.get(id);
+      $(".stock-name", row).textContent = q?.name ?? codeOf(id);
+      $(".stock-price", row).textContent = barPrice(q?.price);
+      const pinned = S.pins.includes(id);
+      row.classList.toggle("pinned", pinned);
+      // 置顶区的最后一行画一道分界，和下面没置顶的分开
+      row.classList.toggle("last-pinned", pinned && i === pinnedCount - 1);
+      const pct = $(".stock-pct", row);
+      pct.textContent = barPct(q, false);
+      pct.className = `pill stock-pct ${dirOf(q?.pct)}`;
+      const pin = $(".stock-pin", row);
+      const label = pinned ? "取消置顶" : "置顶";
+      pin.classList.toggle("on", pinned);
+      pin.setAttribute("aria-pressed", String(pinned));
+      pin.title = label;
+      pin.setAttribute("aria-label", label);
+      paintMark(row, id);
+    });
+  }
   syncSelbar();
 }
 
@@ -537,12 +613,105 @@ function deleteStocks(ids: string[]): void {
   S.watchlist = S.watchlist.filter((id) => !del.includes(id));
   S.pins = S.pins.filter((id) => !del.includes(id));
   S.bar = S.bar.filter((id) => !del.includes(id));
+  S.groupOf = dropGroupOf(S.groupOf, del);
   if (del.includes(S.selected)) S.selected = S.watchlist[0] ?? INDICES[0].secid;
   del.forEach((id) => picked.delete(id));
   lastPick = -1;
   commit();
   hint(`已删除 ${del.length} 只自选`);
 }
+
+// ---------- 行情页：分组操作 ----------
+
+/** 行右键菜单里的「移入分组」项：菜单没有子菜单，一个目标一项；没建过分组就整组不出现 */
+function groupMenuItems(id: string): MenuItem[] {
+  if (!S.groups.length) return [];
+  return groupTargets(S.groups, S.groupOf, id).map((t) => ({
+    label: `移入「${t.name}」`,
+    onPick: () => {
+      S.groupOf = setGroup(S.groupOf, id, t.gid);
+      lastPick = -1; // 行要换区块，Shift 区间选择的锚点作废
+      commit();
+      hint(`已移入「${t.name}」`);
+    },
+  }));
+}
+
+/** 新建分组：默认名字只是占位，建好立刻进入改名 */
+function addGroup(): void {
+  const g = newGroup(S.groups);
+  S.groups = [...S.groups, g];
+  commit();
+  startRename(g.id);
+}
+
+/** 分组改名：就地换成输入框，回车 / 失焦提交，Esc 放弃 */
+function startRename(gid: string): void {
+  const head = $(`.gsec-head[data-gid="${gid}"]`);
+  if (!head) return;
+  head.innerHTML = `<input class="gsec-input" maxlength="${GROUP_NAME_MAX}" aria-label="分组名称" />`;
+  const input = $<HTMLInputElement>(".gsec-input", head);
+  input.value = groupNameOf(S.groups, gid);
+  input.focus();
+  input.select();
+  let done = false;
+  const finish = (save: boolean) => {
+    if (done) return;
+    done = true;
+    if (save) S.groups = renameGroup(S.groups, gid, input.value);
+    groupsKey = ""; // 输入框要换回文字：内容没变时 key 不变，这里手动作废一次
+    if (save) commit();
+    else renderMarket();
+  };
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      finish(true);
+    } else if (e.key === "Escape") {
+      e.stopPropagation(); // 别让「Esc 清空多选」跟着触发
+      finish(false);
+    }
+  });
+  input.addEventListener("blur", () => finish(true));
+}
+
+/** 分组顺序 = 区块顺序 = 主面板筛选条的顺序 */
+function moveGroupTo(gid: string, to: number): void {
+  const from = S.groups.findIndex((g) => g.id === gid);
+  if (from < 0 || to < 0 || to >= S.groups.length) return;
+  S.groups = moveItem(S.groups, from, to);
+  lastPick = -1; // 区块顺序变了，Shift 区间选择的锚点作废
+  commit();
+}
+
+/** 删除分组：成员回落到未分组（自选一只都不少） */
+function removeGroupAt(gid: string): void {
+  const n = itemsOf(S.watchlist, S.groupOf, S.groups, gid).length;
+  const next = removeGroup(S.groups, S.groupOf, gid);
+  S.groups = next.groups;
+  S.groupOf = next.groupOf;
+  lastPick = -1; // 成员换了区块，Shift 区间选择的锚点作废
+  commit();
+  hint(n ? `已删除分组，${n} 只标的移入未分组` : "已删除分组");
+}
+
+$("#add-group").addEventListener("click", () => addGroup());
+
+// 分组标题的右键菜单：重命名 / 上移下移 / 删除（未分组固定在最前，没有菜单）
+$("#watch-groups").addEventListener("contextmenu", (e) => {
+  const head = (e.target as HTMLElement).closest<HTMLElement>(".gsec-head");
+  if (!head) return;
+  e.preventDefault(); // 分组标题上不弹系统右键菜单（未分组没有菜单，也一样）
+  const gid = head.dataset.gid;
+  if (!gid) return;
+  const at = S.groups.findIndex((g) => g.id === gid);
+  openMenu(e.clientX, e.clientY, [
+    { label: "重命名", onPick: () => startRename(gid) },
+    { label: "上移", disabled: at <= 0, onPick: () => moveGroupTo(gid, at - 1) },
+    { label: "下移", disabled: at >= S.groups.length - 1, onPick: () => moveGroupTo(gid, at + 1) },
+    { label: "删除分组", danger: true, onPick: () => removeGroupAt(gid) },
+  ]);
+});
 
 // ---------- 行情页：新增自选搜索 ----------
 
@@ -766,7 +935,8 @@ $("#stocks").addEventListener("click", (e) => {
   if (e.target instanceof HTMLInputElement) return;
   const t = e.target as HTMLElement;
   // 从把手按下、或刚拖完的那一下 click 不算「点行勾选」；无条件取走，别留到下一次点击
-  const dragged = takeMarketClick();
+  const dragged = marketSwallow.take;
+  marketSwallow.take = false;
   const row = t.closest<HTMLElement>(".stock, .idx");
   const id = row?.dataset.id;
   // 把手与行尾的置顶按钮只做自己的事：拖动留下的那一下 click 也不该挡住它们
@@ -798,6 +968,7 @@ $("#stocks").addEventListener("contextmenu", (e) => {
   const on = S.bar.includes(id);
   const full = S.bar.length >= BAR_MAX;
   openMenu(e.clientX, e.clientY, [
+    ...groupMenuItems(id),
     on
       ? {
           label: `从${BAR}移除`,
@@ -927,11 +1098,11 @@ const dragRows = (cfg: DragCfg) => $$(cfg.row, cfg.list);
  * 让一个列表支持拖动排序：鼠标 / 触屏拖行，键盘 Alt + ↑/↓ 移动。
  * 返回「取走这一下 click」的判断：从把手按下、或真的拖动过的那一次点击不该当成点行
  * —— 指针捕获会把 click 的目标换成整行，光看 e.target 认不出把手。
+ * state 可以不传：传进来就由调用方持有，DOM 重建（换掉本实例）时那一下 click 的标记不会丢
+ * —— 行情页每个分组区块各注册一次，共用同一份。
  */
-function sortable(cfg: DragCfg): () => boolean {
+function sortable(cfg: DragCfg, state: { take: boolean } = { take: false }): () => boolean {
   const { list } = cfg;
-  /** 这一次 click 不要交给行的点击逻辑 */
-  let swallow = false;
 
   list.addEventListener("pointerdown", (e) => {
     const t = e.target as HTMLElement;
@@ -945,7 +1116,7 @@ function sortable(cfg: DragCfg): () => boolean {
     const rows = dragRows(cfg);
     const from = rows.indexOf(row);
     if (from < 0) return;
-    swallow = fromHandle;
+    state.take = fromHandle;
     drag = {
       cfg,
       from,
@@ -990,14 +1161,14 @@ function sortable(cfg: DragCfg): () => boolean {
     e.preventDefault();
     const id = row.dataset.id;
     cfg.apply(from, to);
-    dragRows(cfg)
-      .find((r) => r.dataset.id === id)
-      ?.focus();
+    // apply 之后列表可能已被重建（分组区块会整个换掉）：list 断了就按 data-id 去当前 DOM 里找回焦点
+    const home = list.isConnected ? list : document;
+    [...home.querySelectorAll<HTMLElement>(cfg.row)].find((r) => r.dataset.id === id)?.focus();
   });
 
   return () => {
-    const take = swallow;
-    swallow = false;
+    const take = state.take;
+    state.take = false;
     return take;
   };
 }
@@ -1047,21 +1218,10 @@ sortable({
   render: renderOrder,
 });
 
-// 行情页：拖动调整自选顺序（这个顺序同时也是主面板列表的顺序）
-const takeMarketClick = sortable({
-  list: $("#stocks-watch"),
-  row: ".stock",
-  handle: ".stock-handle",
-  rowDrag: false,
-  movable: () => S.watchlist.length > 1,
-  clamp: (from, to) => clampBlock(S.watchlist, S.pins, from, to),
-  apply: (from, to) => {
-    S.watchlist = moveItem(S.watchlist, from, to);
-    lastPick = -1; // 顺序变了，Shift 区间选择的锚点作废
-    commit();
-  },
-  render: renderMarket,
-});
+// 行情页：每个分组区块各自注册拖动（见 renderGroups）—— 区块随分组增减重建，
+// 所以不能像仪表盘这样在模块初始化时注册一次。
+//
+// 分组本身的操作（新建 / 改名 / 排序 / 删除）走右键菜单，见下面的「行情页：分组操作」。
 
 ordList.addEventListener("click", (e) => {
   const row = (e.target as HTMLElement).closest<HTMLElement>(".ord");

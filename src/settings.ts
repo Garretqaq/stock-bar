@@ -15,8 +15,24 @@ export type BarStyle = "text" | "compact" | "icon";
 /** 菜单栏每只股票显示的字段 */
 export type BarField = "name" | "price" | "pct";
 
+/** 未分组：它也是一个「分组」，但不占 groups 里的位置，用空 id 表示 */
+export const UNGROUPED = "";
+/** 分组名长度上限（新建、改名与载入都按这个截断） */
+export const GROUP_NAME_MAX = 12;
+
+/** 自选分组：只负责把自选列表分堆，不影响菜单栏显示 */
+export interface Group {
+  /** 稳定短 id（新建时生成，与名字无关：改名不丢归属） */
+  id: string;
+  name: string;
+}
+
 export interface Settings {
   watchlist: string[];
+  /** 自选分组（有序）；未分组不在其中，见 UNGROUPED */
+  groups: Group[];
+  /** 每只自选所在的分组：secid → 分组 id；没有条目的就是未分组 */
+  groupOf: Record<string, string>;
   /** 置顶的自选（id）：这些排在自选列表最前，拖动也不会被挤下去 */
   pins: string[];
   selected: string;
@@ -115,7 +131,131 @@ export function clampBlock(list: string[], pins: string[], from: number, to: num
   return Math.min(Math.max(to, pinned ? 0 : n), pinned ? Math.max(n - 1, 0) : Math.max(list.length - 1, 0));
 }
 
+// ---------- 自选分组 ----------
+// 分组只是自选列表的分堆方式：整表顺序（watchlist）仍是一份，
+// 菜单栏（bar）与置顶（pins）都不受分组影响。
+
+/** 分组 id 的合法形状：合法才能安全地拼进选择器与存储 */
+const GROUP_ID_RE = /^[A-Za-z0-9_-]{1,24}$/;
+
+/** 标的当前在哪个分组：没归属、分组已被删都算未分组 */
+export function groupIdOf(groupOf: Record<string, string>, groups: Group[], id: string): string {
+  const gid = groupOf[id];
+  return gid && groups.some((g) => g.id === gid) ? gid : UNGROUPED;
+}
+
+/** 某个分组里的自选，顺序仍按整表顺序；未分组传 UNGROUPED */
+export function itemsOf(list: string[], groupOf: Record<string, string>, groups: Group[], gid: string): string[] {
+  return list.filter((id) => groupIdOf(groupOf, groups, id) === gid);
+}
+
+/** 分组显示名：未分组与分组已被删的情况都回落到「未分组」 */
+export function groupNameOf(groups: Group[], gid: string): string {
+  return groups.find((g) => g.id === gid)?.name ?? "未分组";
+}
+
+/**
+ * 在分组视图里拖动：可见列表里的 from→to 换算成整表下标再移动。
+ * 整表顺序是一份，所以分组视图内的先后就体现在整表里的相对先后。
+ */
+export function moveInView(list: string[], view: string[], from: number, to: number): string[] {
+  return moveItem(list, list.indexOf(view[from] ?? ""), list.indexOf(view[to] ?? ""));
+}
+
+/** 把标的移入某个分组；目标是未分组时删掉它的归属 */
+export function setGroup(groupOf: Record<string, string>, id: string, gid: string): Record<string, string> {
+  const next = { ...groupOf };
+  if (gid) next[id] = gid;
+  else delete next[id];
+  return next;
+}
+
+/** 清掉一批标的的分组归属（删除自选时用） */
+export function dropGroupOf(groupOf: Record<string, string>, ids: string[]): Record<string, string> {
+  const next = { ...groupOf };
+  ids.forEach((id) => delete next[id]);
+  return next;
+}
+
+/** 可以把标的移入哪些分组（不含它当前所在的那个，含未分组） */
+export function groupTargets(
+  groups: Group[],
+  groupOf: Record<string, string>,
+  id: string,
+): { gid: string; name: string }[] {
+  const cur = groupIdOf(groupOf, groups, id);
+  return [
+    { gid: UNGROUPED, name: "未分组" },
+    ...groups.map((g) => ({ gid: g.id, name: g.name })),
+  ].filter((t) => t.gid !== cur);
+}
+
+/** 分组名规整：去掉首尾空白，按「字符」截断（按码点切，免得把 emoji 劈成半个） */
+export function trimGroupName(name: string): string {
+  return [...name.trim()].slice(0, GROUP_NAME_MAX).join("");
+}
+
+/**
+ * 新建分组：id 取已有 gN 里最大的 N +1。
+ * 删掉最大的那个序号后会被再次用到，所以删除分组必须同时清掉归属（`removeGroup` 会做）。
+ */
+export function newGroup(groups: Group[], base = "新分组"): Group {
+  let n = 1;
+  for (const g of groups) {
+    const m = /^g(\d+)$/.exec(g.id);
+    if (m) n = Math.max(n, Number(m[1]) + 1);
+  }
+  const used = new Set(groups.map((g) => g.name));
+  let name = base;
+  for (let i = 2; used.has(name); i++) name = `${base} ${i}`;
+  return { id: `g${n}`, name: trimGroupName(name) };
+}
+
+/** 改名：去掉首尾空白并按上限截断；空名字视为放弃，原样返回副本 */
+export function renameGroup(groups: Group[], gid: string, name: string): Group[] {
+  const next = trimGroupName(name);
+  if (!next) return [...groups];
+  return groups.map((g) => (g.id === gid ? { ...g, name: next } : g));
+}
+
+/** 删除分组：成员回落到未分组（自选一只都不少） */
+export function removeGroup(
+  groups: Group[],
+  groupOf: Record<string, string>,
+  gid: string,
+): { groups: Group[]; groupOf: Record<string, string> } {
+  const next: Record<string, string> = {};
+  for (const [id, g] of Object.entries(groupOf)) if (g !== gid) next[id] = g;
+  return { groups: groups.filter((g) => g.id !== gid), groupOf: next };
+}
+
+/** 载入 / 外部写入后的规整：丢掉形状不对的分组、指向不存在分组的归属 */
+export function normalizeGroups(
+  list: string[],
+  groups: unknown,
+  groupOf: unknown,
+): { groups: Group[]; groupOf: Record<string, string> } {
+  const out: Group[] = [];
+  const seen = new Set<string>();
+  for (const raw of Array.isArray(groups) ? groups : []) {
+    const g = raw as Partial<Group> | null | undefined;
+    const id = typeof g?.id === "string" ? g.id : "";
+    const name = typeof g?.name === "string" ? trimGroupName(g.name) : "";
+    if (!GROUP_ID_RE.test(id) || !name || seen.has(id)) continue;
+    seen.add(id);
+    out.push({ id, name });
+  }
+  const map: Record<string, string> = {};
+  const raw2 = groupOf && typeof groupOf === "object" && !Array.isArray(groupOf) ? groupOf : {};
+  for (const [id, gid] of Object.entries(raw2 as Record<string, unknown>)) {
+    if (typeof gid === "string" && seen.has(gid) && list.includes(id)) map[id] = gid;
+  }
+  return { groups: out, groupOf: map };
+}
+
 export const DEFAULTS: Settings = {
+  groups: [],
+  groupOf: {},
   watchlist: ["1.600519", "0.300750", "116.00700", "105.NVDA", "105.AAPL"],
   pins: [],
   selected: "1.600519",
@@ -147,6 +287,10 @@ export function loadSettings(): Settings {
   const pinned = normalizePins(s.watchlist, Array.isArray(s.pins) ? s.pins : []);
   s.watchlist = pinned.list;
   s.pins = pinned.pins;
+  // 自选分组：旧数据没有这两个字段（或写坏了）时规整成「没有分组」
+  const grouped = normalizeGroups(s.watchlist, raw.groups, raw.groupOf);
+  s.groups = grouped.groups;
+  s.groupOf = grouped.groupOf;
   if (!s.barFields?.length) s.barFields = [...DEFAULTS.barFields];
   // 旧数据没有 source（或值写坏了）时回到「自动」，别让界面出现空档
   if (s.source !== "auto" && s.source !== "eastmoney" && s.source !== "tencent") {

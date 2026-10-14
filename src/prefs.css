@@ -749,6 +749,77 @@ svg .fill {
   background: var(--track);
 }
 
+/* 自选股票标题行右端是「＋ 新建分组」：窗口窄时先让拖动提示省略，别把按钮挤扁 */
+.sec-head .title-hint {
+  margin-left: 8px;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---------- 行情页：自选分组 ---------- */
+
+/* 行沿用原来的左右边距（.stocks 的 8px），这里不再加内边距：
+   没建过分组时页面与从前完全一致，建了分组时标题行与「自选股票」标题对齐 */
+.sec-groups {
+  padding: 0;
+}
+/* 分组之间画一道分界（与「大盘指数 / 自选股票」两个区块之间一致） */
+.gsec + .gsec {
+  margin-top: 2px;
+  border-top: 1px solid var(--line);
+}
+.gsec-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 8px 2px;
+  cursor: default;
+}
+.gsec-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  transition: color 0.18s ease;
+}
+/* 分组标题可右键：悬停时给一点提示色 */
+.gsec-head:hover .gsec-name {
+  color: var(--accent);
+}
+/* 改名：就地换成输入框（宽度按最长分组名留够） */
+.gsec-input {
+  width: 150px;
+  height: 24px;
+  padding: 0 6px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+  background: var(--group);
+  outline: none;
+}
+.sec-btn {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  height: 24px;
+  margin-left: auto;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--sub);
+  background: var(--group);
+  transition: color 0.16s ease, border-color 0.16s ease, background 0.16s ease;
+}
+.sec-btn:hover {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
 /* 大盘指数卡片：点卡片即勾选（多选）。方向色只在顶部渐隐一层，数字落在近白底上更好读；
    勾选框与「已在菜单栏」的图钉并到名称行两端，避免角标浮在卡片上 */
 .sec-cards {
@@ -2306,4 +2377,18 @@ svg .fill {
 }
 .win .ord-del {
   border-radius: 4px;
+}
+
+/* 分组区块：Windows 11 风格（方角控件 + 卡片底） */
+.win .gsec-head {
+  padding: 8px 8px 2px;
+}
+.win .gsec-input {
+  border-radius: 4px;
+  background: var(--ctrl);
+}
+.win .sec-btn {
+  border-color: var(--ctrl-border);
+  border-radius: 4px;
+  background: var(--ctrl);
 }

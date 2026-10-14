@@ -495,6 +495,55 @@ button {
 
 /* ---------- 自选列表 ---------- */
 
+/* 没建过分组时整条藏起来：display:flex 会盖掉 [hidden] 的默认 display:none，得自己再写一条 */
+.gtabs[hidden] {
+  display: none;
+}
+/* 分组筛选条：横着排，分组多了可以横向滚动（不显示滚动条）；
+   选中态用强调色浅底 + 强调色文字，和搜索框聚焦时是同一套语言 */
+.gtabs {
+  display: flex;
+  gap: 6px;
+  margin: 2px 0 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.gtabs::-webkit-scrollbar {
+  display: none;
+}
+.gtab {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 auto;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 13px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--sub);
+  background: var(--card);
+  transition: color 0.18s ease, background 0.18s ease, border-color 0.18s ease;
+}
+.gtab:hover {
+  color: var(--text);
+  border-color: var(--border);
+}
+.gtab b {
+  font-size: 10.5px;
+  font-weight: 600;
+  opacity: 0.7;
+}
+.gtab.on {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+.gtab.on b {
+  opacity: 1;
+}
+
 .list {
   display: flex;
   flex-direction: column;
@@ -570,6 +619,12 @@ button {
 .row:hover .tag {
   background: var(--line);
 }
+/* 自选行里的分组名：和行情标签同形，但用强调色区分；悬停时也不褪色 */
+.tag.gtag,
+.row:hover .tag.gtag {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
 .pin-mark {
   display: inline-flex;
   color: var(--accent);
@@ -641,6 +696,10 @@ button {
   color: var(--accent);
   opacity: 0.7;
   animation: float 2.4s ease-in-out infinite;
+}
+.list-tip {
+  font-size: 11px;
+  opacity: 0.8;
 }
 @keyframes float {
   50% {

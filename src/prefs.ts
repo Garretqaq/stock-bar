@@ -21,6 +21,7 @@ import {
   dropGroupOf,
   groupNameOf,
   groupTargets,
+  groupTargetsFor,
   isDark,
   itemsOf,
   loadSettings,
@@ -34,6 +35,7 @@ import {
   renameGroup,
   saveSettings,
   setGroup,
+  setGroupMany,
   unpinItem,
   type BarField,
   type BarStyle,
@@ -261,6 +263,7 @@ root.innerHTML = `
         <div class="selbar-acts">
           <button class="sel-act" data-act="add">加入${BAR}</button>
           <button class="sel-act" data-act="remove">移出${BAR}</button>
+          <button class="sel-act" data-act="group">移入分组</button>
           <button class="sel-act danger" data-act="delete">删除自选</button>
           <button class="sel-act ghost" data-act="clear">取消选择</button>
         </div>
@@ -557,6 +560,12 @@ function syncSelbar(): void {
   const inBar = ids.filter((id) => S.bar.includes(id)).length;
   $("#selbar").classList.toggle("on", ids.length > 0);
   $("#sel-count").textContent = String(ids.length);
+  // 批量移入分组：只对自选有效（大盘指数不分堆），且一个可用目标都没有时不给入口
+  const stocks = ids.filter((id) => S.watchlist.includes(id));
+  $('[data-act="group"]').toggleAttribute(
+    "disabled",
+    !groupTargetsFor(S.groups, S.groupOf, stocks).some((t) => !t.done),
+  );
   $('[data-act="add"]').toggleAttribute("disabled", inBar === ids.length || S.bar.length >= BAR_MAX);
   $('[data-act="remove"]').toggleAttribute("disabled", inBar === 0);
   $('[data-act="delete"]').toggleAttribute("disabled", !ids.some((id) => S.watchlist.includes(id)));
@@ -622,10 +631,9 @@ function deleteStocks(ids: string[]): void {
 }
 
 // ---------- 行情页：分组操作 ----------
-
-/** 行右键菜单里的「移入分组」项：菜单没有子菜单，一个目标一项；没建过分组就整组不出现 */
+/** 行右键菜单里的「移入分组」项：菜单没有子菜单，一个目标一项；没建过分组或不是自选就整组不出现 */
 function groupMenuItems(id: string): MenuItem[] {
-  if (!S.groups.length) return [];
+  if (!S.groups.length || !S.watchlist.includes(id)) return [];
   return groupTargets(S.groups, S.groupOf, id).map((t) => ({
     label: `移入「${t.name}」`,
     onPick: () => {
@@ -635,6 +643,25 @@ function groupMenuItems(id: string): MenuItem[] {
       hint(`已移入「${t.name}」`);
     },
   }));
+}
+
+/** 批量移入分组：菜单一个目标一项（没有子菜单），已经全在那个分组里的置灰 */
+function batchGroup(ids: string[], x: number, y: number): void {
+  openMenu(
+    x,
+    y,
+    groupTargetsFor(S.groups, S.groupOf, ids).map((t) => ({
+      label: `移入「${t.name}」`,
+      disabled: t.done,
+      onPick: () => {
+        S.groupOf = setGroupMany(S.groupOf, ids, t.gid);
+        lastPick = -1; // 标的换了区块，Shift 区间选择的锚点作废
+        clearPick();
+        commit();
+        hint(`已把 ${ids.length} 只移入「${t.name}」`);
+      },
+    })),
+  );
 }
 
 /** 新建分组：默认名字只是占位，建好立刻进入改名 */
@@ -1001,6 +1028,8 @@ $("#selbar").addEventListener("click", (e) => {
   // 按页面顺序取出选中的标的：决定批量加入菜单栏的先后
   const ids = marketIds().filter((id) => picked.has(id));
   if (!ids.length) return clearPick(); // 选中的标的已经不在列表里了
+  // 批量移入分组：大盘指数不分堆，只把选中的自选交出去
+  if (act === "group") return batchGroup(ids.filter((id) => S.watchlist.includes(id)), e.clientX, e.clientY);
   if (act === "add") batchAdd(ids);
   else if (act === "remove") batchRemove(ids);
   else if (act === "delete") deleteStocks(ids);

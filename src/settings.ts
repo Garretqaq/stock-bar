@@ -170,6 +170,20 @@ export function setGroup(groupOf: Record<string, string>, id: string, gid: strin
   return next;
 }
 
+/** 批量移入分组；目标是未分组时删掉这些标的的归属 */
+export function setGroupMany(
+  groupOf: Record<string, string>,
+  ids: string[],
+  gid: string,
+): Record<string, string> {
+  const next = { ...groupOf };
+  for (const id of ids) {
+    if (gid) next[id] = gid;
+    else delete next[id];
+  }
+  return next;
+}
+
 /** 清掉一批标的的分组归属（删除自选时用） */
 export function dropGroupOf(groupOf: Record<string, string>, ids: string[]): Record<string, string> {
   const next = { ...groupOf };
@@ -193,6 +207,22 @@ export function groupTargets(
 /** 分组名规整：去掉首尾空白，按「字符」截断（按码点切，免得把 emoji 劈成半个） */
 export function trimGroupName(name: string): string {
   return [...name.trim()].slice(0, GROUP_NAME_MAX).join("");
+}
+
+/**
+ * 一批标的能移入哪些分组：已经全在该分组的记 done（界面上置灰）。
+ * 一个可用目标都没有时（没建过分组、选的又都是未分组）就不该给入口。
+ */
+export function groupTargetsFor(
+  groups: Group[],
+  groupOf: Record<string, string>,
+  ids: string[],
+): { gid: string; name: string; done: boolean }[] {
+  if (!ids.length) return [];
+  return [
+    { gid: UNGROUPED, name: "未分组" },
+    ...groups.map((g) => ({ gid: g.id, name: g.name })),
+  ].map((t) => ({ ...t, done: ids.every((id) => groupIdOf(groupOf, groups, id) === t.gid) }));
 }
 
 /**

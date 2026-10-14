@@ -11,6 +11,7 @@ import {
   groupIdOf,
   groupNameOf,
   groupTargets,
+  groupTargetsFor,
   itemsOf,
   loadSettings,
   loadTickerPos,
@@ -26,6 +27,7 @@ import {
   saveSettings,
   saveTickerPos,
   setGroup,
+  setGroupMany,
   trimGroupName,
   unpinItem,
 } from "./settings";
@@ -342,6 +344,33 @@ describe("自选分组", () => {
   it("groupTargets 去掉标的当前所在的分组", () => {
     expect(groupTargets(groups, groupOf, "a").map((t) => t.gid)).toEqual([UNGROUPED, "g2"]);
     expect(groupTargets(groups, groupOf, "b").map((t) => t.gid)).toEqual(["g1", "g2"]);
+  });
+
+  it("setGroupMany 批量移入 / 批量移回未分组，都不改原对象", () => {
+    const of = { a: "g1" };
+    expect(setGroupMany(of, ["b", "c"], "g2")).toEqual({ a: "g1", b: "g2", c: "g2" });
+    expect(setGroupMany(of, ["a", "zzz"], UNGROUPED)).toEqual({});
+    expect(of).toEqual({ a: "g1" });
+  });
+
+  it("groupTargetsFor 标出已经全在那个分组的目标", () => {
+    // a、c 都在 g1：整批移入的话 g1 是「已全在」，未分组不是
+    expect(groupTargetsFor(groups, groupOf, ["a", "c"]).map((t) => [t.gid, t.done])).toEqual([
+      [UNGROUPED, false],
+      ["g1", true],
+      ["g2", false],
+    ]);
+    // 只选没归属的 b：未分组成「已全在」
+    expect(groupTargetsFor(groups, groupOf, ["b"]).map((t) => [t.gid, t.done])).toEqual([
+      [UNGROUPED, true],
+      ["g1", false],
+      ["g2", false],
+    ]);
+  });
+
+  it("groupTargetsFor 没有可用目标时全是 done（界面据此禁用入口）", () => {
+    expect(groupTargetsFor([], {}, ["a"]).map((t) => t.done)).toEqual([true]);
+    expect(groupTargetsFor(groups, groupOf, [])).toEqual([]);
   });
 
   it("newGroup 的 id 取已用过的最大序号 +1，名字不撞已有分组", () => {

@@ -723,9 +723,9 @@ $("#gtabs").addEventListener("click", (e) => {
   renderList();
 });
 
-/** 右键菜单里的「移入分组」：一个目标一项（菜单没有子菜单），没建过分组就整组不出现 */
+/** 右键菜单里的「移入分组」：一个目标一项（菜单没有子菜单），没建过分组或不是自选就整组不出现 */
 function groupMenuItems(id: string): MenuItem[] {
-  if (!S.groups.length) return [];
+  if (!S.groups.length || !S.watchlist.includes(id)) return [];
   return groupTargets(S.groups, S.groupOf, id).map((t) => ({
     label: `移入「${t.name}」`,
     onPick: () => {

@@ -788,19 +788,21 @@ $("#gtabs").addEventListener("click", (e) => {
   pickGroup(gid === "*" ? null : gid);
 });
 
-// 末尾 ☰：横滑出去的分组从这里点，当前这个打勾。
-// 菜单挂在 ☰ 上，筛选条自己横着滚不会挪动它，所以那种滚动不该把菜单收起来。
-// 用紧凑样式：展开的就是那排标签本身，按标签的尺寸显示（见 ctxmenu.css 的 .ctx-menu.compact）
+// 末尾 ☰：横滑出去的分组从这里点。内容不按菜单排，而是摊成和筛选条上那排一模一样的
+// 标签（带数量、当前这个高亮），分组多时自动换行，比一长条菜单矮得多。
+// 弹层挂在 ☰ 上，筛选条自己横着滚不会挪动它，所以那种滚动不该把它收起来。
 tabMore.addEventListener("click", () => {
   const r = tabMore.getBoundingClientRect();
   openMenu(
     r.right,
     r.bottom + 4,
     groupTabs().map((t) => ({
-      label: `${t.gid === groupFilter ? "✓ " : ""}${t.name}`,
+      label: t.name,
+      count: t.n,
+      on: t.gid === groupFilter,
       onPick: () => pickGroup(t.gid),
     })),
-    { ignoreScrollFrom: tabScroll, compact: true },
+    { ignoreScrollFrom: tabScroll, layout: "chips" },
   );
 });
 

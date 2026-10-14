@@ -7,6 +7,10 @@ export interface MenuItem {
   danger?: boolean;
   /** 置灰且不可点击，用于「名额已满」这类提示 */
   disabled?: boolean;
+  /** 只有 chips 排法用：标签右侧的数量角标（分组里的自选只数） */
+  count?: number;
+  /** 只有 chips 排法用：当前选中的那一个（浅底 + 强调色文字，不用 ✓ 前缀） */
+  on?: boolean;
   onPick?: () => void;
 }
 
@@ -29,10 +33,12 @@ export interface MenuOpts {
   /** 菜单锚点所在容器：它自己的滚动不挪动锚点，所以那种滚动不该把菜单收起来 */
   ignoreScrollFrom?: Element;
   /**
-   * 紧凑样式：行高 / 字号 / 宽度都按分组标签的尺寸来。
-   * 筛选条末尾的 ☰ 展开的就是那排标签本身，用大菜单会显得很突兀。
+   * 内容怎么排：
+   * - rows（默认）：一行一项的菜单
+   * - chips：摊成一排标签（和主面板筛选条上的分组标签同款），放不下自动换行，
+   *   比一长条菜单矮得多 —— 筛选条末尾的 ☰ 用它
    */
-  compact?: boolean;
+  layout?: "rows" | "chips";
 }
 
 /**
@@ -43,17 +49,28 @@ export interface MenuOpts {
 export function openMenu(x: number, y: number, items: MenuItem[], opts: MenuOpts = {}): void {
   closeMenu();
   if (!items.length) return;
-  const { ignoreScrollFrom, compact } = opts;
+  const { ignoreScrollFrom, layout = "rows" } = opts;
+  const chips = layout === "chips";
 
   const el = document.createElement("div");
-  el.className = compact ? "ctx-menu compact" : "ctx-menu";
+  el.className = chips ? "ctx-menu chips" : "ctx-menu";
   el.setAttribute("role", "menu");
   el.innerHTML = items
-    .map(
-      (it, i) =>
-        `<button class="ctx-item${it.danger ? " danger" : ""}" role="menuitem" data-i="${i}"` +
-        `${it.disabled ? " disabled" : ""}>${esc(it.label)}</button>`,
-    )
+    .map((it, i) => {
+      const off = it.disabled ? " disabled" : "";
+      if (chips) {
+        // 直接复用筛选条上 .gtab 的样式：这里要的就是「和那排标签长得一模一样」
+        return (
+          `<button class="gtab ctx-chip${it.on ? " on" : ""}" role="menuitem" data-i="${i}"${off}` +
+          `${it.on ? ' aria-current="true"' : ""}>${esc(it.label)}` +
+          `${it.count == null ? "" : `<b>${it.count}</b>`}</button>`
+        );
+      }
+      return (
+        `<button class="ctx-item${it.danger ? " danger" : ""}" role="menuitem" data-i="${i}"${off}>` +
+        `${esc(it.label)}</button>`
+      );
+    })
     .join("");
   document.body.append(el);
   menu = el;
@@ -76,13 +93,13 @@ export function openMenu(x: number, y: number, items: MenuItem[], opts: MenuOpts
   };
 
   el.addEventListener("click", (e) => {
-    const btn = (e.target as HTMLElement).closest<HTMLElement>(".ctx-item");
+    const btn = (e.target as HTMLElement).closest<HTMLElement>("[data-i]");
     if (btn?.dataset.i) pick(Number(btn.dataset.i));
   });
 
   // 键盘操作：↑↓ 切换、Enter 确认（Esc 在全局监听里处理）
   el.addEventListener("keydown", (e) => {
-    const btns = [...el.querySelectorAll<HTMLElement>(".ctx-item:not([disabled])")];
+    const btns = [...el.querySelectorAll<HTMLElement>("[data-i]:not([disabled])")];
     const cur = btns.indexOf(document.activeElement as HTMLElement);
     if (e.key === "ArrowDown" || e.key === "ArrowUp") {
       e.preventDefault();

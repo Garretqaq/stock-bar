@@ -79,10 +79,35 @@ describe("右键菜单", () => {
     strip.remove();
   });
 
-  it("compact：只有 ☰ 那种紧凑菜单带 compact 类，普通右键菜单不带", () => {
-    openMenu(0, 0, [{ label: "科技" }], { compact: true });
-    expect(menu()!.classList.contains("compact")).toBe(true);
-    openMenu(0, 0, [{ label: "科技" }]);
-    expect(menu()!.classList.contains("compact")).toBe(false);
+  it("chips：把项摊成筛选条那种标签（带数量、选中态），不再有菜单行", () => {
+    openMenu(
+      0,
+      0,
+      [
+        { label: "科技", count: 5, on: true },
+        { label: "金融", count: 2 },
+      ],
+      { layout: "chips" },
+    );
+    expect(menu()!.classList.contains("chips")).toBe(true);
+    expect(document.querySelectorAll(".ctx-item").length).toBe(0);
+    const chips = [...document.querySelectorAll<HTMLElement>(".ctx-chip")];
+    expect(chips.map((c) => c.textContent)).toEqual(["科技5", "金融2"]);
+    // 标签样式复用主面板的 .gtab：当前这个就是筛选条上的选中态
+    expect(chips[0].className).toContain("gtab");
+    expect(chips[0].classList.contains("on")).toBe(true);
+    expect(chips[1].classList.contains("on")).toBe(false);
+  });
+
+  it("chips 里点标签执行回调并收起弹层；不传 layout 还是普通菜单", () => {
+    const onPick = vi.fn();
+    openMenu(0, 0, [{ label: "科技", count: 5, onPick }], { layout: "chips" });
+    document.querySelector<HTMLElement>(".ctx-chip")!.click();
+    expect(onPick).toHaveBeenCalledTimes(1);
+    expect(menu()).toBeNull();
+
+    openMenu(0, 0, [{ label: "删除" }]);
+    expect(menu()!.classList.contains("chips")).toBe(false);
+    expect(document.querySelectorAll(".ctx-item").length).toBe(1);
   });
 });

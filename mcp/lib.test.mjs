@@ -37,13 +37,14 @@ const call = (name, args) =>
 describe("端点路径", () => {
   it("跟着各平台的应用数据目录规则走", () => {
     expect(endpointPath({}, "darwin", "/Users/me")).toBe(
-      "/Users/me/Library/Application Support/com.stockbar.eastmoney/mcp-endpoint.json",
+      // 期望值同样用 join 拼：Windows 上 path.join 给的是反斜杠，硬写 POSIX 路径会必失败
+      join("/Users/me", "Library", "Application Support", "com.stockbar.eastmoney", "mcp-endpoint.json"),
     );
     expect(endpointPath({ APPDATA: "C:\\Users\\me\\AppData\\Roaming" }, "win32", "C:\\Users\\me")).toBe(
       join("C:\\Users\\me\\AppData\\Roaming", "com.stockbar.eastmoney", "mcp-endpoint.json"),
     );
     expect(endpointPath({ XDG_DATA_HOME: "/data" }, "linux", "/home/me")).toBe(
-      "/data/com.stockbar.eastmoney/mcp-endpoint.json",
+      join("/data", "com.stockbar.eastmoney", "mcp-endpoint.json"),
     );
   });
 

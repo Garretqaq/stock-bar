@@ -267,9 +267,20 @@ fn refresh_tray_icon(app: &AppHandle) {
 
 // ---------- 设置窗口 ----------
 
-/// 打开（或聚焦）独立的设置窗口：仪表盘 + 设置，类似 macOS 系统设置
+/// 打开（或聚焦）独立的设置窗口：仪表盘 + 设置，类似 macOS 系统设置。
+///
+/// 必须是 async：Windows 上 WebView2 不会在事件回调里重入，而同步命令是跑在 IPC 回调里的，
+/// 在里面创建 webview 会让 create_controller 永远等不到完成回调，整个应用就此卡死
+/// （tauri 的 `WebviewWindowBuilder::new` Known issues 写着「在同步命令与事件处理器里
+/// 建窗口会死锁，请改用 async 命令或独立线程」，即 wry#583）。async 命令跑在 tokio
+/// 线程池上，窗口创建回到事件循环自己的派发里，不再嵌在 WebView2 回调中。
 #[tauri::command]
-fn open_settings(app: AppHandle) -> Result<(), String> {
+async fn open_settings(app: AppHandle) -> Result<(), String> {
+    open_settings_window(app)
+}
+
+/// open_settings 的本体（同步）：async 命令与单实例回调共用
+fn open_settings_window(app: AppHandle) -> Result<(), String> {
     if let Some(main) = app.get_webview_window(WINDOW_LABEL) {
         hide_panel(&main);
     }
@@ -324,8 +335,15 @@ fn clamp_to_screen(win: &WebviewWindow) {
 }
 
 /// 显示 / 关闭悬浮行情条。x/y 为上次拖到的位置（物理像素），由前端保存。
+///
+/// async 的理由同 open_settings：这里会创建 webview 窗口，同步命令里做在 Windows 上会死锁。
 #[tauri::command]
-fn set_ticker(app: AppHandle, show: bool, x: Option<i32>, y: Option<i32>) -> Result<(), String> {
+async fn set_ticker(app: AppHandle, show: bool, x: Option<i32>, y: Option<i32>) -> Result<(), String> {
+    set_ticker_window(app, show, x, y)
+}
+
+/// set_ticker 的本体（同步）
+fn set_ticker_window(app: AppHandle, show: bool, x: Option<i32>, y: Option<i32>) -> Result<(), String> {
     let existing = app.get_webview_window(TICKER_LABEL);
     if !show {
         if let Some(win) = existing {
@@ -435,8 +453,14 @@ fn mcp_set_enabled(app: AppHandle, on: bool) -> bridge::McpInfo {
 pub fn run() {
     let app = tauri::Builder::default()
         // 单实例必须最先注册：重复启动时不再出现第二个托盘图标，而是打开设置窗口
+        // 建窗口不能在这个回调里同步做：Windows 上它跑在单实例插件的窗口过程里，
+        // 而创建 webview 有重入限制（见 open_settings 的注释）。交给独立线程，
+        // 顺带让第二个实例的 WM_COPYDATA 立刻拿到回信、直接退出，不再干等。
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            let _ = open_settings(app.clone());
+            let app = app.clone();
+            std::thread::spawn(move || {
+                let _ = open_settings_window(app);
+            });
         }))
         .plugin(tauri_plugin_positioner::init())
         .invoke_handler(tauri::generate_handler![

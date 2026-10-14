@@ -83,6 +83,7 @@ Vite 是多页面打包，入口在 `vite.config.ts` 的 `rollupOptions.input` �
 
 **Rust 侧**
 - 前端可以调用的命令：`set_tray_text`、`set_tray_image`、`open_settings`、`set_ticker`、`fit_ticker`、`ticker_click`、`hide_window`、`quit_app`、`mcp_ready`、`mcp_reply`、`mcp_info`、`mcp_set_enabled`。新增命令要同时改两处：在 `generate_handler![]` 里注册，前端通过 `call()` 调用。MCP 的命令壳写在 `lib.rs`、实现放在 `bridge.rs`（原因见「坑」）。
+- **建窗口的命令必须是 `async fn`**：Windows 上 WebView2 不会在事件回调里重入，同步命令跑在 IPC 回调里，`WebviewWindowBuilder::build()` 会让 `create_controller` 永远等不到完成回调，整个应用卡死（tauri 文档的 Known issues / wry#583）。`open_settings`（建设置窗口）与 `set_ticker`（建行情条）因此都是 async，真正的建窗逻辑放在同步的 `open_settings_window()` / `set_ticker_window()` 里，由 async 命令（跑在 tokio 线程池上）调用；单实例回调里也是另起线程调 `open_settings_window()`，不在窗口过程里建窗。
 - 用 `LAST_HIDDEN_MS` 做防抖（macOS 250ms，Windows/Linux 400ms，见 `TOGGLE_DEBOUNCE_MS`），实现"再点一次图标收起小窗"（点击时窗口会先失焦、自动隐藏）。改托盘点击逻辑时不要破坏这个行为。
 - 主面板每次弹出都会收到 `panel-shown` 事件，触发入场动画并立即刷新数据。
 - 新建窗口或使用新的插件 API 时，记得在 `capabilities/default.json` 里加上对应的 window label 和 permission。
@@ -112,6 +113,7 @@ Vite 是多页面打包，入口在 `vite.config.ts` 的 `rollupOptions.input` �
 - `#[tauri::command]` 定义在子模块里时 `generate_handler!` 的宏路径很难伺候（命令宏落在 crate 根，`bridge::mcp_ready` 这类路径解析不到），所以命令壳统一写在 `lib.rs`，实现函数放 `bridge.rs`。
 - MCP 相关改动不碰 CSP：那些请求由 Rust 侧处理，不经过 webview。`mcp-endpoint.json` 里是端口与令牌，不要提交进仓库或日志。
 - 面板定位不要交回 `tauri-plugin-positioner`：它在多显示器 / 缩放不一致的机器上会把窗口丢到屏幕外（实测主屏 2304 点宽，窗口被放到 x=2795，点菜单栏图标看着就是「点了没反应」）。macOS 现在按鼠标位置（点图标时鼠标就在图标上）自己算 `panel_position()`，并夹进工作区；positioner 只在连屏幕都问不出来时兜底。
+- 命令里建 webview 窗口在 Windows 上必卡死，症状是「托盘图标在、点它没反应」，或第二个实例弹出的设置窗口标题栏写着「未响应」且永不恢复，只能强杀。原因是 WebView2 不允许在事件回调里重入创建 webview：同步命令跑在 IPC 回调里，`WebviewWindowBuilder::build()` 的 `create_controller` 永远等不到完成回调（tauri 文档的 Known issues、wry#583）。所以建窗的同步命令一律改成 `async fn`，回调 / 窗口过程里建窗一律另起线程 —— 现在的 `open_settings` 与 `set_ticker` 都按这个来，新增建窗能力照做。`set_ticker` 尤其要留意：默认设置里 `ticker: true`，Windows 每次启动都会走这条路。
 
 ## 发布流程
 

@@ -639,8 +639,28 @@ button {
   transform: scale(0.985);
   transition-duration: 0.08s;
 }
+/* 置顶区：一层很淡的强调色底，和下面的普通自选分开。
+   「当前选中」也用强调色，所以两者靠浓度区分（置顶 5% / 选中 10%，还带左侧竖条）；
+   置顶那行自己悬停时单独加深一档（.row.pinned 比 .row:hover 靠后，不写就盖掉了悬停反馈） */
+.row.pinned {
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
+}
+.row.pinned:hover {
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+}
+/* 置顶区与其余自选之间画一道分界（与设置 › 行情里的处理一致）。
+   分界画在「置顶区之后的第一行」上，而不是置顶区最后一行：置顶那行自己的分时图
+   紧跟在它后面，画在它身上就变成了「行与自己的图之间」也有一条线。
+   圆角归零：行本身是圆角，border-top 会顺着圆角往下弯 */
+.row.first-unpinned {
+  margin-top: 4px;
+  border-top: 1px solid var(--line);
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+/* 当前选中：比置顶浓一档，另加左侧竖条（见 ::before），两者不会看混 */
 .row.active {
-  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
 }
 .row::before {
   content: "";

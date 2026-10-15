@@ -31,9 +31,12 @@ import {
   loadSettings,
   loadTickerPos,
   onSettingsChange,
+  pinCount,
+  pinItem,
   saveSettings,
   searchActions,
   setGroup,
+  unpinItem,
   type Settings,
 } from "./settings";
 import { IN_TAURI, IS_WIN, UI_FONT, call, listenAll } from "./tauri";
@@ -875,22 +878,29 @@ function renderList(): void {
   }
   // 分组名也要进 key：改名后没有别的变化，标签也得跟着换；
   // groupFilter 同理 —— 一个分组装下全部自选时，切「全部 / 该分组」的 ids 完全一样
+  // 置顶区长度按「当前视图」算：分组视图里置顶的也排在该分组的最前
+  const pinnedCount = pinCount(ids, S.pins);
   const gids = ids.map((id) => groupIdOf(S.groupOf, S.groups, id));
   const key =
-    `${groupFilter ?? "*"}|${ids.join(",")}|${S.bar.join(",")}|` +
+    `${groupFilter ?? "*"}|${ids.join(",")}|${S.pins.join(",")}|${S.bar.join(",")}|` +
     gids.map((g) => groupNameOf(S.groups, g)).join(",");
   if (box.dataset.key !== key) {
     box.dataset.key = key;
     box.innerHTML = ids
       .map((id, i) => {
         const gid = gids[i];
+        const pinned = S.pins.includes(id);
         // 只在「全部」里标出分组：筛选到某个分组时这个标签是多余的
         const gtag =
           gid && groupFilter === null
             ? `<span class="tag gtag">${esc(groupNameOf(S.groups, gid))}</span>`
             : "";
+        // 分界画在「置顶区之后的第一行」上：置顶那行自己的分时图紧跟其后，
+        // 画在置顶行上会在行与自己的图之间也多出一条线
+        const divider = !pinned && pinnedCount > 0 && i === pinnedCount;
         return (
-          `<div class="row" data-id="${esc(id)}" style="--i:${i + INDICES.length}">` +
+          `<div class="row${pinned ? " pinned" : ""}${divider ? " first-unpinned" : ""}"` +
+          ` data-id="${esc(id)}" style="--i:${i + INDICES.length}">` +
           `<div class="row-main"><div class="row-name"></div>` +
           `<div class="row-meta"><span class="tag">${marketTag(id)}</span>${gtag}${esc(codeOf(id))}` +
           `${S.bar.includes(id) ? `<span class="pin-mark" title="已显示在菜单栏（在设置 › 行情中调整）">${ICON_PIN}</span>` : ""}</div></div>` +
@@ -942,6 +952,20 @@ function removeStock(id: string): void {
   syncTicker();
 }
 
+/**
+ * 置顶 / 取消置顶（自选行的右键菜单）。
+ * 只动自选顺序与 pins：选中项、展开的分时图与菜单栏都不受影响，所以不必刷新托盘。
+ */
+function togglePin(id: string): void {
+  if (!S.watchlist.includes(id)) return;
+  const on = S.pins.includes(id);
+  const next = on ? unpinItem(S.watchlist, S.pins, id) : pinItem(S.watchlist, S.pins, id);
+  S.watchlist = next.list;
+  S.pins = next.pins;
+  save();
+  renderAll();
+}
+
 $("#list").addEventListener("click", (e) => {
   const id = (e.target as HTMLElement).closest<HTMLElement>(".row")?.dataset.id;
   if (id) toggleTrend(id);
@@ -953,6 +977,7 @@ $("#list").addEventListener("contextmenu", (e) => {
   const id = (e.target as HTMLElement).closest<HTMLElement>(".row")?.dataset.id;
   if (!id) return;
   openMenu(e.clientX, e.clientY, [
+    { label: S.pins.includes(id) ? "取消置顶" : "置顶", onPick: () => togglePin(id) },
     ...groupMenuItems(id),
     ...(S.bar.includes(id)
       ? [

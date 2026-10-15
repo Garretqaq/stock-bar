@@ -18,7 +18,7 @@ cd src-tauri && cargo check   # Rust 侧检查
 ```
 
 - 包管理器用 **pnpm**（`packageManager` 字段已锁定版本），不要用 npm 或 yarn。
-- 单元测试用 **vitest**：`src/*.test.ts` 跑在 happy-dom 环境，覆盖 api / bar / settings / ctxmenu / drag / tabs / mcp / update 里的纯逻辑，以及设置窗口搜索结果右键那条界面接线（`prefs.test.ts` 用假搜索 / 报价真起一遍 `prefs.ts`）；`mcp/*.test.mjs` 与 `scripts/*.test.mjs` 是脚本测试，文件头用 `// @vitest-environment node` 切到 node 环境（含一条真的起进程 + 假本地桥的端到端用例）。没有 lint 或格式化配置。
+- 单元测试用 **vitest**：`src/*.test.ts` 跑在 happy-dom 环境，覆盖 api / bar / settings / ctxmenu / drag / tabs / mcp / update 里的纯逻辑，以及两处界面接线 —— 设置窗口搜索结果右键（`prefs.test.ts`）与主面板自选行置顶（`main.test.ts`），两者都用假搜索 / 报价真起一遍对应的窗口脚本（`main.ts` 起的是 `#app`，与 `index.html` 一致）；`mcp/*.test.mjs` 与 `scripts/*.test.mjs` 是脚本测试，文件头用 `// @vitest-environment node` 切到 node 环境（含一条真的起进程 + 假本地桥的端到端用例）。没有 lint 或格式化配置。
 - 改完之后至少跑通 `pnpm check`（类型检查加单元测试）和 `pnpm build`；改了 Rust 就再跑一次 `cargo check`。改了纯逻辑要补对应测试。
 - Vite 开发端口固定为 1420（`strictPort`），和 `tauri.conf.json` 里的 `devUrl` 一一对应，两边必须一起改。
 
@@ -56,6 +56,7 @@ Vite 是多页面打包，入口在 `vite.config.ts` 的 `rollupOptions.input` �
 - `Settings` 新增字段时：在 `DEFAULTS` 里补上默认值；字段形状变化时在 `loadSettings()` 里写迁移逻辑（可以参考已有的 `pinned → bar` 迁移）。不要轻易修改 `STORE_KEY`，否则用户已有的设置会全部丢失。
 - 主面板收到同步时会保留自己的 `selected`，不会被设置窗口的值覆盖。
 - `watchlist` 的顺序就是显示顺序，置顶的（`pins`）始终在最前，由 `normalizePins()` 在 `loadSettings()` 里保证。新增或删除自选时要同步 `pins`，拖动排序的落点用 `clampBlock()` 限制在各自区块内。
+- 置顶在主面板里可以直接做：自选行的右键菜单第一项是置顶 / 取消置顶，走 `togglePin()`（`pinItem` / `unpinItem`），与设置窗口「行情」页的行尾按钮等效，两边都改同一份 `pins`。置顶行用 `.row.pinned` 的浅底色区分（与「当前选中」的 `.row.active` 靠浓度分开：置顶 5%、选中 10% 且带左侧竖条），分界画在**置顶区之后的第一行**（`.row.first-unpinned`）而不是置顶区最后一行 —— 置顶那行自己的分时图紧跟其后，画在它身上会在「行与自己的图之间」也多出一条线；全都置顶时没有分界。置顶区的长度按**当前视图**算（`pinCount(ids, S.pins)`），分组视图里置顶的也排在该分组最前。
 - 自选分组是 `groups`（有序，`{id, name}`）+ `groupOf`（secid → 分组 id），只决定自选怎么分堆：`watchlist` 仍是唯一一份顺序，`bar` 与 `pins` 都不受分组影响。没有归属、或指向已删分组的都算「未分组」（`UNGROUPED`），`loadSettings()` 用 `normalizeGroups()` 规整（分组 id 必须是 `^[A-Za-z0-9_-]{1,24}$`，才能安全拼进选择器）。新建 / 改名 / 删除 / 排序都是 `settings.ts` 里的纯函数，删分组只把成员回落到未分组。
 - 单个与批量「移入分组」共用同一套逻辑：单个用 `groupTargets()`，多选用 `groupTargetsFor()` + `setGroupMany()`（前者把「已经全在该分组」的目标标成 done，菜单里置灰、一个可用目标都没有时操作条上的入口直接禁用）。大盘指数不能分组，所以批量只把选中的自选交出去。
 - 两个搜索框的结果行（主面板的搜索、设置「行情」页的新增自选）都支持右键：还不是自选的给「加入自选」和每个分组一项「加入并移入「X」」，已经是自选的给「移入「X」」（不含它当前所在的那个）与置顶 / 取消置顶。菜单项由 `settings.ts` 的 `searchActions()` 算，动作用 `applySearchAction()` 落到设置上，两个窗口只负责把新状态写回自己的 `S` 并重画。两者都**独立再挡一次**搜索接口能返回的边界情况：内置大盘指数（`isIndex()`）不给菜单、左键也加不进自选（与 MCP 的 add 同一条规则）；菜单是点开那一刻渲染的，所以点下去时目标分组已被删就按未分组处理、标的已不在自选里就不留归属。右键动作**不收起搜索结果**（点完这一行当场从 ＋ 变成「已添加」，好连着整理几只），因此两处「点别处收起搜索」的判断放过的是搜索菜单的标记类 `ctx-search`（由 `openMenu()` 的 `className` 选项挂上）—— 别写成放过整个 `.ctx-menu`，那样点自选行 / 分组标题的菜单时搜索结果会一直赖着不走，而它并不会被重画，行上的「已添加」就可能是过期的。

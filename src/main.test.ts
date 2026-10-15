@@ -230,3 +230,62 @@ describe("主面板：置顶区的背景区分", () => {
     expect(saved().pins).toEqual(["116.00700"]);
   });
 });
+
+// 筛选条上的分组胶囊：直接拖动排序（「全部」与「未分组」固定在最前，不参与）
+describe("主面板：分组胶囊拖动排序", () => {
+  const withGroups = {
+    groups: [
+      { id: "g1", name: "持仓" },
+      { id: "g2", name: "关注" },
+      { id: "g3", name: "观察池" },
+    ],
+    groupOf: { "0.300750": "g1" },
+  };
+
+  const chips = () => [...document.querySelectorAll<HTMLElement>("#gtab-scroll .gtab")];
+  /** 胶囊里的用户分组 id（顺序即分组顺序；全部是 *，未分组是空串） */
+  const grpIds = () => chips().map((c) => c.dataset.gid).filter((g) => g !== "*" && g !== "");
+  const order = () => saved().groups.map((g: { id: string }) => g.id);
+  const pointer = (el: Element, type: string, x: number, buttons = 1) =>
+    el.dispatchEvent(
+      new PointerEvent(type, { bubbles: true, button: 0, buttons, pointerId: 1, clientX: x, clientY: 0 }),
+    );
+
+  beforeEach(() => boot(withGroups));
+
+  it("胶囊按分组顺序铺开；只有用户分组带 grp（可拖），全部与未分组不带", () => {
+    expect(grpIds()).toEqual(["g1", "g2", "g3"]);
+    expect(document.querySelectorAll("#gtab-scroll .gtab.grp")).toHaveLength(3);
+    // 前两颗是「全部」与「未分组」：固定在最前，不参与拖动
+    expect(chips().slice(0, 2).every((c) => !c.classList.contains("grp"))).toBe(true);
+  });
+
+  it("Alt + → 把分组往后挪一位，顺序写回设置并重画胶囊", () => {
+    document
+      .querySelector<HTMLElement>("#gtab-scroll .gtab.grp")!
+      .dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", altKey: true, bubbles: true }));
+    expect(order()).toEqual(["g2", "g1", "g3"]);
+    expect(grpIds()).toEqual(["g2", "g1", "g3"]);
+  });
+
+  it("鼠标拖动胶囊改顺序，松手跟来的那一下 click 不切分组", () => {
+    const first = document.querySelector<HTMLElement>("#gtab-scroll .gtab.grp")!;
+    pointer(first, "pointerdown", 10);
+    pointer(first, "pointermove", 400);
+    pointer(first, "pointerup", 400, 0);
+
+    expect(order()).toEqual(["g2", "g3", "g1"]);
+    expect(grpIds()).toEqual(["g2", "g3", "g1"]);
+
+    // 浏览器松手后还会补一个 click：它属于这次拖动，不该把分组切了
+    document.querySelector<HTMLElement>("#gtab-scroll .gtab.grp")!.click();
+    expect(document.querySelector<HTMLElement>("#list .row")!.dataset.id).toBe("1.600519"); // 仍是「全部」视图
+  });
+
+  it("点胶囊仍然是切分组（拖动逻辑没把普通点击吃掉）", () => {
+    [...document.querySelectorAll<HTMLElement>("#gtab-scroll .gtab")]
+      .find((c) => c.textContent!.includes("持仓"))!
+      .click();
+    expect(rows().map((r) => r.dataset.id)).toEqual(["0.300750"]);
+  });
+});

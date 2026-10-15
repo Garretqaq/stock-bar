@@ -911,8 +911,8 @@ svg .fill {
   color: var(--text);
   background: var(--group);
   cursor: grab;
-  /* 触屏拖胶囊时不交给横滑，否则浏览器会中途 pointercancel */
-  touch-action: none;
+  /* 触屏拖胶囊时不交给横滑（浏览器中途 pointercancel 就拖不动了），纵向留给页面滚动 */
+  touch-action: pan-y;
   transition: transform 0.18s var(--ease-out), background 0.2s ease, border-color 0.16s ease,
     box-shadow 0.2s ease;
 }

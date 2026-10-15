@@ -35,6 +35,7 @@ src/tauri.ts     Tauri 桥接层：call / emitAll / listenAll（非 Tauri 环境
 src/ctxmenu.ts   通用右键菜单 openMenu / closeMenu（样式 ctxmenu.css，主面板与设置窗口共用；选项 className 用来给菜单打标，如搜索菜单的 ctx-search）
 src/drag.ts      拖动排序的纯计算：slotAt（指针落在第几格）/ shiftIndex（拖动中其他行让开多少），设置窗口的仪表盘与行情页共用
 src/tabs.ts      分组筛选条的纯计算：isDragMove / isDragClick（横滑拖动与「拖完那一下 click」的判定）/ scrollDeltaFor（把选中的标签带进视野要滚多少），主面板用
+src/sortable.ts  拖动排序的 DOM 侧逻辑：指针 / 位移 / 落点（纯计算在 drag.ts）+ 键盘 Alt + ←→；设置窗口（自选行、分组胶囊）与主面板（分组胶囊）共用，行选择器之外的行不参与拖动
 src/mcp.ts       MCP 命令处理：看 / 搜 / 增删自选、置顶、排序、分组增删改排序的纯逻辑（搜索与报价由调用方注入）；另含设置面板 MCP 卡片用的 clientConfig()（客户端配置 JSON）与 bridgeState()（状态文案）
 src/update.ts    版本更新的纯逻辑：状态文案、下载进度、提示条文案（联网在 Rust 侧）
 src-tauri/src/lib.rs   托盘、弹窗定位（按鼠标位置把面板夹进工作区，见「坑」）、失焦自动收起、单实例、所有 #[tauri::command]
@@ -58,10 +59,11 @@ Vite 是多页面打包，入口在 `vite.config.ts` 的 `rollupOptions.input` �
 - `watchlist` 的顺序就是显示顺序，置顶的（`pins`）始终在最前，由 `normalizePins()` 在 `loadSettings()` 里保证。新增或删除自选时要同步 `pins`，拖动排序的落点用 `clampBlock()` 限制在各自区块内。
 - 置顶在主面板里可以直接做：自选行的右键菜单第一项是置顶 / 取消置顶，走 `togglePin()`（`pinItem` / `unpinItem`），与设置窗口「行情」页的行尾按钮等效，两边都改同一份 `pins`。置顶行用 `.row.pinned` 的浅底色区分（与「当前选中」的 `.row.active` 靠浓度分开：置顶 5%、选中 10% 且带左侧竖条），分界画在**置顶区之后的第一行**（`.row.first-unpinned`）而不是置顶区最后一行 —— 置顶那行自己的分时图紧跟其后，画在它身上会在「行与自己的图之间」也多出一条线；全都置顶时没有分界。置顶区的长度按**当前视图**算（`pinCount(ids, S.pins)`），分组视图里置顶的也排在该分组最前。
 - 自选分组是 `groups`（有序，`{id, name}`）+ `groupOf`（secid → 分组 id），只决定自选怎么分堆：`watchlist` 仍是唯一一份顺序，`bar` 与 `pins` 都不受分组影响。没有归属、或指向已删分组的都算「未分组」（`UNGROUPED`），`loadSettings()` 用 `normalizeGroups()` 规整（分组 id 必须是 `^[A-Za-z0-9_-]{1,24}$`，才能安全拼进选择器）。新建 / 改名 / 删除 / 排序都是 `settings.ts` 里的纯函数，删分组只把成员回落到未分组。
+- 分组胶囊可以直接拖动排序：主面板筛选条上的用户分组胶囊（`.gtab.grp`）与设置 › 行情 里那排胶囊（`#gchip-list .gchip`）走同一套 `sortable()`（横排 `axis: "x"`），顺序即 `groups` 的顺序（`moveItem`）。「全部 / 未分组」固定在最前、且不在行选择器里，所以拖不走 —— 主面板里按在它们身上仍然是横滑（见 `#gtab-scroll` 的 pointerdown 判断），设置窗口里按固定胶囊就是跳到未分组。点胶囊时主面板切分组、设置窗口把该分组带进视野；拖动松手跟来的那一下 click 由 `isDragClick()` 的时间窗吞掉（主面板与横滑共用同一个 `tabDraggedAt`）。
 - 单个与批量「移入分组」共用同一套逻辑：单个用 `groupTargets()`，多选用 `groupTargetsFor()` + `setGroupMany()`（前者把「已经全在该分组」的目标标成 done，菜单里置灰、一个可用目标都没有时操作条上的入口直接禁用）。大盘指数不能分组，所以批量只把选中的自选交出去。
 - 两个搜索框的结果行（主面板的搜索、设置「行情」页的新增自选）都支持右键：还不是自选的给「加入自选」和每个分组一项「加入并移入「X」」，已经是自选的给「移入「X」」（不含它当前所在的那个）与置顶 / 取消置顶。菜单项由 `settings.ts` 的 `searchActions()` 算，动作用 `applySearchAction()` 落到设置上，两个窗口只负责把新状态写回自己的 `S` 并重画。两者都**独立再挡一次**搜索接口能返回的边界情况：内置大盘指数（`isIndex()`）不给菜单、左键也加不进自选（与 MCP 的 add 同一条规则）；菜单是点开那一刻渲染的，所以点下去时目标分组已被删就按未分组处理、标的已不在自选里就不留归属。右键动作**不收起搜索结果**（点完这一行当场从 ＋ 变成「已添加」，好连着整理几只），因此两处「点别处收起搜索」的判断放过的是搜索菜单的标记类 `ctx-search`（由 `openMenu()` 的 `className` 选项挂上）—— 别写成放过整个 `.ctx-menu`，那样点自选行 / 分组标题的菜单时搜索结果会一直赖着不走，而它并不会被重画，行上的「已添加」就可能是过期的。
 - 分组标题的操作菜单由 `#watch-groups` 一处委托：标题右侧的「⋯」按钮左键点开，右键标题也可以（未分组不给菜单）。删除分组必须先就地确认：点「删除分组…」只把 `groupConfirm` 置上、把标题行换成确认条（`groupHead()` 渲染，文案里报出成员会回到未分组），真正删除只发生在确认条的「删除」上。`groupConfirm` 进 `groupsKey`，确认态的变化才会重建 DOM；确认态下右键标题不再叠菜单，Esc 先取消确认、再清多选。危险按钮用固定的 `#ff453a`，不要跟随 `--up`（绿涨红跌下会变成绿色）。
-- 分组视图里的拖动要用 `moveInView()` 把可见下标换算成整表下标，落点仍用 `clampBlock()` 按可见列表（也就是该分组内的置顶区）钳制。设置窗口的每个分组区块各注册一次 `sortable()`；区块会随分组增减重建，所以「拖完那一下 click」的标记放在外部 `marketSwallow` 里由各实例共用，不能退回成实例内的局部变量。
+- 分组视图里的拖动要用 `moveInView()` 把可见下标换算成整表下标，落点仍用 `clampBlock()` 按可见列表（也就是该分组内的置顶区）钳制。设置窗口的每个分组区块各注册一次 `src/sortable.ts` 的 `sortable()`；区块会随分组增减重建，所以「拖完那一下 click」的标记放在外部 `marketSwallow` 里由各实例共用，不能退回成实例内的局部变量。
 
 **MCP 本地桥（外部配置）**
 - 外部 MCP 客户端（`mcp/stockbar-mcp.mjs`，stdio JSON-RPC）改自选与分组走这条链路：HTTP 桥（`bridge.rs`，只监听 `127.0.0.1` 的随机端口）→ Tauri 事件 `mcp-request` → 主面板 → `src/mcp.ts` 的 `prepareCommand()` / `apply()` → `saveSettings()` → 前端再调 `mcp_reply` 回信。**命令永远由前端执行**，所以 MCP 改动的校验、规整、广播与手点界面完全一致（设置窗口、菜单栏都会跟着刷新）。

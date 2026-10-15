@@ -9,7 +9,8 @@ import {
   type SearchItem,
 } from "./api";
 import { barImage, barPct, barPrice, barText, shortName, tickerClass, tickerHtml } from "./bar";
-import { shiftIndex, slotAt, type RowRect } from "./drag";
+import { shiftIndex, slotAt, slotAtX, type ColRect, type RowRect } from "./drag";
+import { isDragClick } from "./tabs";
 import { bridgeState, clientConfig, type McpInfo } from "./mcp";
 import { Channel } from "@tauri-apps/api/core";
 import {
@@ -261,7 +262,7 @@ root.innerHTML = `
     <section class="page" data-page="market">
       <header class="page-head">
         <h1>行情</h1>
-        <p>管理${BAR}上要显示的标的：勾选可批量操作，拖动自选左侧把手可调整顺序，行尾按钮可置顶，右键某一行可加入${BAR}、移入分组或删除自选；右键分组标题可重命名、上移下移或删除分组。</p>
+        <p>管理${BAR}上要显示的标的：勾选可批量操作，拖动自选左侧把手可调整顺序，行尾按钮可置顶，右键某一行可加入${BAR}、移入分组或删除自选；拖动下面的分组胶囊可调整分组顺序，右键分组标题可重命名、上移下移或删除分组。</p>
       </header>
 
       <h2 class="group-title">${BAR}显示 <span class="count" id="bar-count"></span><span class="title-hint">大盘与自选共用名额，${BAR}顺序在仪表盘调整</span></h2>
@@ -279,6 +280,10 @@ root.innerHTML = `
               <input id="add-input" placeholder="搜索代码 / 名称 / 拼音，添加自选" autocomplete="off" spellcheck="false" />
             </div>
             <div class="add-results" id="add-results"></div>
+          </div>
+          <div class="gchips" id="gchips" hidden>
+            <button class="gchip fixed" data-gid="" title="未分组固定在最前，点一下跳到这个分组">未分组<b id="gchip-un">0</b></button>
+            <div class="gchip-scroll" id="gchip-list" role="group" aria-label="分组顺序：拖动胶囊调整"></div>
           </div>
           <div class="sec-groups" id="watch-groups"></div>
         </div>
@@ -582,6 +587,21 @@ function groupSec(sec: { gid: string; name: string; items: string[] }, flat: boo
   );
 }
 
+/** 分组胶囊：未分组固定在最前（不能拖），其后是用户建的分组 —— 拖动出来的顺序就是分组顺序 */
+function renderChips(): void {
+  const box = $("#gchips");
+  const flat = S.groups.length === 0; // 没建过分组：没有可排序的胶囊，整行不出现
+  box.hidden = flat;
+  if (flat) return;
+  $("#gchip-un").textContent = String(itemsOf(S.watchlist, S.groupOf, S.groups, UNGROUPED).length);
+  $("#gchip-list").innerHTML = S.groups
+    .map(
+      (g) =>
+        `<button class="gchip" data-gid="${g.id}" title="拖动调整分组顺序（Alt + ← / → 也能挪）">` +
+        `${esc(g.name)}<b>${itemsOf(S.watchlist, S.groupOf, S.groups, g.id).length}</b></button>`,
+    )
+    .join("");
+}
 
 function setPick(id: string, on: boolean): void {
   if (on) picked.add(id);
@@ -622,6 +642,7 @@ function renderGroups(): void {
   if (key === groupsKey) return;
   groupsKey = key;
   box.innerHTML = secs.map((s) => groupSec(s, flat)).join("");
+  renderChips(); // 胶囊与区块共用同一个 key：分组、名字、成员变了才重建
   // 每个区块各自拖动排序：顺序写回整表，其他分组的相对先后不动
   for (const body of $$(".sec-body", box)) {
     const live = () => $$(".stock", body).map((r) => r.dataset.id!);
@@ -1560,17 +1581,21 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
-// ---------- 拖动排序（仪表盘「菜单栏显示」与行情页「自选」共用同一套指针逻辑） ----------
+// ---------- 拖动排序（仪表盘「菜单栏显示」与行情页「自选 / 分组胶囊」共用同一套指针逻辑） ----------
 
 interface DragCfg {
   /** 行容器 */
   list: HTMLElement;
-  /** 行选择器（行要带 data-id：键盘移动后靠它找回焦点） */
+  /** 行选择器（行要带身份字段：键盘移动后靠它找回焦点） */
   row: string;
+  /** 行身份字段（dataset 的后半段）：默认 id；分组胶囊的身份是分组 id，用 gid */
+  ident?: string;
   /** 把手选择器 */
   handle: string;
   /** true = 鼠标可从行任意处起拖；false = 一律从把手起拖（行情页点行是勾选） */
   rowDrag: boolean;
+  /** 横排列表（分组胶囊）按 x 轴算落点与位移；不写就是竖排 */
+  axis?: "x";
   /** 现在能不能拖（行数不足时不动） */
   movable: () => boolean;
   /** 落点钳制：置顶区里的只能在置顶区里挪，其余只能在置顶区之后挪 */
@@ -1580,13 +1605,17 @@ interface DragCfg {
   render: () => void;
 }
 
+/** 拖动开始时每一项的矩形：竖排看 top/height，横排看 left/width，两套都存着按轴取用 */
+type Rect = RowRect & ColRect;
+
 /** 拖动中的状态；rects 是拖动开始时各行的位置，用于算其他行要让开多少 */
 interface DragState {
   cfg: DragCfg;
   from: number;
   to: number;
-  startY: number;
-  rects: RowRect[];
+  /** 按下时指针在拖动轴上的坐标 */
+  start: number;
+  rects: Rect[];
   el: HTMLElement;
 }
 
@@ -1595,7 +1624,7 @@ let drag: DragState | null = null;
 const dragRows = (cfg: DragCfg) => $$(cfg.row, cfg.list);
 
 /**
- * 让一个列表支持拖动排序：鼠标 / 触屏拖行，键盘 Alt + ↑/↓ 移动。
+ * 让一个列表支持拖动排序：鼠标 / 触屏拖行，键盘 Alt + ↑/↓（横排是 ←/→）移动。
  * 返回「取走这一下 click」的判断：从把手按下、或真的拖动过的那一次点击不该当成点行
  * —— 指针捕获会把 click 的目标换成整行，光看 e.target 认不出把手。
  * state 可以不传：传进来就由调用方持有，DOM 重建（换掉本实例）时那一下 click 的标记不会丢
@@ -1603,12 +1632,16 @@ const dragRows = (cfg: DragCfg) => $$(cfg.row, cfg.list);
  */
 function sortable(cfg: DragCfg, state: { take: boolean } = { take: false }): () => boolean {
   const { list } = cfg;
+  const axisX = cfg.axis === "x"; // 横排（分组胶囊）：落点与位移都按 x 算
+  const ident = cfg.ident ?? "id"; // 行的身份字段：apply 之后靠它找回焦点
 
   list.addEventListener("pointerdown", (e) => {
     const t = e.target as HTMLElement;
     const row = t.closest<HTMLElement>(cfg.row);
     if (!row || !cfg.movable() || e.button !== 0) return; // 右键 / 中键不拖动
-    if (t.closest("button")) return; // 行上的按钮自己处理点击
+    // 行上的按钮自己处理点击；行本身就是按钮的（分组胶囊）照旧可拖
+    const btn = t.closest("button");
+    if (btn && btn !== row) return;
     const fromHandle = !!t.closest(cfg.handle);
     // 触屏拖动容易和滚动打架：非鼠标一律只允许从把手起拖
     if (!fromHandle && (!cfg.rowDrag || e.pointerType !== "mouse")) return;
@@ -1621,10 +1654,10 @@ function sortable(cfg: DragCfg, state: { take: boolean } = { take: false }): () 
       cfg,
       from,
       to: from,
-      startY: e.clientY,
+      start: axisX ? e.clientX : e.clientY,
       rects: rows.map((r) => {
         const b = r.getBoundingClientRect();
-        return { top: b.top, height: b.height };
+        return { top: b.top, height: b.height, left: b.left, width: b.width };
       }),
       el: row,
     };
@@ -1637,8 +1670,9 @@ function sortable(cfg: DragCfg, state: { take: boolean } = { take: false }): () 
     if (drag?.cfg !== cfg) return;
     // 行已被重建（别的窗口改了顺序）或按键已松开：立刻中止，别拿旧下标去动新列表
     if (!drag.el.isConnected || !e.buttons) return cancelDrag();
-    drag.el.style.transform = `translateY(${e.clientY - drag.startY}px)`;
-    const to = cfg.clamp(drag.from, slotAt(drag.rects, e.clientY));
+    const pos = axisX ? e.clientX : e.clientY;
+    drag.el.style.transform = `${axisX ? "translateX" : "translateY"}(${pos - drag.start}px)`;
+    const to = cfg.clamp(drag.from, axisX ? slotAtX(drag.rects, pos) : slotAt(drag.rects, pos));
     if (to === drag.to) return;
     drag.to = to;
     layoutDrag();
@@ -1650,20 +1684,22 @@ function sortable(cfg: DragCfg, state: { take: boolean } = { take: false }): () 
   // 指针被系统抢走（触屏滚动、右键菜单）时捕获会静默丢失，别把半途的顺序写回去
   list.addEventListener("lostpointercapture", cancelDrag);
 
-  // 键盘：Alt + ↑/↓ 移动（鼠标之外的第二条路）
+  // 键盘：Alt + ↑/↓（横排是 ←/→）移动（鼠标之外的第二条路）
   list.addEventListener("keydown", (e) => {
+    const back = axisX ? "ArrowLeft" : "ArrowUp";
+    const fwd = axisX ? "ArrowRight" : "ArrowDown";
     const row = (e.target as HTMLElement).closest<HTMLElement>(cfg.row);
-    if (!row || !e.altKey || (e.key !== "ArrowUp" && e.key !== "ArrowDown")) return;
+    if (!row || !e.altKey || (e.key !== back && e.key !== fwd)) return;
     const rows = dragRows(cfg);
     const from = rows.indexOf(row);
-    const to = cfg.clamp(from, e.key === "ArrowUp" ? from - 1 : from + 1);
+    const to = cfg.clamp(from, e.key === back ? from - 1 : from + 1);
     if (from < 0 || to < 0 || to >= rows.length) return;
     e.preventDefault();
-    const id = row.dataset.id;
+    const id = row.dataset[ident];
     cfg.apply(from, to);
-    // apply 之后列表可能已被重建（分组区块会整个换掉）：list 断了就按 data-id 去当前 DOM 里找回焦点
+    // apply 之后列表可能已被重建（分组区块会整个换掉）：list 断了就按身份字段去当前 DOM 里找回焦点
     const home = list.isConnected ? list : document;
-    [...home.querySelectorAll<HTMLElement>(cfg.row)].find((r) => r.dataset.id === id)?.focus();
+    [...home.querySelectorAll<HTMLElement>(cfg.row)].find((r) => r.dataset[ident] === id)?.focus();
   });
 
   return () => {
@@ -1677,10 +1713,13 @@ function sortable(cfg: DragCfg, state: { take: boolean } = { take: false }): () 
 function layoutDrag(): void {
   const d = drag;
   if (!d) return;
+  const axisX = d.cfg.axis === "x";
+  const at = (r: Rect) => (axisX ? r.left : r.top);
   dragRows(d.cfg).forEach((row, i) => {
     if (row === d.el) return;
     const next = shiftIndex(i, d.from, d.to);
-    row.style.transform = next === i ? "" : `translateY(${d.rects[next].top - d.rects[i].top}px)`;
+    row.style.transform =
+      next === i ? "" : `${axisX ? "translateX" : "translateY"}(${at(d.rects[next]) - at(d.rects[i])}px)`;
   });
 }
 
@@ -1716,6 +1755,56 @@ sortable({
     commit();
   },
   render: renderOrder,
+});
+
+/** 刚拖完胶囊的时间：松手后跟来的那一下 click 不该当成「点胶囊跳分组」（判定见 tabs.ts） */
+let chipDraggedAt = 0;
+
+// 行情页：分组胶囊横排拖动即可调整分组顺序（顺序 = 区块顺序 = 主面板筛选条的顺序）。
+// 胶囊容器是静态的，模块初始化时注册一次就够 —— 胶囊内容随分组重建（见 renderChips），
+// 拖动实例挂在容器上，重建不影响它。
+sortable({
+  list: $("#gchip-list"),
+  row: ".gchip",
+  ident: "gid",
+  handle: ".gchip", // 整颗胶囊就是把手：横排里没地方再放一个把手
+  rowDrag: true,
+  axis: "x",
+  movable: () => S.groups.length > 1,
+  clamp: (_from, to) => to, // 未分组画在容器之外，胶囊之间可以随便换位
+  apply: (from, to) => {
+    chipDraggedAt = Date.now(); // 真的换了位：接下来那一下 click 算拖动的尾巴
+    const g = S.groups[from];
+    if (g) moveGroupTo(g.id, to);
+  },
+  render: renderMarket,
+});
+
+/** 跳转后的高亮计时器 */
+let flashTimer: number | undefined;
+/** 点胶囊把对应分组带进视野并闪一下：分组多了以后，这排胶囊就是分组的目录 */
+function scrollToGroup(gid: string): void {
+  const head = document.querySelector<HTMLElement>(`.gsec-head[data-gid="${gid}"]`);
+  if (!head) return;
+  head.scrollIntoView({
+    block: "center",
+    behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+  });
+  head.classList.remove("flash");
+  void head.offsetWidth; // 动画要重播，先强制一次重排
+  head.classList.add("flash");
+  window.clearTimeout(flashTimer);
+  flashTimer = window.setTimeout(() => head.classList.remove("flash"), 1200);
+}
+
+// 点胶囊跳到对应分组；拖动松手后跟来的那一下 click 不算（判定与主面板筛选条同一套，见 tabs.ts）
+$("#gchips").addEventListener("click", (e) => {
+  const dragged = isDragClick(chipDraggedAt, Date.now());
+  chipDraggedAt = 0;
+  if (dragged) return;
+  const gid = (e.target as HTMLElement).closest<HTMLElement>(".gchip")?.dataset.gid;
+  if (gid === undefined) return;
+  scrollToGroup(gid);
 });
 
 // 行情页：每个分组区块各自注册拖动（见 renderGroups）—— 区块随分组增减重建，

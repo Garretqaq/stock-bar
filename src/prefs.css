@@ -884,6 +884,99 @@ svg .fill {
   background: var(--group);
   outline: none;
 }
+
+/* ---------- 行情页：分组胶囊（顺序即分组顺序，拖动胶囊调整） ---------- */
+
+.gchips {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px 4px;
+}
+/* display:flex 会盖掉 [hidden] 的默认 display:none，得自己再写一条 */
+.gchips[hidden] {
+  display: none;
+}
+.gchip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 auto;
+  height: 24px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text);
+  background: var(--group);
+  cursor: grab;
+  /* 触屏拖胶囊时不交给横滑，否则浏览器会中途 pointercancel */
+  touch-action: none;
+  transition: transform 0.18s var(--ease-out), background 0.2s ease, border-color 0.16s ease,
+    box-shadow 0.2s ease;
+}
+.gchip:hover {
+  background: var(--hover);
+}
+.gchip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.gchip b {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--sub);
+}
+/* 未分组固定在最前：淡底、点得动但拖不走（画在横滑区外面，滑分组时它不动） */
+.gchip.fixed {
+  color: var(--sub);
+  background: var(--track);
+  border-color: transparent;
+  cursor: pointer;
+}
+.gchip.fixed:hover {
+  color: var(--text);
+  background: var(--hover);
+}
+/* 胶囊多了横向滚动（滚动条隐藏）；拖动中整排保持抓取光标 */
+.gchip-scroll {
+  display: flex;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+  /* 纵向留出余量：overflow 也裁纵向，拖动中那颗胶囊的投影才不会被切掉 */
+  padding: 6px 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.gchip-scroll::-webkit-scrollbar {
+  display: none;
+}
+.gchip-scroll.dragging {
+  cursor: grabbing;
+}
+/* 拖动中的那颗胶囊：跟手（去掉过渡）并浮在其他胶囊上面 */
+.gchip.dragging {
+  z-index: 2;
+  cursor: grabbing;
+  transition: none;
+  background: var(--group);
+  box-shadow: var(--shadow);
+}
+/* 点胶囊跳到分组后闪一下：已经跳到眼前时也有个反馈 */
+.gsec-head.flash {
+  border-radius: 6px;
+  animation: gsec-flash 0.9s ease;
+}
+@keyframes gsec-flash {
+  from {
+    background: var(--sel);
+  }
+  to {
+    background: transparent;
+  }
+}
 .sec-btn {
   display: inline-flex;
   align-items: center;
@@ -2770,6 +2863,18 @@ svg .fill {
   border-color: var(--ctrl-border);
   border-radius: 4px;
   background: var(--ctrl);
+}
+
+/* 分组胶囊：Windows 11 风格（方角 + 卡片底） */
+.win .gchip {
+  border-color: var(--ctrl-border);
+  border-radius: 4px;
+  background: var(--ctrl);
+}
+.win .gchip.fixed {
+  border-color: transparent;
+  border-radius: 4px;
+  background: var(--track);
 }
 
 /* 分组标题的「⋯」与删除确认条：Windows 11 风格（方角控件） */

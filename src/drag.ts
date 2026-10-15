@@ -7,6 +7,12 @@ export interface RowRect {
   height: number;
 }
 
+/** 横排里某一项在拖动开始时的位置（视口坐标）：竖排看 top/height，横排看 left/width */
+export interface ColRect {
+  left: number;
+  width: number;
+}
+
 /**
  * 指针落在第几个槽位（0 起）：过了某行的中线就算进入该槽；
  * 一行都没过（拖到列表上方）落在第一格，全都过了落在最后一格。空列表返回 -1。
@@ -15,6 +21,15 @@ export function slotAt(rects: RowRect[], y: number): number {
   if (!rects.length) return -1;
   for (let i = 0; i < rects.length; i++) {
     if (y < rects[i].top + rects[i].height / 2) return i;
+  }
+  return rects.length - 1;
+}
+
+/** 横排列表（分组胶囊）：判定与 slotAt 完全一致，只是换成 x 轴 */
+export function slotAtX(rects: ColRect[], x: number): number {
+  if (!rects.length) return -1;
+  for (let i = 0; i < rects.length; i++) {
+    if (x < rects[i].left + rects[i].width / 2) return i;
   }
   return rects.length - 1;
 }

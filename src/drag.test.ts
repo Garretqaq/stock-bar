@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { shiftIndex, slotAt, type RowRect } from "./drag";
+import { shiftIndex, slotAt, slotAtX, type ColRect, type RowRect } from "./drag";
 
 // 三行、每行 50px、行间无缝隙
 const rects: RowRect[] = [
@@ -26,6 +26,34 @@ describe("slotAt", () => {
 
   it("空列表返回 -1（空列表上不会开始拖动）", () => {
     expect(slotAt([], 10)).toBe(-1);
+  });
+});
+
+// 三个横排胶囊、每个 60px 宽、间距 6px
+const cols: ColRect[] = [
+  { left: 0, width: 60 },
+  { left: 66, width: 60 },
+  { left: 132, width: 60 },
+];
+
+describe("slotAtX", () => {
+  it("没过中线留在本格", () => {
+    expect(slotAtX(cols, 29)).toBe(0);
+    expect(slotAtX(cols, 95)).toBe(1);
+  });
+
+  it("过了中线就算进入下一格", () => {
+    expect(slotAtX(cols, 31)).toBe(1);
+    expect(slotAtX(cols, 97)).toBe(2);
+  });
+
+  it("拖到横排左边落在第一格，拖到右边落在最后一格", () => {
+    expect(slotAtX(cols, -40)).toBe(0);
+    expect(slotAtX(cols, 999)).toBe(2);
+  });
+
+  it("空列表返回 -1（空列表上不会开始拖动）", () => {
+    expect(slotAtX([], 10)).toBe(-1);
   });
 });
 

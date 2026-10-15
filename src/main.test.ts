@@ -271,6 +271,62 @@ describe("主面板：分组胶囊", () => {
       .click();
     expect(rows().map((r) => r.dataset.id)).toEqual(["0.300750"]);
   });
+
+  // 末尾 ☰ 的弹层：所有分组一次摊开，所以这里可以放心拖（不像筛选条那样要横滑）
+  describe("☰ 弹层里的分组可以拖动排序", () => {
+    const popup = () => document.querySelector<HTMLElement>(".ctx-menu.chips");
+    const popChips = () => [...document.querySelectorAll<HTMLElement>(".ctx-menu.chips .ctx-chip")];
+    const open = () => document.querySelector<HTMLElement>("#gtab-more")!.click();
+    /** 弹层里可拖的那些胶囊的分组 id（全部 / 未分组没有 data-key，拖不走） */
+    const keys = () => popChips().map((c) => c.dataset.key).filter((k): k is string => !!k);
+    const order = () => saved().groups.map((g: { id: string }) => g.id);
+
+    beforeEach(() => {
+      // 分组多到筛选条放不下，☰ 才会出现
+      document.querySelector<HTMLElement>("#gtab-scroll")!.style.width = "60px";
+    });
+
+    it("弹层里只有用户分组带 data-key（固定项拖不走）", () => {
+      open();
+      expect(popup()).not.toBeNull();
+      expect(popChips().map((c) => c.textContent)).toEqual(["全部3", "未分组2", "持仓1", "关注0", "观察池0"]);
+      expect(keys()).toEqual(["g1", "g2", "g3"]);
+    });
+
+    it("Alt + → 把分组往后挪一位：写回设置，弹层按新顺序重开", () => {
+      open();
+      document
+        .querySelector<HTMLElement>('.ctx-menu.chips .ctx-chip[data-key="g1"]')!
+        .dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", altKey: true, bubbles: true }));
+
+      expect(order()).toEqual(["g2", "g1", "g3"]);
+      // 重开的弹层仍开着，且按新顺序排
+      expect(keys()).toEqual(["g2", "g1", "g3"]);
+      expect(document.querySelectorAll(".ctx-menu").length).toBe(1);
+    });
+
+    it("鼠标拖动胶囊改顺序，松手跟来的那一下 click 不切分组", () => {
+      open();
+      const first = document.querySelector<HTMLElement>('.ctx-menu.chips .ctx-chip[data-key="g1"]')!;
+      pointer(first, "pointerdown", 10);
+      pointer(first, "pointermove", 400);
+      pointer(first, "pointerup", 400, 0);
+
+      expect(order()).toEqual(["g2", "g3", "g1"]);
+      // 重开后跟来的那一下 click 打在新弹层的胶囊上：它属于这次拖动，不该切分组
+      const chip = document.querySelector<HTMLElement>('.ctx-menu.chips .ctx-chip[data-key="g1"]')!;
+      chip.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      expect(saved()).toMatchObject({ selected: "1.600519" });
+      expect(rows().map((r) => r.dataset.id)).toEqual(["1.600519", "0.300750", "116.00700"]); // 仍是「全部」
+    });
+
+    it("点弹层里的胶囊仍然是切分组", () => {
+      open();
+      document.querySelector<HTMLElement>('.ctx-menu.chips .ctx-chip[data-key="g1"]')!.click();
+      expect(rows().map((r) => r.dataset.id)).toEqual(["0.300750"]);
+      expect(document.querySelector(".ctx-menu")).toBeNull(); // 选完弹层收起
+    });
+  });
 });
 
 // 自选行直接拖动排序：顺序写回 watchlist（分组视图换算成整表下标，置顶的只能在自己那块里挪）

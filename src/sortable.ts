@@ -1,6 +1,6 @@
 // 拖动排序的 DOM 侧逻辑：指针、位移、落点。与 DOM 无关的那部分在 drag.ts（slotAt / slotAtX / shiftIndex）。
 // 设置窗口「行情」页的自选行与分组胶囊、主面板筛选条的分组胶囊共用这一套。
-import { shiftIndex, slotAt, slotAtX, type ColRect, type RowRect } from "./drag";
+import { shiftIndex, slotAt, slotAtGrid, slotAtX, type ColRect, type RowRect } from "./drag";
 
 export interface DragCfg {
   /** 行容器 */
@@ -13,8 +13,11 @@ export interface DragCfg {
   handle: string;
   /** true = 鼠标可从行任意处起拖；false = 一律从把手起拖（行情页点行是勾选） */
   rowDrag: boolean;
-  /** 横排列表（分组胶囊）按 x 轴算落点与位移；不写就是竖排 */
-  axis?: "x";
+  /**
+   * 排法：不写是竖排列表（自选行 / 分组区块），"x" 是横排一行（行情页那排胶囊），
+   * "grid" 是换行摊开的（☰「更多分组」弹层）—— 落点按两轴算
+   */
+  axis?: "x" | "y" | "grid";
   /** 现在能不能拖（行数不足时不动） */
   movable: () => boolean;
   /** 落点钳制：置顶区里的只能在置顶区里挪，其余只能在置顶区之后挪 */
@@ -32,8 +35,9 @@ interface DragState {
   cfg: DragCfg;
   from: number;
   to: number;
-  /** 按下时指针在拖动轴上的坐标 */
-  start: number;
+  /** 按下时指针的位置（换行摊开时两轴都要用） */
+  startX: number;
+  startY: number;
   rects: Rect[];
   el: HTMLElement;
 }
@@ -54,8 +58,11 @@ export const isDragging = () => drag !== null;
  */
 export function sortable(cfg: DragCfg, state: { take: boolean } = { take: false }): () => boolean {
   const { list } = cfg;
-  const axisX = cfg.axis === "x"; // 横排（分组胶囊）：落点与位移都按 x 算
+  const axis = cfg.axis ?? "y";
   const ident = cfg.ident ?? "id"; // 行的身份字段：apply 之后靠它找回焦点
+  /** 指针落在第几格：三种排法各用各的纯函数（见 drag.ts） */
+  const slotIn = (rects: Rect[], x: number, y: number) =>
+    axis === "x" ? slotAtX(rects, x) : axis === "y" ? slotAt(rects, y) : slotAtGrid(rects, x, y);
 
   list.addEventListener("pointerdown", (e) => {
     const t = e.target as HTMLElement;
@@ -76,7 +83,8 @@ export function sortable(cfg: DragCfg, state: { take: boolean } = { take: false 
       cfg,
       from,
       to: from,
-      start: axisX ? e.clientX : e.clientY,
+      startX: e.clientX,
+      startY: e.clientY,
       rects: rows.map((r) => {
         const b = r.getBoundingClientRect();
         return { top: b.top, height: b.height, left: b.left, width: b.width };
@@ -92,9 +100,16 @@ export function sortable(cfg: DragCfg, state: { take: boolean } = { take: false 
     if (drag?.cfg !== cfg) return;
     // 行已被重建（别的窗口改了顺序）或按键已松开：立刻中止，别拿旧下标去动新列表
     if (!drag.el.isConnected || !e.buttons) return cancelDrag();
-    const pos = axisX ? e.clientX : e.clientY;
-    drag.el.style.transform = `${axisX ? "translateX" : "translateY"}(${pos - drag.start}px)`;
-    const to = cfg.clamp(drag.from, axisX ? slotAtX(drag.rects, pos) : slotAt(drag.rects, pos));
+    const x = e.clientX;
+    const y = e.clientY;
+    // 竖排只跟纵向、横排只跟横向：另一根轴上的手抖不该让行歪出去
+    drag.el.style.transform =
+      axis === "x"
+        ? `translateX(${x - drag.startX}px)`
+        : axis === "y"
+          ? `translateY(${y - drag.startY}px)`
+          : `translate(${x - drag.startX}px, ${y - drag.startY}px)`;
+    const to = cfg.clamp(drag.from, slotIn(drag.rects, x, y));
     if (to === drag.to) return;
     drag.to = to;
     layoutDrag();
@@ -108,8 +123,8 @@ export function sortable(cfg: DragCfg, state: { take: boolean } = { take: false 
 
   // 键盘：Alt + ↑/↓（横排是 ←/→）移动（鼠标之外的第二条路）
   list.addEventListener("keydown", (e) => {
-    const back = axisX ? "ArrowLeft" : "ArrowUp";
-    const fwd = axisX ? "ArrowRight" : "ArrowDown";
+    const back = axis === "x" ? "ArrowLeft" : axis === "y" ? "ArrowUp" : "ArrowLeft";
+    const fwd = axis === "x" ? "ArrowRight" : axis === "y" ? "ArrowDown" : "ArrowRight";
     const row = (e.target as HTMLElement).closest<HTMLElement>(cfg.row);
     if (!row || !e.altKey || (e.key !== back && e.key !== fwd)) return;
     const rows = dragRows(cfg);
@@ -135,13 +150,20 @@ export function sortable(cfg: DragCfg, state: { take: boolean } = { take: false 
 function layoutDrag(): void {
   const d = drag;
   if (!d) return;
-  const axisX = d.cfg.axis === "x";
-  const at = (r: Rect) => (axisX ? r.left : r.top);
+  const axis = d.cfg.axis ?? "y";
   dragRows(d.cfg).forEach((row, i) => {
     if (row === d.el) return;
     const next = shiftIndex(i, d.from, d.to);
+    if (next === i) return void (row.style.transform = "");
+    // 位移 = 「目标那一格」与「我这一格」的差：竖排 / 横排是单轴，换行摊开的两轴都要
+    const dx = d.rects[next].left - d.rects[i].left;
+    const dy = d.rects[next].top - d.rects[i].top;
     row.style.transform =
-      next === i ? "" : `${axisX ? "translateX" : "translateY"}(${at(d.rects[next]) - at(d.rects[i])}px)`;
+      axis === "x"
+        ? `translateX(${dx}px)`
+        : axis === "y"
+          ? `translateY(${dy}px)`
+          : `translate(${dx}px, ${dy}px)`;
   });
 }
 

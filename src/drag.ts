@@ -1,5 +1,5 @@
 // 拖动排序里与 DOM 无关的那部分：指针落在第几格、其他行该让开多少。
-// 指针事件与布局留在 prefs.ts，这里只做纯计算，方便直接测。
+// 指针事件与布局留在 sortable.ts，这里只做纯计算，方便直接测。
 
 /** 某一行在拖动开始时的位置（视口坐标） */
 export interface RowRect {
@@ -12,6 +12,9 @@ export interface ColRect {
   left: number;
   width: number;
 }
+
+/** 换行摊开的列表（☰「更多分组」弹层）里每一项的位置：横竖都要 */
+export interface GridRect extends RowRect, ColRect {}
 
 /**
  * 指针落在第几个槽位（0 起）：过了某行的中线就算进入该槽；
@@ -32,6 +35,27 @@ export function slotAtX(rects: ColRect[], x: number): number {
     if (x < rects[i].left + rects[i].width / 2) return i;
   }
   return rects.length - 1;
+}
+
+/**
+ * 换行摊开的列表：落点取指针最近的那一格。格子排成几行都行，
+ * 所以不能只看某一根轴（☰「更多分组」弹层里那排胶囊用它）。
+ * 距离一样时取靠后的那一格 —— 与 slotAt / slotAtX「全都过了就落在最后一格」一致
+ * （量不出布局时所有格子重叠，正好退化成「落在最后一格」）。空列表返回 -1。
+ */
+export function slotAtGrid(rects: GridRect[], x: number, y: number): number {
+  let best = -1;
+  let bestD = Infinity;
+  rects.forEach((r, i) => {
+    const dx = x - (r.left + r.width / 2);
+    const dy = y - (r.top + r.height / 2);
+    const d = dx * dx + dy * dy;
+    if (d <= bestD) {
+      bestD = d;
+      best = i;
+    }
+  });
+  return best;
 }
 
 /**

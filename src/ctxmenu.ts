@@ -16,6 +16,11 @@ export interface MenuItem {
   count?: number;
   /** 只有 chips 排法用：当前选中的那一个（浅底 + 强调色文字，不用 ✓ 前缀） */
   on?: boolean;
+  /**
+   * 只有 chips 排法用：这一项的标记（渲染成 `data-key`），拖动排序时用来认行 ——
+   * 「全部 / 未分组」这类固定项不给 key，也就拖不走。
+   */
+  key?: string;
   onPick?: () => void;
 }
 
@@ -50,6 +55,12 @@ export interface MenuOpts {
    * 菜单是先移除再执行回调的，`closest()` 在摘下来的子树里仍然有效。
    */
   className?: string;
+
+  /**
+   * 菜单挂好之后回调（拿到菜单根节点）。主面板用它在 ☰ 的分组弹层里挂拖动排序，
+   * 以及拦掉「拖动尾巴那一下 click」—— 那一下不该顺手切分组。
+   */
+  onOpen?: (el: HTMLElement) => void;
 }
 
 /**
@@ -73,8 +84,9 @@ export function openMenu(x: number, y: number, items: MenuItem[], opts: MenuOpts
       const off = it.disabled ? " disabled" : "";
       if (chips) {
         // 直接复用筛选条上 .gtab 的样式：这里要的就是「和那排标签长得一模一样」
+        const key = it.key == null ? "" : ` data-key="${esc(it.key)}"`;
         return (
-          `<button class="gtab ctx-chip${it.on ? " on" : ""}" role="menuitem" data-i="${i}"${off}` +
+          `<button class="gtab ctx-chip${it.on ? " on" : ""}" role="menuitem" data-i="${i}"${key}${off}` +
           `${it.on ? ' aria-current="true"' : ""}>${esc(it.label)}` +
           `${it.count == null ? "" : `<b>${it.count}</b>`}</button>`
         );
@@ -98,6 +110,7 @@ export function openMenu(x: number, y: number, items: MenuItem[], opts: MenuOpts
   const py = Math.min(Math.max(6, y), Math.max(6, window.innerHeight - h - 6));
   el.style.left = `${Math.round(px)}px`;
   el.style.top = `${Math.round(py)}px`;
+  opts.onOpen?.(el);
 
   const pick = (i: number) => {
     const it = items[i];

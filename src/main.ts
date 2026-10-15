@@ -32,6 +32,7 @@ import {
   loadSettings,
   loadTickerPos,
   moveInView,
+  moveItem,
   onSettingsChange,
   pinCount,
   pinItem,
@@ -802,24 +803,66 @@ $("#gtabs").addEventListener("click", (e) => {
   if (gid === undefined) return;
   pickGroup(gid === "*" ? null : gid);
 });
-
 // 末尾 ☰：横滑出去的分组从这里点。内容不按菜单排，而是摊成和筛选条上那排一模一样的
 // 标签（带数量、当前这个高亮），分组多时自动换行，比一长条菜单矮得多。
 // 弹层挂在 ☰ 上，筛选条自己横着滚不会挪动它，所以那种滚动不该把它收起来。
-tabMore.addEventListener("click", () => {
+//
+// 用户建的分组在这一层里也能直接拖动排序：这里把所有分组一次摊开（不像筛选条那样要横滑），
+// 「拖动」和「看后面的分组」就不会撞。顺序 = 设置里的分组顺序，与设置 › 行情 那排胶囊共用同一份。
+/** 刚在这层里拖完的时间：松手跟来的那一下 click 不该顺手切分组 */
+let moreDraggedAt = 0;
+
+/** 弹层的内容：用户建的分组带 key（可拖），「全部 / 未分组」固定在最前、不给 key 也就拖不走 */
+function groupChips(): MenuItem[] {
+  return groupTabs().map((t) => ({
+    label: t.name,
+    count: t.n,
+    on: t.gid === groupFilter,
+    key: t.gid || undefined,
+    onPick: () => {
+      if (isDragClick(moreDraggedAt, Date.now())) {
+        moreDraggedAt = 0;
+        return;
+      }
+      pickGroup(t.gid);
+    },
+  }));
+}
+
+function openGroupMenu(): void {
   const r = tabMore.getBoundingClientRect();
-  openMenu(
-    r.right,
-    r.bottom + 4,
-    groupTabs().map((t) => ({
-      label: t.name,
-      count: t.n,
-      on: t.gid === groupFilter,
-      onPick: () => pickGroup(t.gid),
-    })),
-    { ignoreScrollFrom: tabScroll, layout: "chips" },
-  );
-});
+  openMenu(r.right, r.bottom + 4, groupChips(), {
+    ignoreScrollFrom: tabScroll,
+    layout: "chips",
+    // 拖动排序挂在这一层上：弹层是每次点开新造的，所以按需注册（菜单一关就随 DOM 一起没了）
+    onOpen: (el) => {
+      sortable({
+        list: el,
+        row: ".ctx-chip[data-key]",
+        ident: "key",
+        handle: ".ctx-chip[data-key]", // 整颗胶囊就是把手
+        rowDrag: true,
+        axis: "grid", // 会换行，落点按两轴算
+        movable: () => S.groups.length > 1,
+        clamp: (_from, to) => to, // 行只含用户分组，胶囊之间可以随便换位
+        apply: (from, to) => {
+          moreDraggedAt = Date.now();
+          S.groups = moveItem(S.groups, from, to);
+          save();
+          renderList();
+          // 顺序变了：当场按新顺序把弹层重开一次，看着换过位的那一眼不用重新点开
+          // （重开后 DOM 整个换掉，拖动留下的位移也就跟着没了）
+          openGroupMenu();
+        },
+        render: () => {
+          /* 没换位的拖动只留下位移，由 sortable 自己复位；这里的 DOM 不重建 */
+        },
+      });
+    },
+  });
+}
+
+tabMore.addEventListener("click", openGroupMenu);
 
 // 横向滑：鼠标滚轮（竖直方向）也能把筛选条推向右边；触控板横滑是浏览器原生的，这里不拦
 tabScroll.addEventListener(

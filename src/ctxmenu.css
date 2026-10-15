@@ -110,6 +110,23 @@
   max-width: min(240px, calc(100vw - 12px));
   padding: 8px;
 }
+/* 弹层里可拖动的分组胶囊（带 data-key 的才是）：拖动排序的落点按两轴算（会换行） */
+.ctx-menu.chips .ctx-chip[data-key] {
+  cursor: grab;
+  /* 触屏：横向留给排序拖拽，纵向仍然是滚动（分组多了弹层要能滚） */
+  touch-action: pan-y;
+  transition: color 0.18s ease, background 0.18s ease, border-color 0.18s ease,
+    transform 0.18s var(--ease-out, ease-out);
+}
+.ctx-menu.chips.dragging {
+  cursor: grabbing;
+}
+.ctx-menu.chips .ctx-chip.dragging {
+  z-index: 2;
+  cursor: grabbing;
+  transition: none;
+  box-shadow: var(--menu-shadow);
+}
 
 @media (prefers-reduced-motion: reduce) {
   .ctx-menu {

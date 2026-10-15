@@ -123,6 +123,28 @@ describe("右键菜单", () => {
     expect(seen).toEqual([true]);
   });
 
+  it("key 渲染成 data-key（拖动排序靠它认行）；不传 key 的项没有这个属性", () => {
+    openMenu(
+      0,
+      0,
+      [
+        { label: "全部", count: 3 },
+        { label: "持仓", count: 1, key: "g1" },
+      ],
+      { layout: "chips" },
+    );
+    const chips = [...document.querySelectorAll<HTMLElement>(".ctx-chip")];
+    expect(chips[0].hasAttribute("data-key")).toBe(false);
+    expect(chips[1].dataset.key).toBe("g1");
+  });
+
+  it("onOpen 拿到挂好的菜单根节点（主面板用它挂拖动排序）", () => {
+    const seen: HTMLElement[] = [];
+    openMenu(0, 0, [{ label: "持仓", key: "g1" }], { layout: "chips", onOpen: (el) => seen.push(el) });
+    expect(seen).toEqual([menu()]);
+    expect(seen[0].querySelector(".ctx-chip")).not.toBeNull();
+  });
+
   it("className 挂到菜单根节点上，用来区分是哪个菜单（其余菜单不挂）", () => {
     const seen: string[] = [];
     const onDoc = (e: Event) => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { shiftIndex, slotAt, slotAtX, type ColRect, type RowRect } from "./drag";
+import { shiftIndex, slotAt, slotAtGrid, slotAtX, type ColRect, type GridRect, type RowRect } from "./drag";
 
 // 三行、每行 50px、行间无缝隙
 const rects: RowRect[] = [
@@ -77,5 +77,33 @@ describe("shiftIndex", () => {
 
   it("原地不动时所有行都保持原位", () => {
     expect([0, 1, 2].map((i) => shiftIndex(i, 1, 1))).toEqual([0, 1, 2]);
+  });
+});
+
+// 换行摊开：两行、每行三个，每个 60×30，行间 4px、列间 6px
+const grid: GridRect[] = [
+  { left: 0, top: 0, width: 60, height: 30 },
+  { left: 66, top: 0, width: 60, height: 30 },
+  { left: 132, top: 0, width: 60, height: 30 },
+  { left: 0, top: 34, width: 60, height: 30 },
+  { left: 66, top: 34, width: 60, height: 30 },
+  { left: 132, top: 34, width: 60, height: 30 },
+];
+
+describe("slotAtGrid", () => {
+  it("取离指针最近的那一格", () => {
+    expect(slotAtGrid(grid, 30, 15)).toBe(0);
+    expect(slotAtGrid(grid, 96, 15)).toBe(1);
+    expect(slotAtGrid(grid, 96, 49)).toBe(4); // 第二行中间那格
+    expect(slotAtGrid(grid, 200, 60)).toBe(5); // 右下角
+  });
+
+  it("落在两行之间时看谁近", () => {
+    expect(slotAtGrid(grid, 96, 31)).toBe(1);
+    expect(slotAtGrid(grid, 96, 33)).toBe(4);
+  });
+
+  it("空列表返回 -1（空列表上不会开始拖动）", () => {
+    expect(slotAtGrid([], 10, 10)).toBe(-1);
   });
 });

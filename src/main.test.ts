@@ -305,18 +305,22 @@ describe("主面板：分组胶囊", () => {
       expect(document.querySelectorAll(".ctx-menu").length).toBe(1);
     });
 
-    it("鼠标拖动胶囊改顺序，松手跟来的那一下 click 不切分组", () => {
+    it("鼠标拖动胶囊改顺序：就地换位（弹层不重建），松手那一下 click 不切分组", () => {
       open();
-      const first = document.querySelector<HTMLElement>('.ctx-menu.chips .ctx-chip[data-key="g1"]')!;
+      const menu = popup()!;
+      const first = menu.querySelector<HTMLElement>('.ctx-chip[data-key="g1"]')!;
       pointer(first, "pointerdown", 10);
       pointer(first, "pointermove", 400);
       pointer(first, "pointerup", 400, 0);
 
       expect(order()).toEqual(["g2", "g3", "g1"]);
-      // 重开后跟来的那一下 click 打在新弹层的胶囊上：它属于这次拖动，不该切分组
-      const chip = document.querySelector<HTMLElement>('.ctx-menu.chips .ctx-chip[data-key="g1"]')!;
-      chip.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      expect(saved()).toMatchObject({ selected: "1.600519" });
+      // 弹层还是同一层（不重建 → 入场动画不会重播，拖完不会闪一下）
+      expect(popup()).toBe(menu);
+      expect(keys()).toEqual(["g2", "g3", "g1"]);
+
+      // 松手跟来的那一下 click 打在同一颗胶囊上：它属于这次拖动，不该切分组、也不该收起弹层
+      menu.querySelector<HTMLElement>('.ctx-chip[data-key="g1"]')!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      expect(popup()).toBe(menu);
       expect(rows().map((r) => r.dataset.id)).toEqual(["1.600519", "0.300750", "116.00700"]); // 仍是「全部」
     });
 

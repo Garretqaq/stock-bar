@@ -819,13 +819,7 @@ function groupChips(): MenuItem[] {
     count: t.n,
     on: t.gid === groupFilter,
     key: t.gid || undefined,
-    onPick: () => {
-      if (isDragClick(moreDraggedAt, Date.now())) {
-        moreDraggedAt = 0;
-        return;
-      }
-      pickGroup(t.gid);
-    },
+    onPick: () => pickGroup(t.gid),
   }));
 }
 
@@ -836,6 +830,18 @@ function openGroupMenu(): void {
     layout: "chips",
     // 拖动排序挂在这一层上：弹层是每次点开新造的，所以按需注册（菜单一关就随 DOM 一起没了）
     onOpen: (el) => {
+      // 拖动松手跟来的那一下 click：在捕获阶段就拦掉 —— 那一层自己的点击处理在冒泡阶段，
+      // 不拦的话它会关掉弹层并「切分组」（拖完就想接着拖第二颗的人会白点一下）
+      el.addEventListener(
+        "click",
+        (e) => {
+          if (!isDragClick(moreDraggedAt, Date.now())) return;
+          moreDraggedAt = 0;
+          e.stopPropagation();
+          e.preventDefault();
+        },
+        true,
+      );
       sortable({
         list: el,
         row: ".ctx-chip[data-key]",
@@ -849,10 +855,21 @@ function openGroupMenu(): void {
           moreDraggedAt = Date.now();
           S.groups = moveItem(S.groups, from, to);
           save();
-          renderList();
-          // 顺序变了：当场按新顺序把弹层重开一次，看着换过位的那一眼不用重新点开
-          // （重开后 DOM 整个换掉，拖动留下的位移也就跟着没了）
-          openGroupMenu();
+          // 就地换位：把弹层里那排胶囊按新顺序重排，而不是关掉重开 ——
+          // 重开会整层重建，看着就是「拖完闪一下」。data-i 跟着各自的项走，点哪个仍然切哪个。
+          const chips = [...el.querySelectorAll<HTMLElement>(".ctx-chip[data-key]")];
+          // 清位移这一步不该被动画化（胶囊上有 transform 过渡）：先关掉过渡、换完顺序强制回流，
+          // 再恢复 —— 画面就停在松手那一刻，既不会跳也不会闪
+          chips.forEach((c) => {
+            c.style.transition = "none";
+            c.style.transform = "";
+          });
+          const [moved] = chips.splice(from, 1);
+          chips.splice(to, 0, moved);
+          chips.forEach((c) => el.append(c));
+          void el.offsetHeight;
+          chips.forEach((c) => (c.style.transition = ""));
+          renderList(); // 筛选条跟着换顺序
         },
         render: () => {
           /* 没换位的拖动只留下位移，由 sortable 自己复位；这里的 DOM 不重建 */
@@ -862,7 +879,7 @@ function openGroupMenu(): void {
   });
 }
 
-tabMore.addEventListener("click", openGroupMenu);
+tabMore.addEventListener("click", () => openGroupMenu());
 
 // 横向滑：鼠标滚轮（竖直方向）也能把筛选条推向右边；触控板横滑是浏览器原生的，这里不拦
 tabScroll.addEventListener(

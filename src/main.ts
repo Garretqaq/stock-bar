@@ -21,6 +21,7 @@ import {
   UNGROUPED,
   applyAppearance,
   applySearchAction,
+  clampBlock,
   dropGroupOf,
   groupIdOf,
   groupNameOf,
@@ -30,6 +31,7 @@ import {
   itemsOf,
   loadSettings,
   loadTickerPos,
+  moveInView,
   moveItem,
   onSettingsChange,
   pinCount,
@@ -1000,7 +1002,32 @@ function togglePin(id: string): void {
   renderAll();
 }
 
+// 自选行也能直接拖动排序：顺序写回 watchlist（分组视图里换算成整表下标，置顶的只能在自己那块里挪）
+const listIds = () => [...document.querySelectorAll<HTMLElement>("#list .row")].map((r) => r.dataset.id!);
+/** 刚把某一行拖走的时间：松手跟来的那一下 click 不该顺手展开分时图 */
+let rowDraggedAt = 0;
+sortable({
+  list: $("#list"),
+  row: ".row",
+  handle: ".row-name", // 触屏只有从名称起拖才排序：行其他地方拖动仍然是滚列表
+  rowDrag: true,
+  movable: () => visibleIds().length > 1,
+  clamp: (from, to) => clampBlock(listIds(), S.pins, from, to),
+  apply: (from, to) => {
+    rowDraggedAt = Date.now();
+    S.watchlist = moveInView(S.watchlist, listIds(), from, to);
+    save();
+    renderList();
+  },
+  render: renderList,
+});
+
 $("#list").addEventListener("click", (e) => {
+  // 拖动松手跟来的那一下 click 不算点行（别顺手把分时图展开了）
+  if (isDragClick(rowDraggedAt, Date.now())) {
+    rowDraggedAt = 0;
+    return;
+  }
   const id = (e.target as HTMLElement).closest<HTMLElement>(".row")?.dataset.id;
   if (id) toggleTrend(id);
 });

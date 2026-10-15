@@ -663,6 +663,18 @@ button {
   transform: scale(0.985);
   transition-duration: 0.08s;
 }
+
+/* 拖动排序：被拖的那行跟手（去掉过渡）并浮在其他行上面，其他行由 sortable 让位 */
+.row.dragging {
+  z-index: 3;
+  cursor: grabbing;
+  transition: none;
+  background: var(--card);
+  box-shadow: var(--shadow-md);
+}
+.list.dragging {
+  cursor: grabbing;
+}
 /* 置顶区：一层很淡的强调色底，和下面的普通自选分开。
    「当前选中」也用强调色，所以两者靠浓度区分（置顶 5% / 选中 10%，还带左侧竖条）；
    置顶那行自己悬停时单独加深一档（.row.pinned 比 .row:hover 靠后，不写就盖掉了悬停反馈） */
@@ -711,6 +723,8 @@ button {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  /* 触屏从名称起拖才是排序：行其他地方拖动仍然交给列表滚动 */
+  touch-action: none;
 }
 .row-meta {
   display: flex;

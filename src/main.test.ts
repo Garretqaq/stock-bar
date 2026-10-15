@@ -60,6 +60,19 @@ const menuPick = (label: string) =>
 const rightClick = (id: string) =>
   rowOf(id).dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, clientX: 5, clientY: 5 }));
 
+/** 在某个元素上派发一次指针事件（happy-dom 量不出布局，只用来跑通接线）；pointerType 要是 mouse，否则竖排列表只认把手 */
+const pointer = (el: Element, type: string, pos: number, buttons = 1) =>
+  el.dispatchEvent(
+    new PointerEvent(type, {
+      bubbles: true,
+      button: 0,
+      buttons,
+      pointerId: 1,
+      pointerType: "mouse",
+      clientX: pos,
+      clientY: pos,
+    }),
+  );
 
 /** 走右键菜单置顶 / 取消置顶（菜单里那一项叫什么就点什么） */
 function pinViaMenu(id: string): void {
@@ -246,10 +259,6 @@ describe("主面板：分组胶囊拖动排序", () => {
   /** 胶囊里的用户分组 id（顺序即分组顺序；全部是 *，未分组是空串） */
   const grpIds = () => chips().map((c) => c.dataset.gid).filter((g) => g !== "*" && g !== "");
   const order = () => saved().groups.map((g: { id: string }) => g.id);
-  const pointer = (el: Element, type: string, x: number, buttons = 1) =>
-    el.dispatchEvent(
-      new PointerEvent(type, { bubbles: true, button: 0, buttons, pointerId: 1, clientX: x, clientY: 0 }),
-    );
 
   beforeEach(() => boot(withGroups));
 
@@ -287,5 +296,71 @@ describe("主面板：分组胶囊拖动排序", () => {
       .find((c) => c.textContent!.includes("持仓"))!
       .click();
     expect(rows().map((r) => r.dataset.id)).toEqual(["0.300750"]);
+  });
+});
+
+// 自选行直接拖动排序：顺序写回 watchlist（分组视图换算成整表下标，置顶的只能在自己那块里挪）
+describe("主面板：拖动自选行排序", () => {
+  const ids = () => rows().map((r) => r.dataset.id);
+  /** 从某一行起拖：happy-dom 量不出布局，落点恒为最后一格（置顶的会被 clampBlock 拉回置顶区） */
+  const dragRow = (id: string) => {
+    const row = rowOf(id);
+    pointer(row, "pointerdown", 10);
+    pointer(row, "pointermove", 400);
+    pointer(row, "pointerup", 400, 0);
+  };
+
+  beforeEach(() => boot());
+
+  it("拖动一行：顺序写回设置、行跟着重排", () => {
+    dragRow("0.300750");
+
+    expect(saved().watchlist).toEqual(["1.600519", "116.00700", "0.300750"]);
+    expect(ids()).toEqual(["1.600519", "116.00700", "0.300750"]);
+  });
+
+  it("拖动松手跟来的那一下 click 不展开分时图", () => {
+    dragRow("0.300750");
+    rowOf("0.300750").click(); // 浏览器松手后补的那一下
+
+    expect(rowOf("0.300750").classList.contains("open")).toBe(false);
+    expect(document.querySelector("#list .trend.show")).toBeNull();
+    expect(saved().selected).toBe("1.600519"); // 选中项也没被顺手动过
+  });
+
+  it("按下没挪动就松手：仍是普通点击（展开分时图）", () => {
+    const row = rowOf("0.300750");
+    pointer(row, "pointerdown", 10);
+    pointer(row, "pointerup", 10, 0);
+
+    expect(saved().watchlist).toEqual(["1.600519", "0.300750", "116.00700"]); // 顺序没动
+    row.click();
+    expect(rowOf("0.300750").classList.contains("open")).toBe(true);
+  });
+
+  it("置顶的行拖不出去：落点被钳在置顶区里", async () => {
+    await boot({ pins: ["1.600519"] });
+
+    dragRow("1.600519");
+
+    expect(saved().watchlist).toEqual(["1.600519", "0.300750", "116.00700"]);
+    expect(saved().pins).toEqual(["1.600519"]);
+  });
+
+  it("分组视图里拖动：组内先后变了，整表顺序跟着走", async () => {
+    await boot({
+      groups: [{ id: "g1", name: "持仓" }],
+      groupOf: { "0.300750": "g1", "116.00700": "g1" },
+    });
+    [...document.querySelectorAll<HTMLElement>("#gtab-scroll .gtab")]
+      .find((c) => c.textContent!.includes("持仓"))!
+      .click();
+    expect(ids()).toEqual(["0.300750", "116.00700"]);
+
+    dragRow("0.300750"); // 组内第一只往后挪
+
+    // 整表里它挪到了组内第二只之后；组视图里的先后也跟着变
+    expect(saved().watchlist).toEqual(["1.600519", "116.00700", "0.300750"]);
+    expect(ids()).toEqual(["116.00700", "0.300750"]);
   });
 });

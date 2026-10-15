@@ -39,6 +39,12 @@ export interface MenuOpts {
    *   比一长条菜单矮得多 —— 筛选条末尾的 ☰ 用它
    */
   layout?: "rows" | "chips";
+  /**
+   * 额外挂到菜单根节点上的类名（空格分隔）。搜索结果右键菜单用它给自己打标 `ctx-search`：
+   * 「点别处收起搜索结果」的监听据此认出「这次点击来自搜索菜单，别收」——
+   * 菜单是先移除再执行回调的，`closest()` 在摘下来的子树里仍然有效。
+   */
+  className?: string;
 }
 
 /**
@@ -49,11 +55,11 @@ export interface MenuOpts {
 export function openMenu(x: number, y: number, items: MenuItem[], opts: MenuOpts = {}): void {
   closeMenu();
   if (!items.length) return;
-  const { ignoreScrollFrom, layout = "rows" } = opts;
+  const { ignoreScrollFrom, layout = "rows", className } = opts;
   const chips = layout === "chips";
 
   const el = document.createElement("div");
-  el.className = chips ? "ctx-menu chips" : "ctx-menu";
+  el.className = ["ctx-menu", chips ? "chips" : "", className ?? ""].filter(Boolean).join(" ");
   el.setAttribute("role", "menu");
   el.innerHTML = items
     .map((it, i) => {

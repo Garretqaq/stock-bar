@@ -20,6 +20,7 @@ import {
   INDICES,
   UNGROUPED,
   applyAppearance,
+  applySearchAction,
   dropGroupOf,
   groupIdOf,
   groupNameOf,
@@ -31,6 +32,7 @@ import {
   loadTickerPos,
   onSettingsChange,
   saveSettings,
+  searchActions,
   setGroup,
   type Settings,
 } from "./settings";
@@ -995,6 +997,7 @@ function closeSearch(): void {
 }
 
 function renderSearch(items: SearchItem[]): void {
+  searchItems = items;
   if (!items.length) {
     searchBox.innerHTML = `<div class="sr-empty">没有找到相关股票</div>`;
   } else {
@@ -1012,6 +1015,47 @@ function renderSearch(items: SearchItem[]): void {
       .join("");
   }
   searchBox.classList.add("show");
+}
+
+/** 最近一次搜索结果：右键操作后重画（加入过的那一行立刻变成「已添加」） */
+let searchItems: SearchItem[] = [];
+/**
+ * 搜索结果右键菜单的标记类名：菜单里的点击不该把搜索结果收起来（「点别处收起」的监听据此放行）。
+ * 只有搜索菜单挂这个标 —— 别的菜单（自选行、分组标题）被点掉时，搜索结果照旧收起。
+ */
+const SEARCH_MENU = "ctx-search";
+
+
+/** 右键操作后重画结果列表（还开着才重画） */
+function refreshSearch(): void {
+  if (searchBox.classList.contains("show")) renderSearch(searchItems);
+}
+
+/**
+ * 搜索结果行的右键菜单：与设置窗口同一份判断（settings.ts 的 searchActions），
+ * 「加入」类动作和点结果一样会把它设为当前选中；正在看某个分组时，纯「加入自选」也直接进这个分组。
+ */
+function openSearchMenu(id: string, x: number, y: number): void {
+  openMenu(
+    x,
+    y,
+    searchActions(S.groups, S.groupOf, S.watchlist, S.pins, id).map((a) => ({
+      label: a.label,
+      onPick: () => {
+        const added = !S.watchlist.includes(id);
+        const next = applySearchAction({ watchlist: S.watchlist, pins: S.pins, groupOf: S.groupOf }, S.groups, id, a);
+        S.watchlist = next.watchlist;
+        S.pins = next.pins;
+        S.groupOf = next.groupOf;
+        if (added && a.kind === "add" && groupFilter) S.groupOf = setGroup(S.groupOf, id, groupFilter);
+        if (added && (a.kind === "add" || a.kind === "addToGroup")) S.selected = id;
+        save();
+        renderFromSettings(); // 清单、筛选条、菜单栏一起跟上
+        refreshSearch(); // 结果列表留着：刚加入的那一行当场变成「已添加」
+      },
+    })),
+    { className: SEARCH_MENU },
+  );
 }
 
 searchInput.addEventListener("input", () => {
@@ -1043,7 +1087,8 @@ searchBox.addEventListener("click", (e) => {
   const sr = (e.target as HTMLElement).closest<HTMLElement>(".sr");
   const id = sr?.dataset.id;
   if (!id) return;
-  if (!S.watchlist.includes(id)) {
+  // 内置的大盘指数一直显示在面板上，不能再加一份进自选（与 MCP、右键菜单同一条规则）
+  if (!isIndex(id) && !S.watchlist.includes(id)) {
     S.watchlist.push(id);
     // 正在看某个分组时，新加的标的直接进这个分组（「未分组」则不加归属）
     if (groupFilter) S.groupOf = setGroup(S.groupOf, id, groupFilter);
@@ -1055,9 +1100,19 @@ searchBox.addEventListener("click", (e) => {
   refresh();
 });
 
+// 搜索结果行右键：加入自选 / 加入并移入分组 / 移入分组 / 置顶（与自选行右键同一套 ctxmenu）
+searchBox.addEventListener("contextmenu", (e) => {
+  const id = (e.target as HTMLElement).closest<HTMLElement>(".sr")?.dataset.id;
+  if (!id) return;
+  e.preventDefault();
+  openSearchMenu(id, e.clientX, e.clientY);
+});
+
+// 点别处收起搜索；但右键菜单里的点击不算「点别处」——
+// 连着做两步（加入、再置顶）时结果列表要留着，刚加入的那一行才好当场变成「已添加」
 document.addEventListener("click", (e) => {
   const t = e.target as HTMLElement;
-  if (!t.closest(".search")) closeSearch();
+  if (!t.closest(".search") && !t.closest(`.${SEARCH_MENU}`)) closeSearch();
 });
 
 // ---------- 设置 / 底栏 ----------

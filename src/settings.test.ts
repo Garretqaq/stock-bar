@@ -6,6 +6,7 @@ import {
   STORE_KEY,
   UNGROUPED,
   addToBar,
+  applySearchAction,
   clampBlock,
   dropGroupOf,
   groupIdOf,
@@ -26,6 +27,7 @@ import {
   renameGroup,
   saveSettings,
   saveTickerPos,
+  searchActions,
   setGroup,
   setGroupMany,
   trimGroupName,
@@ -451,5 +453,117 @@ describe("自选分组", () => {
   it("normalizeGroups 对非数组 / 非对象的入参按空处理", () => {
     expect(normalizeGroups(["a"], "bad", 7)).toEqual({ groups: [], groupOf: {} });
     expect(normalizeGroups(["a"], null, null)).toEqual({ groups: [], groupOf: {} });
+  });
+});
+
+describe("searchActions", () => {
+  const groups = [
+    { id: "g1", name: "工作" },
+    { id: "g2", name: "长线" },
+  ];
+  /** a 在 g1，b 没归属 */
+  const groupOf = { a: "g1" };
+  const list = ["a", "b"];
+
+  it("结果还不是自选：给「加入自选」，建过分组时再给每个分组一项「加入并移入」", () => {
+    expect(searchActions(groups, groupOf, list, [], "116.00700")).toEqual([
+      { kind: "add", label: "加入自选" },
+      { kind: "addToGroup", gid: "g1", label: "加入并移入「工作」" },
+      { kind: "addToGroup", gid: "g2", label: "加入并移入「长线」" },
+    ]);
+  });
+
+  it("还没建过分组时只给「加入自选」，不出现分组项", () => {
+    expect(searchActions([], {}, list, [], "116.00700")).toEqual([{ kind: "add", label: "加入自选" }]);
+  });
+
+  it("已经是自选：给当前分组之外的目标 + 置顶（未置顶时）", () => {
+    expect(searchActions(groups, groupOf, list, [], "a")).toEqual([
+      { kind: "moveToGroup", gid: UNGROUPED, label: "移入「未分组」" },
+      { kind: "moveToGroup", gid: "g2", label: "移入「长线」" },
+      { kind: "pin", label: "置顶" },
+    ]);
+    // b 没归属，所以「未分组」不出现，改出现「工作」
+    expect(searchActions(groups, groupOf, list, [], "b").map((a) => a.gid ?? a.kind)).toEqual([
+      "g1",
+      "g2",
+      "pin",
+    ]);
+  });
+
+  it("已经置顶的自选给「取消置顶」", () => {
+    const acts = searchActions(groups, groupOf, list, ["b"], "b");
+    expect(acts[acts.length - 1]).toEqual({ kind: "unpin", label: "取消置顶" });
+  });
+
+  it("内置的大盘指数没有菜单：不加自选、也不分组与置顶（与 MCP 同一条规则）", () => {
+    expect(searchActions(groups, groupOf, list, [], "1.000001")).toEqual([]);
+    // 万一被塞进自选了，也不该给它分组 / 置顶的入口
+    expect(searchActions(groups, groupOf, ["1.000001"], [], "1.000001")).toEqual([]);
+  });
+});
+
+describe("applySearchAction", () => {
+  const groups = [{ id: "g1", name: "工作" }];
+  const state = () => ({ watchlist: ["a", "b"], pins: ["a"], groupOf: { a: "g1" } as Record<string, string> });
+
+  it("加入自选：追加到末尾，不动原对象", () => {
+    const s = state();
+    expect(applySearchAction(s, groups, "c", { kind: "add", label: "加入自选" })).toEqual({
+      watchlist: ["a", "b", "c"],
+      pins: ["a"],
+      groupOf: { a: "g1" },
+    });
+    expect(s.watchlist).toEqual(["a", "b"]); // 入参没被改
+  });
+
+  it("加入并移入分组：一次把加入与归属都做完", () => {
+    expect(applySearchAction(state(), groups, "c", { kind: "addToGroup", gid: "g1", label: "" }).groupOf).toEqual({
+      a: "g1",
+      c: "g1",
+    });
+  });
+
+  it("加入自选重复执行不会加两遍", () => {
+    const once = applySearchAction(state(), groups, "b", { kind: "add", label: "" });
+    expect(once.watchlist).toEqual(["a", "b"]);
+  });
+
+  it("移入分组：改归属，未分组就清掉归属", () => {
+    expect(applySearchAction(state(), groups, "b", { kind: "moveToGroup", gid: "g1", label: "" }).groupOf).toEqual({
+      a: "g1",
+      b: "g1",
+    });
+    expect(applySearchAction(state(), groups, "a", { kind: "moveToGroup", gid: UNGROUPED, label: "" }).groupOf).toEqual(
+      {},
+    );
+  });
+
+  it("目标分组已经不存在时按未分组处理", () => {
+    expect(applySearchAction(state(), groups, "b", { kind: "moveToGroup", gid: "gone", label: "" }).groupOf).toEqual({
+      a: "g1",
+    });
+  });
+
+  it("置顶把标的挪到最前并记进 pins，取消置顶再挪出来", () => {
+    const pinned = applySearchAction(state(), groups, "b", { kind: "pin", label: "" });
+    expect(pinned.watchlist).toEqual(["b", "a"]);
+    expect(pinned.pins).toEqual(["a", "b"]);
+    const off = applySearchAction(pinned, groups, "b", { kind: "unpin", label: "" });
+    expect(off.pins).toEqual(["a"]);
+    expect(off.watchlist).toEqual(["a", "b"]);
+  });
+
+  it("指数不加：任何动作都原样返回", () => {
+    const s = { watchlist: ["a"], pins: [] as string[], groupOf: {} as Record<string, string> };
+    expect(applySearchAction(s, groups, "1.000001", { kind: "add", label: "" })).toEqual(s);
+    expect(applySearchAction(s, groups, "1.000001", { kind: "addToGroup", gid: "g1", label: "" })).toEqual(s);
+  });
+
+  it("菜单点下去时标的已不在自选里：不留下指向它的分组归属", () => {
+    // 菜单是点开那一刻渲染的，点之前标的可能已经在别的窗口 / MCP 里被删掉了
+    expect(applySearchAction(state(), groups, "gone", { kind: "moveToGroup", gid: "g1", label: "" }).groupOf).toEqual({
+      a: "g1",
+    });
   });
 });

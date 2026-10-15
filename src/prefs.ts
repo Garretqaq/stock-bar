@@ -29,12 +29,14 @@ import {
   UNGROUPED,
   addToBar,
   applyAppearance,
+  applySearchAction,
   clampBlock,
   dropGroupOf,
   groupNameOf,
   groupTargets,
   groupTargetsFor,
   isDark,
+  isIndex,
   itemsOf,
   loadSettings,
   moveInView,
@@ -46,11 +48,13 @@ import {
   removeGroup,
   renameGroup,
   saveSettings,
+  searchActions,
   setGroup,
   setGroupMany,
   unpinItem,
   type BarField,
   type BarStyle,
+  type SearchAction,
   type Settings,
   type Theme,
 } from "./settings";
@@ -922,7 +926,11 @@ function closeAdd(): void {
   addResults.innerHTML = "";
 }
 
+/** 最近一次搜索结果：右键操作后要按新设置重画（加入过的那一行立刻变成「已添加」） */
+let addItems: SearchItem[] = [];
+
 function renderAddResults(items: SearchItem[]): void {
+  addItems = items;
   addResults.innerHTML = items.length
     ? items
         .map((it) => {
@@ -938,6 +946,56 @@ function renderAddResults(items: SearchItem[]): void {
         .join("")
     : `<div class="sr-empty">没有找到相关股票</div>`;
   addResults.classList.add("show");
+}
+
+/** 右键操作后重画结果列表（还开着才重画，已经收起就别又弹出来） */
+function refreshAddResults(): void {
+  if (addResults.classList.contains("show")) renderAddResults(addItems);
+}
+
+/** 执行一条搜索结果动作，提示文案按动作来说 */
+function applyResultAction(id: string, action: SearchAction): void {
+  const was = S.watchlist.includes(id);
+  const next = applySearchAction({ watchlist: S.watchlist, pins: S.pins, groupOf: S.groupOf }, S.groups, id, action);
+  S.watchlist = next.watchlist;
+  S.pins = next.pins;
+  S.groupOf = next.groupOf;
+  lastPick = -1; // 顺序或归属变了，Shift 区间选择的锚点作废
+  commit();
+  refreshAddResults();
+  const name = groupNameOf(S.groups, action.gid ?? UNGROUPED);
+  hint(
+    action.kind === "add"
+      ? "已加入自选"
+      : action.kind === "addToGroup"
+        ? was
+          ? `已移入「${name}」`
+          : `已加入自选并移入「${name}」`
+        : action.kind === "moveToGroup"
+          ? `已移入「${name}」`
+          : action.kind === "pin"
+            ? "已置顶"
+            : "已取消置顶",
+  );
+  if (!was) void poll(); // 新加的标的还没有行情，补一次
+}
+
+/**
+ * 搜索结果右键菜单的标记类名：菜单里的点击不该把搜索结果收起来（「点别处收起」的监听据此放行）。
+ * 只有搜索菜单挂这个标 —— 别的菜单（自选行、分组标题）被点掉时，搜索结果照旧收起。
+ */
+const SEARCH_MENU = "ctx-search";
+
+function openResultMenu(id: string, x: number, y: number): void {
+  openMenu(
+    x,
+    y,
+    searchActions(S.groups, S.groupOf, S.watchlist, S.pins, id).map((a) => ({
+      label: a.label,
+      onPick: () => applyResultAction(id, a),
+    })),
+    { className: SEARCH_MENU },
+  );
 }
 
 // ---------- 仪表盘：菜单栏顺序列表 ----------
@@ -1451,6 +1509,8 @@ addInput.addEventListener("keydown", (e) => {
 addResults.addEventListener("click", (e) => {
   const id = (e.target as HTMLElement).closest<HTMLElement>(".sr")?.dataset.id;
   if (!id || S.watchlist.includes(id)) return;
+  // 内置的大盘指数一直显示在「行情」页的指数区，不能再加一份进自选（与 MCP、右键菜单同一条规则）
+  if (isIndex(id)) return hint("大盘指数不能加入自选");
   S.watchlist = [...S.watchlist, id];
   addInput.value = "";
   closeAdd();
@@ -1459,8 +1519,20 @@ addResults.addEventListener("click", (e) => {
   void poll();
 });
 
+// 搜索结果行右键：加入自选 / 加入并移入分组 / 移入分组 / 置顶（与自选行的右键菜单同一套 ctxmenu）
+addResults.addEventListener("contextmenu", (e) => {
+  const id = (e.target as HTMLElement).closest<HTMLElement>(".sr")?.dataset.id;
+  if (!id) return;
+  e.preventDefault();
+  openResultMenu(id, e.clientX, e.clientY);
+});
+
+// 点别处收起结果；但搜索菜单里的点击不算「点别处」—— 右键连着做几步（加入、再置顶）时
+// 结果列表要留着，刚加入的那一行才好当场变成「已添加」。别的菜单不属于搜索，点它就照旧收起。
 document.addEventListener("click", (e) => {
-  if (!(e.target as HTMLElement).closest(".add-box")) closeAdd();
+  const t = e.target as HTMLElement;
+  if (t.closest(".add-box") || t.closest(`.${SEARCH_MENU}`)) return;
+  closeAdd();
 });
 
 // Cmd/Ctrl+A 全选、Esc 清空选择（在输入框里输入时不做拦截）

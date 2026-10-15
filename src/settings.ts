@@ -229,6 +229,101 @@ export function groupTargetsFor(
   ].map((t) => ({ ...t, done: ids.every((id) => groupIdOf(groupOf, groups, id) === t.gid) }));
 }
 
+// ---------- 搜索结果：右键能做什么 ----------
+
+/** 搜索结果行右键的动作：加入自选 / 加入并移入分组 / 移入分组 / 置顶 */
+export type SearchActionKind = "add" | "addToGroup" | "moveToGroup" | "pin" | "unpin";
+
+export interface SearchAction {
+  kind: SearchActionKind;
+  /** 菜单文案 */
+  label: string;
+  /** addToGroup / moveToGroup 的目标分组（未分组是 UNGROUPED） */
+  gid?: string;
+}
+
+/**
+ * 搜索结果行的右键菜单项（按顺序），主面板与设置窗口共用：
+ * - 结果还不是自选：先给「加入自选」；建过分组时再给每个分组一项「加入并移入「X」」，
+ *   省掉「先加入、再右键一次移入」的两步（「未分组」就是「加入自选」，不重复出现）。
+ * - 结果已经是自选：它当前所在分组之外的每个分组一项「移入「X」」，外加置顶 / 取消置顶。
+ * - 内置的大盘指数没有菜单：它们一直显示在主面板与「行情」页的指数区，不接受增删
+ *   （与 MCP 的 add 同一条规则），也就谈不上分组与置顶。
+ *
+ * 只算「有哪些项」，执行交给调用方 —— 两个窗口改设置的方式不同。
+ */
+export function searchActions(
+  groups: Group[],
+  groupOf: Record<string, string>,
+  watchlist: string[],
+  pins: string[],
+  id: string,
+): SearchAction[] {
+  if (isIndex(id)) return [];
+  if (!watchlist.includes(id)) {
+    return [
+      { kind: "add", label: "加入自选" },
+      ...groups.map((g) => ({ kind: "addToGroup" as const, gid: g.id, label: `加入并移入「${g.name}」` })),
+    ];
+  }
+  return [
+    ...groupTargets(groups, groupOf, id).map((t) => ({
+      kind: "moveToGroup" as const,
+      gid: t.gid,
+      label: `移入「${t.name}」`,
+    })),
+    pins.includes(id)
+      ? { kind: "unpin" as const, label: "取消置顶" }
+      : { kind: "pin" as const, label: "置顶" },
+  ];
+}
+
+/**
+ * 执行一条搜索结果动作，返回改动后的 watchlist / pins / groupOf（不改入参）。
+ * 加入自选与既有路径一致：追加到自选末尾。
+ * 菜单是点开那一刻渲染的，点下去之前设置可能已经变了，所以这里再挡一次：
+ * 指数不加（与 MCP 同一条规则）；「移入分组」只作用于还在自选里的标的（否则会留下一条
+ * 指向已删自选的归属，那东西 `normalizeGroups()` 只在载入时清）；目标分组已被删就按未分组处理。
+ */
+export function applySearchAction(
+  state: { watchlist: string[]; pins: string[]; groupOf: Record<string, string> },
+  groups: Group[],
+  id: string,
+  action: SearchAction,
+): { watchlist: string[]; pins: string[]; groupOf: Record<string, string> } {
+  const next = {
+    watchlist: [...state.watchlist],
+    pins: [...state.pins],
+    groupOf: { ...state.groupOf },
+  };
+  if (isIndex(id)) return next;
+  /** 目标分组：只有还存在的分组才认得，其余（未分组 / 已删的分组）都当未分组 */
+  const gid = action.gid && groups.some((g) => g.id === action.gid) ? action.gid : UNGROUPED;
+  switch (action.kind) {
+    case "add":
+    case "addToGroup":
+      if (!next.watchlist.includes(id)) next.watchlist.push(id);
+      if (action.kind === "addToGroup") next.groupOf = setGroup(next.groupOf, id, gid);
+      break;
+    case "moveToGroup":
+      if (next.watchlist.includes(id)) next.groupOf = setGroup(next.groupOf, id, gid);
+      break;
+    case "pin": {
+      const r = pinItem(next.watchlist, next.pins, id);
+      next.watchlist = r.list;
+      next.pins = r.pins;
+      break;
+    }
+    case "unpin": {
+      const r = unpinItem(next.watchlist, next.pins, id);
+      next.watchlist = r.list;
+      next.pins = r.pins;
+      break;
+    }
+  }
+  return next;
+}
+
 /**
  * 新建分组：id 取已有 gN 里最大的 N +1。
  * 删掉最大的那个序号后会被再次用到，所以删除分组必须同时清掉归属（`removeGroup` 会做）。

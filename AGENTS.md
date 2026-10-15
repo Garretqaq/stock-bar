@@ -18,7 +18,7 @@ cd src-tauri && cargo check   # Rust 侧检查
 ```
 
 - 包管理器用 **pnpm**（`packageManager` 字段已锁定版本），不要用 npm 或 yarn。
-- 单元测试用 **vitest**：`src/*.test.ts` 跑在 happy-dom 环境，覆盖 api / bar / settings / ctxmenu / drag / tabs / mcp / update 里的纯逻辑；`mcp/*.test.mjs` 与 `scripts/*.test.mjs` 是脚本测试，文件头用 `// @vitest-environment node` 切到 node 环境（含一条真的起进程 + 假本地桥的端到端用例）。没有 lint 或格式化配置。
+- 单元测试用 **vitest**：`src/*.test.ts` 跑在 happy-dom 环境，覆盖 api / bar / settings / ctxmenu / drag / tabs / mcp / update 里的纯逻辑，以及设置窗口搜索结果右键那条界面接线（`prefs.test.ts` 用假搜索 / 报价真起一遍 `prefs.ts`）；`mcp/*.test.mjs` 与 `scripts/*.test.mjs` 是脚本测试，文件头用 `// @vitest-environment node` 切到 node 环境（含一条真的起进程 + 假本地桥的端到端用例）。没有 lint 或格式化配置。
 - 改完之后至少跑通 `pnpm check`（类型检查加单元测试）和 `pnpm build`；改了 Rust 就再跑一次 `cargo check`。改了纯逻辑要补对应测试。
 - Vite 开发端口固定为 1420（`strictPort`），和 `tauri.conf.json` 里的 `devUrl` 一一对应，两边必须一起改。
 
@@ -32,7 +32,7 @@ src/api.ts       东方财富接口：批量报价 ulist.np、分时 trends2、�
 src/settings.ts  Settings 类型、默认值、localStorage 读写和旧数据迁移、跨窗口同步、主题和涨跌配色、自选分组的纯函数（`itemsOf` / `moveInView` / `normalizeGroups` 等）
 src/bar.ts       菜单栏内容生成：单行文字 barText / 双行紧凑 canvas PNG barImage
 src/tauri.ts     Tauri 桥接层：call / emitAll / listenAll（非 Tauri 环境自动降级为空操作），平台判断 IS_WIN、canvas 字体栈 UI_FONT
-src/ctxmenu.ts   通用右键菜单 openMenu / closeMenu（样式 ctxmenu.css，主面板与设置窗口共用）
+src/ctxmenu.ts   通用右键菜单 openMenu / closeMenu（样式 ctxmenu.css，主面板与设置窗口共用；选项 className 用来给菜单打标，如搜索菜单的 ctx-search）
 src/drag.ts      拖动排序的纯计算：slotAt（指针落在第几格）/ shiftIndex（拖动中其他行让开多少），设置窗口的仪表盘与行情页共用
 src/tabs.ts      分组筛选条的纯计算：isDragMove / isDragClick（横滑拖动与「拖完那一下 click」的判定）/ scrollDeltaFor（把选中的标签带进视野要滚多少），主面板用
 src/mcp.ts       MCP 命令处理：看 / 搜 / 增删自选、置顶、排序、分组增删改排序的纯逻辑（搜索与报价由调用方注入）；另含设置面板 MCP 卡片用的 clientConfig()（客户端配置 JSON）与 bridgeState()（状态文案）
@@ -58,6 +58,7 @@ Vite 是多页面打包，入口在 `vite.config.ts` 的 `rollupOptions.input` �
 - `watchlist` 的顺序就是显示顺序，置顶的（`pins`）始终在最前，由 `normalizePins()` 在 `loadSettings()` 里保证。新增或删除自选时要同步 `pins`，拖动排序的落点用 `clampBlock()` 限制在各自区块内。
 - 自选分组是 `groups`（有序，`{id, name}`）+ `groupOf`（secid → 分组 id），只决定自选怎么分堆：`watchlist` 仍是唯一一份顺序，`bar` 与 `pins` 都不受分组影响。没有归属、或指向已删分组的都算「未分组」（`UNGROUPED`），`loadSettings()` 用 `normalizeGroups()` 规整（分组 id 必须是 `^[A-Za-z0-9_-]{1,24}$`，才能安全拼进选择器）。新建 / 改名 / 删除 / 排序都是 `settings.ts` 里的纯函数，删分组只把成员回落到未分组。
 - 单个与批量「移入分组」共用同一套逻辑：单个用 `groupTargets()`，多选用 `groupTargetsFor()` + `setGroupMany()`（前者把「已经全在该分组」的目标标成 done，菜单里置灰、一个可用目标都没有时操作条上的入口直接禁用）。大盘指数不能分组，所以批量只把选中的自选交出去。
+- 两个搜索框的结果行（主面板的搜索、设置「行情」页的新增自选）都支持右键：还不是自选的给「加入自选」和每个分组一项「加入并移入「X」」，已经是自选的给「移入「X」」（不含它当前所在的那个）与置顶 / 取消置顶。菜单项由 `settings.ts` 的 `searchActions()` 算，动作用 `applySearchAction()` 落到设置上，两个窗口只负责把新状态写回自己的 `S` 并重画。两者都**独立再挡一次**搜索接口能返回的边界情况：内置大盘指数（`isIndex()`）不给菜单、左键也加不进自选（与 MCP 的 add 同一条规则）；菜单是点开那一刻渲染的，所以点下去时目标分组已被删就按未分组处理、标的已不在自选里就不留归属。右键动作**不收起搜索结果**（点完这一行当场从 ＋ 变成「已添加」，好连着整理几只），因此两处「点别处收起搜索」的判断放过的是搜索菜单的标记类 `ctx-search`（由 `openMenu()` 的 `className` 选项挂上）—— 别写成放过整个 `.ctx-menu`，那样点自选行 / 分组标题的菜单时搜索结果会一直赖着不走，而它并不会被重画，行上的「已添加」就可能是过期的。
 - 分组标题的操作菜单由 `#watch-groups` 一处委托：标题右侧的「⋯」按钮左键点开，右键标题也可以（未分组不给菜单）。删除分组必须先就地确认：点「删除分组…」只把 `groupConfirm` 置上、把标题行换成确认条（`groupHead()` 渲染，文案里报出成员会回到未分组），真正删除只发生在确认条的「删除」上。`groupConfirm` 进 `groupsKey`，确认态的变化才会重建 DOM；确认态下右键标题不再叠菜单，Esc 先取消确认、再清多选。危险按钮用固定的 `#ff453a`，不要跟随 `--up`（绿涨红跌下会变成绿色）。
 - 分组视图里的拖动要用 `moveInView()` 把可见下标换算成整表下标，落点仍用 `clampBlock()` 按可见列表（也就是该分组内的置顶区）钳制。设置窗口的每个分组区块各注册一次 `sortable()`；区块会随分组增减重建，所以「拖完那一下 click」的标记放在外部 `marketSwallow` 里由各实例共用，不能退回成实例内的局部变量。
 
@@ -127,6 +128,7 @@ Vite 是多页面打包，入口在 `vite.config.ts` 的 `rollupOptions.input` �
 - MCP 相关改动不碰 CSP：那些请求由 Rust 侧处理，不经过 webview。`mcp-endpoint.json` 里是端口与令牌，不要提交进仓库或日志。
 - 面板定位不要交回 `tauri-plugin-positioner`：它在多显示器 / 缩放不一致的机器上会把窗口丢到屏幕外（实测主屏 2304 点宽，窗口被放到 x=2795，点菜单栏图标看着就是「点了没反应」）。macOS 现在按鼠标位置（点图标时鼠标就在图标上）自己算 `panel_position()`，并夹进工作区；positioner 只在连屏幕都问不出来时兜底。
 - 命令里建 webview 窗口在 Windows 上必卡死，症状是「托盘图标在、点它没反应」，或第二个实例弹出的设置窗口标题栏写着「未响应」且永不恢复，只能强杀。原因是 WebView2 不允许在事件回调里重入创建 webview：同步命令跑在 IPC 回调里，`WebviewWindowBuilder::build()` 的 `create_controller` 永远等不到完成回调（tauri 文档的 Known issues、wry#583）。所以建窗的同步命令一律改成 `async fn`，回调 / 窗口过程里建窗一律另起线程 —— 现在的 `open_settings` 与 `set_ticker` 都按这个来，新增建窗能力照做。`set_ticker` 尤其要留意：默认设置里 `ticker: true`，Windows 每次启动都会走这条路。
+- 界面里「不许选中文字」只用无前缀 `user-select: none` 是不够的：macOS 的 WKWebView 不认这个属性（实测 `CSS.supports('user-select','none')` 为 false，规则被整条丢弃），于是自选行、标题这些文字能被拖选出来。三份样式表（`style.css`、`prefs.css`、`ticker.css`）里的 `user-select` 都要**同时写 `-webkit-user-select`**，需要能复制的地方（搜索框、MCP 配置块、更新说明）保留 `text` 值。`-webkit-user-select` 在 WebKit 里会继承，所以写在 `html, body` 上就够了；输入框不受影响（WebKit 给表单控件算的是 `text`）。
 
 ## 发布流程
 

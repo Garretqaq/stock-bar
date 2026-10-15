@@ -110,4 +110,35 @@ describe("右键菜单", () => {
     expect(menu()!.classList.contains("chips")).toBe(false);
     expect(document.querySelectorAll(".ctx-item").length).toBe(1);
   });
+
+  // 搜索结果与搜索框都靠「这次点击是不是搜索菜单里的」来决定要不要收起自己，
+  // 而菜单是先移除再执行回调的：那条判断必须仍然认得出菜单里的点击
+  it("菜单项的 click 冒到 document 时仍认得出它来自菜单（弹层此时已移除）", () => {
+    const seen: (boolean | undefined)[] = [];
+    const onDoc = (e: Event) => seen.push(!!(e.target as HTMLElement).closest?.(".ctx-menu"));
+    document.addEventListener("click", onDoc);
+    openMenu(0, 0, [{ label: "删除" }]);
+    items()[0].click();
+    document.removeEventListener("click", onDoc);
+    expect(seen).toEqual([true]);
+  });
+
+  it("className 挂到菜单根节点上，用来区分是哪个菜单（其余菜单不挂）", () => {
+    const seen: string[] = [];
+    const onDoc = (e: Event) => {
+      // ctx-search 只该出现在搜索菜单上：别的菜单点掉时，搜索框要照旧收起自己
+      const marked = (e.target as HTMLElement).closest?.(".ctx-search");
+      seen.push(marked ? "search" : "other");
+    };
+    document.addEventListener("click", onDoc);
+    openMenu(0, 0, [{ label: "加入自选" }], { className: "ctx-search" });
+    expect(menu()!.classList.contains("ctx-search")).toBe(true);
+    items()[0].click();
+
+    openMenu(0, 0, [{ label: "删除自选" }]);
+    expect(menu()!.classList.contains("ctx-search")).toBe(false);
+    items()[0].click();
+    document.removeEventListener("click", onDoc);
+    expect(seen).toEqual(["search", "other"]);
+  });
 });

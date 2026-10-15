@@ -549,8 +549,6 @@ button {
   gap: 6px;
   flex: 1 1 auto;
   min-width: 0;
-  /* 纵向留出余量：overflow 也裁纵向，拖动中那颗胶囊的投影才不会被切掉 */
-  padding: 4px 0;
   overflow-x: auto;
   scrollbar-width: none;
 }
@@ -570,8 +568,7 @@ button {
   font-weight: 500;
   color: var(--sub);
   background: var(--card);
-  transition: color 0.18s ease, background 0.18s ease, border-color 0.18s ease,
-    transform 0.18s var(--ease-out);
+  transition: color 0.18s ease, background 0.18s ease, border-color 0.18s ease;
 }
 .gtab:hover {
   color: var(--text);
@@ -581,27 +578,6 @@ button {
   font-size: 10.5px;
   font-weight: 600;
   opacity: 0.7;
-}
-
-/* 用户建的分组胶囊：可以直接拖动排序（「全部」与「未分组」固定在最前，不参与）。 */
-.gtab.grp {
-  cursor: grab;
-  /* 触屏拖胶囊时不交给横滑，纵向留给列表滚动 */
-  touch-action: pan-y;
-}
-/* 拖动中：整条保持抓取光标，被拖的那颗跟手（去掉过渡）并浮在其他胶囊上面 */
-.gtab-scroll.dragging {
-  cursor: grabbing;
-}
-.gtab.grp.dragging {
-  position: relative;
-  z-index: 3;
-  cursor: grabbing;
-  transition: none;
-  color: var(--text);
-  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
-  background: var(--accent-soft);
-  box-shadow: var(--shadow-sm);
 }
 .gtab.on {
   color: var(--accent);

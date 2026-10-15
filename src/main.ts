@@ -32,7 +32,6 @@ import {
   loadSettings,
   loadTickerPos,
   moveInView,
-  moveItem,
   onSettingsChange,
   pinCount,
   pinItem,
@@ -755,10 +754,8 @@ function renderTabs(): void {
     tabScroll.innerHTML = tabs
       .map((t) => {
         const on = t.gid === groupFilter;
-        // 只有用户建的分组能拖动排序：全部（null）与未分组（空串）都固定在最前
-        const grp = t.gid ? " grp" : "";
         return (
-          `<button class="gtab${grp}${on ? " on" : ""}" data-gid="${t.gid ?? "*"}" aria-pressed="${on}">` +
+          `<button class="gtab${on ? " on" : ""}" data-gid="${t.gid ?? "*"}" aria-pressed="${on}">` +
           `${esc(t.name)}<b>${t.n}</b></button>`
         );
       })
@@ -806,27 +803,6 @@ $("#gtabs").addEventListener("click", (e) => {
   pickGroup(gid === "*" ? null : gid);
 });
 
-// 用户建的分组胶囊可以直接拖动排序：顺序 = 设置里的分组顺序 = 列表分块顺序
-// = 设置 › 行情 里那排胶囊的顺序。全部与未分组固定在左边（不在 sortable 的行选择器里，
-// 按在它们身上仍然是横滑）。胶囊容器常驻，只在建过分组时整条才出现，所以注册一次就够。
-sortable({
-  list: tabScroll,
-  row: ".gtab.grp",
-  ident: "gid",
-  handle: ".gtab.grp", // 整颗胶囊就是把手：横排里没地方再放一个把手
-  rowDrag: true,
-  axis: "x",
-  movable: () => S.groups.length > 1,
-  clamp: (_from, to) => to, // 行只含用户分组，胶囊之间可以随便换位
-  apply: (from, to) => {
-    tabDraggedAt = Date.now(); // 这一下 click 是拖动的尾巴，别顺手把分组切了
-    S.groups = moveItem(S.groups, from, to);
-    save();
-    renderList(); // 重画筛选条：胶囊按新顺序排，下面的列表也跟着重排
-  },
-  render: renderList,
-});
-
 // 末尾 ☰：横滑出去的分组从这里点。内容不按菜单排，而是摊成和筛选条上那排一模一样的
 // 标签（带数量、当前这个高亮），分组多时自动换行，比一长条菜单矮得多。
 // 弹层挂在 ☰ 上，筛选条自己横着滚不会挪动它，所以那种滚动不该把它收起来。
@@ -858,11 +834,9 @@ tabScroll.addEventListener(
   { passive: false },
 );
 
-// 鼠标按住拖动也能往右滑：触控板有横滑手势，鼠标没有。
-// 按在用户分组胶囊上不算横滑 —— 那是要拖这颗胶囊排序（见上面的 sortable）。
+// 鼠标按住拖动也能往右滑：触控板有横滑手势，鼠标没有
 tabScroll.addEventListener("pointerdown", (e) => {
   if (e.button !== 0 || tabScroll.scrollWidth <= tabScroll.clientWidth) return;
-  if ((e.target as HTMLElement).closest(".gtab.grp")) return;
   tabDrag = { x: e.clientX, left: tabScroll.scrollLeft };
   tabDraggedAt = 0;
 });

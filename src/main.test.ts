@@ -69,15 +69,22 @@ function pinViaMenu(id: string): void {
 describe("主面板：右键菜单里的置顶", () => {
   beforeEach(() => boot());
 
-  it("还没置顶的自选，右键给「置顶」；置顶后给「取消置顶」", () => {
+  it("还没置顶的自选，右键给带图标的「置顶」；置顶后给「取消置顶」", () => {
+    const iconOf = (label: string) =>
+      [...document.querySelectorAll<HTMLButtonElement>(".ctx-item")]
+        .find((b) => b.textContent === label)!
+        .querySelector(".ctx-ico svg");
+
     rightClick("116.00700");
     expect(menuLabels()).toContain("置顶");
+    expect(iconOf("置顶")).not.toBeNull(); // 菜单项带图标
 
     menuPick("置顶");
     expect(saved().pins).toEqual(["116.00700"]);
 
     rightClick("116.00700");
     expect(menuLabels()).toContain("取消置顶");
+    expect(iconOf("取消置顶")).not.toBeNull();
   });
 
   it("置顶：写进设置、标的挪到最前", () => {

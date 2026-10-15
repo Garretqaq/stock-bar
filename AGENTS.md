@@ -116,7 +116,7 @@ Vite 是多页面打包，入口在 `vite.config.ts` 的 `rollupOptions.input` �
 - 颜色全部来自 CSS 变量（`--up`、`--down`、`--bg` 等）。主题通过 `<html data-theme>` 加 `.green-up` 类切换（`applyAppearance`），默认红涨绿跌。canvas 和图表要用颜色时，通过 `getComputedStyle` 读取 CSS 变量，不要写死色值。
 - 动画要照顾 `prefers-reduced-motion`。
 - 代码注释和界面文案用中文。
-- 列表里的破坏性操作统一走右键：`src/ctxmenu.ts` 的 `openMenu()`（主面板删自选、设置「行情」页增删菜单栏标的）。菜单样式由两个窗口各自的 CSS 用 `@import "./ctxmenu.css"` 引入；菜单打开时 Esc 只关菜单，不会连带收起主面板。
+- 列表里的破坏性操作统一走右键：`src/ctxmenu.ts` 的 `openMenu()`（主面板删自选、设置「行情」页增删菜单栏标的）。菜单样式由两个窗口各自的 CSS 用 `@import "./ctxmenu.css"` 引入；菜单打开时 Esc 只关菜单，不会连带收起主面板。菜单项可以带 `icon`（内联 SVG，只传本仓库自己的常量，不做转义）；同一份菜单里只要有一项带图标，其余项也占一个等宽的空位（`.ctx-ico`），文字才不会参差不齐 —— 置顶 / 取消置顶用的就是这一对图标。
 
 ## 注意事项（坑）
 

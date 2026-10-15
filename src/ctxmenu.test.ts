@@ -141,4 +141,23 @@ describe("右键菜单", () => {
     document.removeEventListener("click", onDoc);
     expect(seen).toEqual(["search", "other"]);
   });
+
+  it("菜单项可以带图标；只要有一项带图标，其余项也留出等宽图标位", () => {
+    const ICON = `<svg viewBox="0 0 24 24"><path d="M4.5 4.5h15"/></svg>`;
+    openMenu(0, 0, [{ label: "置顶", icon: ICON }, { label: "删除自选" }]);
+
+    // 有图标的项：图标进了 .ctx-ico，标签文字不受影响
+    const [pin, del] = items();
+    expect(pin.querySelector(".ctx-ico svg")).not.toBeNull();
+    expect(pin.textContent).toBe("置顶");
+    // 没图标的项也占同一个位（空 span），文字才不会跟上面错开
+    expect(del.querySelector(".ctx-ico")).not.toBeNull();
+    expect(del.querySelector(".ctx-ico svg")).toBeNull();
+    expect(del.textContent).toBe("删除自选");
+  });
+
+  it("一项带图标都没有时不留图标位（菜单宽度不变）", () => {
+    openMenu(0, 0, [{ label: "删除自选" }]);
+    expect(items()[0].querySelector(".ctx-ico")).toBeNull();
+  });
 });

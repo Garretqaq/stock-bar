@@ -3,6 +3,11 @@
 
 export interface MenuItem {
   label: string;
+  /**
+   * 菜单项左侧的图标（内联 SVG 字符串）。只传本仓库自己的常量，不做转义 —— 别塞外部数据。
+   * 同一份菜单里只要有一项带图标，其余项也会占一个等宽的空位，文字才不会参差不齐。
+   */
+  icon?: string;
   /** 危险操作（删除等）显示为红色 */
   danger?: boolean;
   /** 置灰且不可点击，用于「名额已满」这类提示 */
@@ -61,6 +66,8 @@ export function openMenu(x: number, y: number, items: MenuItem[], opts: MenuOpts
   const el = document.createElement("div");
   el.className = ["ctx-menu", chips ? "chips" : "", className ?? ""].filter(Boolean).join(" ");
   el.setAttribute("role", "menu");
+  // 只要有一项带图标，整份菜单就都留出图标位：否则带图标的项文字会往右缩，跟其余项对不齐
+  const iconSlot = !chips && items.some((it) => it.icon);
   el.innerHTML = items
     .map((it, i) => {
       const off = it.disabled ? " disabled" : "";
@@ -72,9 +79,10 @@ export function openMenu(x: number, y: number, items: MenuItem[], opts: MenuOpts
           `${it.count == null ? "" : `<b>${it.count}</b>`}</button>`
         );
       }
+      const ico = iconSlot ? `<span class="ctx-ico" aria-hidden="true">${it.icon ?? ""}</span>` : "";
       return (
-        `<button class="ctx-item${it.danger ? " danger" : ""}" role="menuitem" data-i="${i}"${off}>` +
-        `${esc(it.label)}</button>`
+        `<button class="ctx-item${it.danger ? " danger" : ""}"` +
+        ` role="menuitem" data-i="${i}"${off}>${ico}${esc(it.label)}</button>`
       );
     })
     .join("");

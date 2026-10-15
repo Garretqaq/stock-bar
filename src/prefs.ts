@@ -117,6 +117,8 @@ const I = {
   pin: `<svg viewBox="0 0 24 24"><path d="M12 17v5M9 3h6l-1 7 4 3v2H6v-2l4-3z"/></svg>`,
   about: `<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11.2v5.3"/><circle cx="12" cy="7.9" r="1" class="fill"/></svg>`,
   top: `<svg viewBox="0 0 24 24"><path d="M4.5 4.5h15M12 20V9M7.5 13L12 8.5l4.5 4.5"/></svg>`,
+  /** 取消置顶：与 top 同一个顶部横线、箭头朝下（右键菜单里与「置顶」成对出现） */
+  topOff: `<svg viewBox="0 0 24 24"><path d="M4.5 4.5h15M12 9v11M7.5 15l4.5 4.5 4.5-4.5"/></svg>`,
   more: `<svg class="fill" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg>`,
 };
 
@@ -992,6 +994,8 @@ function openResultMenu(id: string, x: number, y: number): void {
     y,
     searchActions(S.groups, S.groupOf, S.watchlist, S.pins, id).map((a) => ({
       label: a.label,
+      // 置顶 / 取消置顶 与自选行的右键菜单用同一对图标
+      icon: a.kind === "pin" ? I.top : a.kind === "unpin" ? I.topOff : undefined,
       onPick: () => applyResultAction(id, a),
     })),
     { className: SEARCH_MENU },
@@ -1461,7 +1465,11 @@ $("#stocks").addEventListener("contextmenu", (e) => {
         },
     ...(S.watchlist.includes(id)
       ? [
-          { label: S.pins.includes(id) ? "取消置顶" : "置顶", onPick: () => togglePin(id) },
+          {
+            label: S.pins.includes(id) ? "取消置顶" : "置顶",
+            icon: S.pins.includes(id) ? I.topOff : I.top,
+            onPick: () => togglePin(id),
+          },
           { label: "删除自选", danger: true, onPick: () => deleteStocks([id]) },
         ]
       : []),

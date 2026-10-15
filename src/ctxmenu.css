@@ -55,6 +55,25 @@
   transition: background 0.12s ease, color 0.12s ease;
 }
 
+/* 菜单项左侧的图标位：固定宽度（没图标的项占个空位，文字才不会参差不齐） */
+.ctx-ico {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+}
+.ctx-ico svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 .ctx-item:hover:not(:disabled),
 .ctx-item:focus-visible {
   background: var(--accent, #0a84ff);

@@ -681,6 +681,13 @@ const prevPrice = new Map<string, number>();
 
 const ICON_PIN = `<svg viewBox="0 0 24 24"><path d="M12 17v5M9 3h6l-1 7 4 3v2H6v-2l4-3z"/></svg>`;
 const ICON_FOLDER = `<svg viewBox="0 0 24 24"><path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l2 2.5h7A1.5 1.5 0 0 1 19 10v7a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 3 17z"/></svg>`;
+/**
+ * 右键菜单里的置顶 / 取消置顶。
+ * 置顶：向上钉到顶部横线；取消置顶：同一个横线、箭头朝下（从置顶区放下来）。
+ * 别用「同图案 + 斜杠」—— 14px 下斜杠和箭头会糊成一个「不」字。
+ */
+const ICON_PIN_ON = `<svg viewBox="0 0 24 24"><path d="M4.5 4.5h15M12 20V9M7.5 13L12 8.5l4.5 4.5"/></svg>`;
+const ICON_PIN_OFF = `<svg viewBox="0 0 24 24"><path d="M4.5 4.5h15M12 9v11M7.5 15l4.5 4.5 4.5-4.5"/></svg>`;
 
 // ---------- 自选分组 ----------
 // 分组只决定自选列表怎么看：菜单栏（bar）与置顶（pins）都不受它影响。
@@ -977,7 +984,11 @@ $("#list").addEventListener("contextmenu", (e) => {
   const id = (e.target as HTMLElement).closest<HTMLElement>(".row")?.dataset.id;
   if (!id) return;
   openMenu(e.clientX, e.clientY, [
-    { label: S.pins.includes(id) ? "取消置顶" : "置顶", onPick: () => togglePin(id) },
+    {
+      label: S.pins.includes(id) ? "取消置顶" : "置顶",
+      icon: S.pins.includes(id) ? ICON_PIN_OFF : ICON_PIN_ON,
+      onPick: () => togglePin(id),
+    },
     ...groupMenuItems(id),
     ...(S.bar.includes(id)
       ? [
@@ -1066,6 +1077,8 @@ function openSearchMenu(id: string, x: number, y: number): void {
     y,
     searchActions(S.groups, S.groupOf, S.watchlist, S.pins, id).map((a) => ({
       label: a.label,
+      // 置顶 / 取消置顶 与自选行的右键菜单用同一对图标，两处认得出来是同一件事
+      icon: a.kind === "pin" ? ICON_PIN_ON : a.kind === "unpin" ? ICON_PIN_OFF : undefined,
       onPick: () => {
         const added = !S.watchlist.includes(id);
         const next = applySearchAction({ watchlist: S.watchlist, pins: S.pins, groupOf: S.groupOf }, S.groups, id, a);

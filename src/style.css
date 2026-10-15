@@ -88,6 +88,8 @@ body {
   font-size: 13px;
   color: var(--text);
   -webkit-font-smoothing: antialiased;
+  /* WebKit（macOS 的 WKWebView）不认无前缀的 user-select，只认 -webkit-user-select */
+  -webkit-user-select: none;
   user-select: none;
   cursor: default;
 }
@@ -438,6 +440,7 @@ button {
   height: 100%;
   font-size: 13px;
   color: var(--text);
+  -webkit-user-select: text;
   user-select: text;
 }
 .search input::placeholder {

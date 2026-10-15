@@ -41,6 +41,7 @@ body {
   font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
   font-size: 12px;
   color: var(--text);
+  -webkit-user-select: none;
   user-select: none;
   cursor: default;
 }

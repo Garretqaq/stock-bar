@@ -76,6 +76,8 @@ body {
   color: var(--text);
   background: var(--content);
   -webkit-font-smoothing: antialiased;
+  /* WebKit（macOS 的 WKWebView）不认无前缀的 user-select，只认 -webkit-user-select */
+  -webkit-user-select: none;
   user-select: none;
   cursor: default;
   transition: background 0.3s ease, color 0.3s ease;
@@ -1163,6 +1165,7 @@ svg .fill {
 /* 拖动中：整列不许选中文字，光标保持抓取态 */
 .sec-body.dragging {
   cursor: grabbing;
+  -webkit-user-select: none;
   user-select: none;
 }
 .stock-main {
@@ -1456,6 +1459,7 @@ svg .fill {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  -webkit-user-select: none;
   user-select: none;
 }
 .ord {
@@ -1807,6 +1811,7 @@ svg .fill {
   white-space: pre-wrap;
   word-break: break-all;
   /* 全局关掉了选中：这里是给人复制的内容，得能选中 */
+  -webkit-user-select: text;
   user-select: text;
   cursor: text;
 }
@@ -2086,6 +2091,7 @@ svg .fill {
   color: var(--text);
   white-space: pre-wrap;
   word-break: break-word;
+  -webkit-user-select: text;
   user-select: text;
 }
 

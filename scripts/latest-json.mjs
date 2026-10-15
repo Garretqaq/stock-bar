@@ -91,10 +91,19 @@ function listFiles(dir) {
   return out;
 }
 
-/** 没给 --version 就从 tauri.conf.json 读：CI 里少一层 shell 差异（Windows runner 默认是 pwsh） */
-function defaultVersion() {
+/**
+ * 版本号只有一个来源：`src-tauri/Cargo.toml` 的 `[package] version`（见 AGENTS.md 的「发布流程」）。
+ * `tauri.conf.json` 不写 `version` —— 留空时 Tauri 会回退到 Cargo.toml；`Cargo.lock` 里 `stock-bar`
+ * 那行由 cargo 自己同步，不用手改。CI 里不传 `--version` 就靠这里兜底。
+ */
+export function cargoVersion() {
   const root = dirname(dirname(fileURLToPath(import.meta.url)));
-  return JSON.parse(readFileSync(join(root, "src-tauri/tauri.conf.json"), "utf8")).version;
+  const toml = readFileSync(join(root, "src-tauri/Cargo.toml"), "utf8");
+  // 只认 [package] 那一段：`[package.metadata]` 之类不会以 "package]" 开头，不会误命中
+  const section = toml.split(/^\[/m).find((s) => s.startsWith("package]")) ?? "";
+  const found = section.match(/^\s*version\s*=\s*"([^"]+)"/m)?.[1];
+  if (!found) throw new Error("读不到 src-tauri/Cargo.toml 的 [package] version");
+  return found;
 }
 
 function parseArgs(argv) {
@@ -116,8 +125,8 @@ function main(argv) {
 
   if (mode === "fragment") {
     const { platform, dir, out } = args;
-    // 版本号优先用命令行给的；CI 里不传也能跑（从 tauri.conf.json 读，免得依赖 shell 差异）
-    const version = typeof args.version === "string" ? args.version : defaultVersion();
+    // 版本号优先用命令行给的；CI 里不传也能跑（从 Cargo.toml 读，免得依赖 shell 差异）
+    const version = typeof args.version === "string" ? args.version : cargoVersion();
     if (!platform || !dir || !out) {
       throw new Error("fragment 需要 --platform --dir --out");
     }

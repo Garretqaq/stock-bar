@@ -68,7 +68,7 @@ macOS 通用二进制由 CI 使用 `--target universal-apple-darwin` 构建；�
 - **推送 `v*` 标签**：汇总各平台安装包、更新包与 `latest.json`，创建 Release 草稿。
 - **正式发布**：补齐发布说明后公开草稿，应用才能通过最新 Release 获取更新。
 
-发布时四处版本号必须一致，需配置 `TAURI_SIGNING_PRIVATE_KEY`。正式发版遵循 [AGENTS.md](../AGENTS.md#发布流程)，不要手工上传本地安装包替代流程。
+发布时版本号只需改一处：`src-tauri/Cargo.toml` 的 `[package] version`（`tauri.conf.json`、`package.json` 都不写版本，`Cargo.lock` 由 cargo 自动同步）。发布需配置 `TAURI_SIGNING_PRIVATE_KEY`。正式发版遵循 [AGENTS.md](../AGENTS.md#发布流程)，不要手工上传本地安装包替代流程。
 
 ## MCP 本地调试
 

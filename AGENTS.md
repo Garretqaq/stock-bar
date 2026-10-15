@@ -144,7 +144,7 @@ Vite 是多页面打包，入口在 `vite.config.ts` 的 `rollupOptions.input` �
 gh secret set TAURI_SIGNING_PRIVATE_KEY < ~/.tauri/stockbar.key
 ```
 
-1. **定版本**：四处版本号必须一致 —— `package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock` 里的 `stock-bar`。安装包文件名取自 `tauri.conf.json` 的 `version`。
+1. **定版本**：版本号只有一个来源 —— `src-tauri/Cargo.toml` 的 `[package] version`。`tauri.conf.json` 不写 `version`（留空时 Tauri 回退到 Cargo.toml），`package.json` 也不写；`Cargo.lock` 里 `stock-bar` 那行由 cargo 自己同步，不用手改。安装包文件名、macOS 的 `CFBundleShortVersionString`、MSI 的版本号、「关于」页显示的当前版本、`latest.json` 的 `version` 都取自这一处。改完跑一次 `cargo check`（或任意 cargo 命令）让 `Cargo.lock` 跟上。
 2. **提交并推 main**：`git commit` 后 `git push origin main`。CI 会先跑 `pnpm check`，不通过就不构建。
 3. **打标签推送**：`git tag -a vX.Y.Z -m "StockBar vX.Y.Z" && git push origin vX.Y.Z`。标签必须匹配 `v*` 才会触发。
 4. **等构建**：`build` 矩阵跑 macOS（`--target universal-apple-darwin`，Intel + Apple Silicon 通用）和 Windows（MSI + NSIS）；各平台除安装包外还产出**更新包**（`.app.tar.gz` / `-setup.exe` 与它们的 `.sig`）和一份 `latest-<平台>.json` 片段，先上传到本次运行的 Artifacts，再由 `release` 作业合并成 `latest.json` 并创建 **Release 草稿**。

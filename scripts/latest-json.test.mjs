@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { baseName, buildFragment, mergeFragments, pickAssets } from "./latest-json.mjs";
+import { baseName, buildFragment, cargoVersion, mergeFragments, pickAssets } from "./latest-json.mjs";
 
 const MAC = [
   "dist/StockBar-macos/dmg/StockBar_0.0.5_universal.dmg",
@@ -130,7 +130,7 @@ describe("baseName", () => {
 
 // 端到端跑一次 CLI：CI 里就是这么调的，别再让「少传一个参数」这种事留到推标签才发现
 describe("命令行（fragment）", () => {
-  it("不传 --version 也能跑：版本号取自 tauri.conf.json，地址与签名进片段", () => {
+  it("不传 --version 也能跑：版本号取自 Cargo.toml，地址与签名进片段", () => {
     const dir = mkdtempSync(join(tmpdir(), "latest-json-"));
     const nsis = join(dir, "nsis");
     mkdirSync(nsis);
@@ -144,14 +144,37 @@ describe("命令行（fragment）", () => {
       encoding: "utf8",
     });
     expect(result.status, result.stderr).toBe(0);
-    const conf = JSON.parse(
-      readFileSync(fileURLToPath(new URL("../src-tauri/tauri.conf.json", import.meta.url)), "utf8"),
-    );
     const fragment = JSON.parse(readFileSync(out, "utf8"));
-    expect(fragment.version).toBe(conf.version);
+    expect(fragment.version).toBe(cargoVersion());
+    expect(fragment.version).toMatch(/^\d+\.\d+\.\d+/);
     expect(fragment.platforms["windows-x86_64"]).toEqual({
       url: "https://github.com/me/app/releases/download/v0.0.5/StockBar_0.0.5_x64-setup.exe",
       signature: "SIG",
     });
+  });
+});
+
+// 版本号只有一个来源，别让它再散开：这两个文件一旦重新写上 version，两边就会悄悄分叉
+describe("版本号只有一个来源", () => {
+  const read = (rel) => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");
+
+  it("cargoVersion() 取的是 Cargo.toml 的 [package] version", () => {
+    const section = read("../src-tauri/Cargo.toml").split(/^\[/m).find((s) => s.startsWith("package]"));
+    expect(cargoVersion()).toBe(section.match(/^\s*version\s*=\s*"([^"]+)"/m)[1]);
+  });
+
+  it("tauri.conf.json 不写 version（留空才会回退到 Cargo.toml）", () => {
+    expect(JSON.parse(read("../src-tauri/tauri.conf.json"))).not.toHaveProperty("version");
+  });
+
+  it("package.json 不写 version", () => {
+    expect(JSON.parse(read("../package.json"))).not.toHaveProperty("version");
+  });
+
+  it("Cargo.lock 里 stock-bar 的版本与 Cargo.toml 一致", () => {
+    const lock = read("../src-tauri/Cargo.lock");
+    const block = lock.split("[[package]]").find((s) => /^\s*name\s*=\s*"stock-bar"\s*$/m.test(s));
+    expect(block, "Cargo.lock 里没有 stock-bar").toBeTruthy();
+    expect(block.match(/^\s*version\s*=\s*"([^"]+)"/m)[1]).toBe(cargoVersion());
   });
 });

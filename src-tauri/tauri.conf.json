@@ -1,7 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "StockBar",
-  "version": "0.0.7",
   "identifier": "com.stockbar.eastmoney",
   "build": {
     "beforeDevCommand": "pnpm dev",

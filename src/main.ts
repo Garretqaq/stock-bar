@@ -714,13 +714,12 @@ function visibleIds(): string[] {
 
 /**
  * 筛选条上的分组：没建过分组时整条不出现。
+ * 只有「全部」与用户建的分组 —— 没有归属的股票就在「全部」里，不再单列一个「未分组」。
  * 成员数为 0 的分组也留着 —— 刚建好的空分组不该立刻消失。
  */
 function groupTabs(): { gid: string | null; name: string; n: number }[] {
-  const un = itemsOf(S.watchlist, S.groupOf, S.groups, UNGROUPED).length;
   return [
     { gid: null, name: "全部", n: S.watchlist.length },
-    ...(un ? [{ gid: UNGROUPED as string | null, name: "未分组", n: un }] : []),
     ...S.groups.map((g) => ({
       gid: g.id as string | null,
       name: g.name,

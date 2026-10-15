@@ -260,9 +260,9 @@ describe("主面板：分组胶囊", () => {
 
   beforeEach(() => boot(withGroups));
 
-  it("按分组顺序铺开，全部与未分组固定在最前", () => {
-    expect(chips().map((c) => c.dataset.gid)).toEqual(["*", "", "g1", "g2", "g3"]);
-    expect(chips().map((c) => c.textContent)).toEqual(["全部3", "未分组2", "持仓1", "关注0", "观察池0"]);
+  it("按分组顺序铺开，只有全部与用户分组（未分组的股票就在「全部」里）", () => {
+    expect(chips().map((c) => c.dataset.gid)).toEqual(["*", "g1", "g2", "g3"]);
+    expect(chips().map((c) => c.textContent)).toEqual(["全部3", "持仓1", "关注0", "观察池0"]);
   });
 
   it("点胶囊切分组", () => {
@@ -277,7 +277,7 @@ describe("主面板：分组胶囊", () => {
     const popup = () => document.querySelector<HTMLElement>(".ctx-menu.chips");
     const popChips = () => [...document.querySelectorAll<HTMLElement>(".ctx-menu.chips .ctx-chip")];
     const open = () => document.querySelector<HTMLElement>("#gtab-more")!.click();
-    /** 弹层里可拖的那些胶囊的分组 id（全部 / 未分组没有 data-key，拖不走） */
+    /** 弹层里可拖的那些胶囊的分组 id（「全部」没有 data-key，拖不走） */
     const keys = () => popChips().map((c) => c.dataset.key).filter((k): k is string => !!k);
     const order = () => saved().groups.map((g: { id: string }) => g.id);
 
@@ -286,10 +286,10 @@ describe("主面板：分组胶囊", () => {
       document.querySelector<HTMLElement>("#gtab-scroll")!.style.width = "60px";
     });
 
-    it("弹层里只有用户分组带 data-key（固定项拖不走）", () => {
+    it("弹层里只有用户分组带 data-key（「全部」拖不走）", () => {
       open();
       expect(popup()).not.toBeNull();
-      expect(popChips().map((c) => c.textContent)).toEqual(["全部3", "未分组2", "持仓1", "关注0", "观察池0"]);
+      expect(popChips().map((c) => c.textContent)).toEqual(["全部3", "持仓1", "关注0", "观察池0"]);
       expect(keys()).toEqual(["g1", "g2", "g3"]);
     });
 

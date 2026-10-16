@@ -64,7 +64,8 @@ export const INDICES: { secid: string; name: string }[] = [
   { secid: "0.399006", name: "创业板指" },
 ];
 export const isIndex = (id: string) => INDICES.some((it) => it.secid === id);
-export const BAR_MAX = 3;
+/** 菜单栏（Windows 为悬浮行情条）最多显示几只：菜单栏本身放不下这么多，太长的部分由系统截断 */
+export const BAR_MAX = 10;
 
 /**
  * 批量加入菜单栏：按传入顺序填满剩余名额。

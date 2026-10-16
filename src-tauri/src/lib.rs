@@ -3,7 +3,7 @@ use std::sync::{LazyLock, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use tauri::{
-    menu::{Menu, MenuItem},
+    menu::{CheckMenuItem, IsMenuItem, Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent,
 };
@@ -18,6 +18,11 @@ const WINDOW_LABEL: &str = "main";
 const SETTINGS_LABEL: &str = "settings";
 /// Windows 悬浮行情条（托盘不能显示文字时的替代）
 const TICKER_LABEL: &str = "ticker";
+
+/// 托盘右键菜单里的项（见 tray_menu）
+const MENU_SETTINGS: &str = "open-settings";
+const MENU_TICKER: &str = "toggle-ticker";
+const MENU_QUIT: &str = "quit";
 
 /// 小窗最近一次因失焦而隐藏的时间（毫秒）。
 /// 点击托盘图标时，窗口会先失焦隐藏、再收到点击事件；
@@ -210,6 +215,11 @@ fn default_tray_icon() -> tauri::Result<tauri::image::Image<'static>> {
     Ok(img.to_owned())
 }
 
+/// Windows 托盘 tooltip 的长度上限：128 个 UTF-16 字符，留 1 个给省略号
+/// （裁剪只在 Windows 用得上，其他平台托盘 tooltip 没有长度限制）
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+const TOOLTIP_LIMIT: usize = 127;
+
 /// 托盘 tooltip：Windows 限制 128 个 UTF-16 字符；多只股票分行显示
 fn tray_tooltip(title: &str) -> String {
     if title.is_empty() {
@@ -217,20 +227,55 @@ fn tray_tooltip(title: &str) -> String {
     }
     #[cfg(target_os = "windows")]
     {
-        let s = title.replace("  │  ", "\n");
-        let mut out = String::new();
-        for c in s.chars() {
-            if out.encode_utf16().count() + c.len_utf16() > 127 {
-                break;
-            }
-            out.push(c);
-        }
-        out
+        clip_tooltip(title, TOOLTIP_LIMIT)
     }
     #[cfg(not(target_os = "windows"))]
     {
         title.to_string()
     }
+}
+
+/// 按 UTF-16 单元截断一行文字（Windows 的 128 字符上限就是这么算的）
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn clip_utf16(s: &str, limit: usize) -> String {
+    let mut out = String::new();
+    for c in s.chars() {
+        if out.encode_utf16().count() + c.len_utf16() > limit {
+            break;
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// 把「名称 价格 涨跌幅  │  名称 价格 涨跌幅 …」裁到 limit 个 UTF-16 单元以内。
+/// 菜单栏放到 10 只之后 tooltip 一定装不下：整只放不下的直接丢掉（不留半只的残缺数字），
+/// 末尾补一行省略号；连第一只自己都超长时只能截断这一行（也要留出省略号的位置）。
+/// 纯函数，单测直接喂字符串，不必起托盘。
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn clip_tooltip(title: &str, limit: usize) -> String {
+    const ELLIPSIS: &str = "\n…";
+    let items: Vec<&str> = title.split("  │  ").filter(|s| !s.is_empty()).collect();
+    let mut out = String::new();
+    for (i, item) in items.iter().enumerate() {
+        let line = if out.is_empty() { (*item).to_string() } else { format!("\n{item}") };
+        // 后面还有几只：先给省略号留位置，免得补上它就超了
+        let reserve = if i + 1 < items.len() { ELLIPSIS.encode_utf16().count() } else { 0 };
+        if out.encode_utf16().count() + line.encode_utf16().count() + reserve <= limit {
+            out.push_str(&line);
+        } else if out.is_empty() {
+            // 第一只自己就放不下（还要给省略号留位置）：截断这一行，后面的更放不下
+            out = clip_utf16(item, limit.saturating_sub(reserve)).trim_end().to_string();
+            if reserve > 0 {
+                out.push_str(ELLIPSIS);
+            }
+            break;
+        } else {
+            out.push_str(ELLIPSIS);
+            break;
+        }
+    }
+    out
 }
 
 /// 单行模式：默认图标 + 图标右侧文字（macOS / Linux 支持；Windows 只显示 tooltip，文字交给悬浮行情条）
@@ -264,6 +309,56 @@ fn set_tray_image(app: AppHandle, png: Vec<u8>, template: bool, tooltip: String)
 fn refresh_tray_icon(app: &AppHandle) {
     if let (Some(tray), Ok(icon)) = (app.tray_by_id(TRAY_ID), default_tray_icon()) {
         let _ = tray.set_icon(Some(icon));
+    }
+}
+
+// ---------- 托盘右键菜单 ----------
+// 左键点图标弹小窗，右键出这个菜单（见 setup 里的 show_menu_on_left_click(false)）。
+// 菜单里的「桌面悬浮行情条」改的是用户设置，而设置存在 localStorage 里、Rust 读不到，
+// 所以这一项只发事件给主面板，勾选状态再由主面板用 set_tray_ticker 推回来。
+
+/// 菜单里的「桌面悬浮行情条」勾选项：设置改过之后要跟着变，所以句柄留着。
+/// 只有 Windows 会建这一项（其他平台一直是 None，set_tray_ticker 就成了空操作）。
+static TRAY_TICKER_ITEM: LazyLock<Mutex<Option<CheckMenuItem<tauri::Wry>>>> =
+    LazyLock::new(|| Mutex::new(None));
+
+/// 托盘右键菜单：打开设置 / 桌面悬浮行情条（Windows）/ 退出
+fn tray_menu(app: &AppHandle, ticker_on: bool) -> tauri::Result<Menu<tauri::Wry>> {
+    let settings = MenuItem::with_id(app, MENU_SETTINGS, "打开设置…", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, MENU_QUIT, "退出 StockBar", true, None::<&str>)?;
+    // 托盘放不下文字的平台（Windows）才用悬浮行情条顶替，其他平台没有这一项
+    #[cfg(not(target_os = "windows"))]
+    let _ = ticker_on;
+    #[cfg(target_os = "windows")]
+    let ticker = Some(CheckMenuItem::with_id(
+        app,
+        MENU_TICKER,
+        "桌面悬浮行情条",
+        true,
+        ticker_on,
+        None::<&str>,
+    )?);
+    #[cfg(not(target_os = "windows"))]
+    let ticker: Option<CheckMenuItem<tauri::Wry>> = None;
+
+    let mut items: Vec<&dyn IsMenuItem<tauri::Wry>> = vec![&settings];
+    if let Some(item) = &ticker {
+        if let Ok(mut slot) = TRAY_TICKER_ITEM.lock() {
+            *slot = Some(item.clone());
+        }
+        items.push(item);
+    }
+    items.push(&quit);
+    Menu::with_items(app, &items)
+}
+
+/// 主面板把「桌面悬浮行情条」的开关状态推过来：托盘菜单里的勾选项跟着变
+#[tauri::command]
+fn set_tray_ticker(on: bool) {
+    if let Ok(slot) = TRAY_TICKER_ITEM.lock() {
+        if let Some(item) = slot.as_ref() {
+            let _ = item.set_checked(on);
+        }
     }
 }
 
@@ -436,12 +531,23 @@ fn default_ticker_position(win: &WebviewWindow) {
     let _ = win.center();
 }
 
-/// 悬浮条按内容调整大小（逻辑像素）
+/// 悬浮条按内容调整大小（逻辑像素）。
+/// 菜单栏能放到 10 只，窄屏上内容可能比屏幕还宽：夹到工作区宽度以内，
+/// 超出的部分被窗口裁掉，总好过整条跑到屏幕外（右边一截点不到、还夹在屏幕边上）。
 #[tauri::command]
 fn fit_ticker(app: AppHandle, width: f64, height: f64) -> Result<(), String> {
     let win = app.get_webview_window(TICKER_LABEL).ok_or("ticker not found")?;
-    win.set_size(tauri::LogicalSize::new(width.max(40.0), height.max(20.0)))
-        .map_err(|e| e.to_string())?;
+    let max_w = win
+        .current_monitor()
+        .ok()
+        .flatten()
+        .map(|m| m.work_area().size.width as f64 / m.scale_factor() - 16.0)
+        .unwrap_or(width);
+    win.set_size(tauri::LogicalSize::new(
+        width.min(max_w).max(40.0),
+        height.max(20.0),
+    ))
+    .map_err(|e| e.to_string())?;
     clamp_to_screen(&win);
     Ok(())
 }
@@ -548,6 +654,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             set_tray_text,
             set_tray_image,
+            set_tray_ticker,
             open_settings,
             set_ticker,
             fit_ticker,
@@ -581,8 +688,9 @@ pub fn run() {
             // MCP 本地桥不在这里起：开关是用户设置（存在 localStorage 里，Rust 读不到），
             // 由主面板启动后按设置调 mcp_set_enabled 打开或保持关闭。见 bridge.rs 的 set_enabled()。
 
-            let quit = MenuItem::with_id(app, "quit", "退出 StockBar", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&quit])?;
+            // 托盘右键菜单：打开设置 / 桌面悬浮行情条（Windows）/ 退出。
+            // 勾选状态先按「关」建，主面板起来后会按设置推一次真实状态过来
+            let menu = tray_menu(app.handle(), false)?;
 
             TrayIconBuilder::with_id(TRAY_ID)
                 .icon(default_tray_icon()?)
@@ -590,10 +698,21 @@ pub fn run() {
                 .tooltip("StockBar")
                 .menu(&menu)
                 .show_menu_on_left_click(false) // 左键弹小窗，右键出菜单
-                .on_menu_event(|app, event| {
-                    if event.id.as_ref() == "quit" {
-                        app.exit(0);
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    MENU_SETTINGS => {
+                        // 建窗口不能在这个回调里同步做：Windows 上会死锁（见 open_settings 的注释）
+                        let app = app.clone();
+                        std::thread::spawn(move || {
+                            let _ = open_settings_window(app, None);
+                        });
                     }
+                    // 悬浮行情条改的是用户设置（存在 localStorage 里，Rust 读不到）：
+                    // 交给主面板翻开关，它改完再调 set_tray_ticker 把勾选状态推回来
+                    MENU_TICKER => {
+                        let _ = app.emit_to(WINDOW_LABEL, "tray-menu", "ticker");
+                    }
+                    MENU_QUIT => app.exit(0),
+                    _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
                     // positioner 需要记录托盘图标位置（macOS 用）
@@ -686,5 +805,26 @@ mod tests {
         assert_eq!(take_pending_page().as_deref(), Some("about"));
         // 取走即清空：不然下次窗口重建会莫名串到这一页
         assert_eq!(take_pending_page(), None);
+    }
+
+    /// 菜单栏能放到 10 只，Windows 的 tooltip 一定装不下：按整只裁剪，别留半只的残缺数字
+    #[test]
+    fn tooltip_按整只裁剪并补省略号() {
+        let a = "上证 3800.86 +1.23%";
+        let b = "深证 12000.00 -0.50%";
+        let c = "创业板 2500.00 +0.10%";
+        let title = format!("{a}  │  {b}  │  {c}");
+        // 放得下：一只一行，原样显示
+        assert_eq!(clip_tooltip(&title, 200), format!("{a}\n{b}\n{c}"));
+        // 只放得下前两只：第三只整只丢掉，末尾补一行省略号，且不超上限
+        let limit = format!("{a}\n{b}").encode_utf16().count() + 2;
+        assert_eq!(clip_tooltip(&title, limit), format!("{a}\n{b}\n…"));
+        assert!(clip_tooltip(&title, limit).encode_utf16().count() <= limit);
+        // 第一只自己就放不下（后面还有别的）：截断这一行 + 省略号，仍然不超上限
+        assert_eq!(clip_tooltip(&format!("{a}  │  {b}"), 5), "上证\n…");
+        // 只有一只时没有省略号的位置，直接截断
+        assert_eq!(clip_tooltip(a, 5), "上证 38");
+        // 空标题不该产出空 tooltip
+        assert_eq!(tray_tooltip(""), "StockBar");
     }
 }

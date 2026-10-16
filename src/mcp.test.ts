@@ -82,7 +82,7 @@ describe("MCP 命令：查看自选", () => {
     expect(r.text).toContain("- 0.300750 宁德时代 · 187.30 -0.51% · 第 1 位 · 置顶");
     expect(r.text).toContain("持仓 (g1)（1 只）");
     expect(r.text).toContain("- 1.600519 贵州茅台 · 1680.50 +1.23%");
-    expect(r.text).toContain("菜单栏显示（1/3）：1.600519 贵州茅台");
+    expect(r.text).toContain(`菜单栏显示（1/${BAR_MAX}）：1.600519 贵州茅台`);
     expect(r.text).toContain("大盘指数（内置，不可增删）");
     const data = r.data as { groups: { id: string; items: { secid: string }[] }[] };
     expect(data.groups.map((g) => g.id)).toEqual([UNGROUPED, "g1"]);

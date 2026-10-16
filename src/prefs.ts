@@ -253,7 +253,7 @@ root.innerHTML = `
             : ""
         }
       </div>
-      <h2 class="group-title">${BAR}显示 <span class="count" id="ord-count"></span><span class="title-hint">顺序即${BAR}上的显示顺序</span></h2>
+      <h2 class="group-title">${BAR}显示 <span class="count" id="ord-count"></span><span class="title-hint">顺序即${BAR}上的显示顺序${IS_WIN ? "" : "；标的太多会被系统截断甚至隐藏"}</span></h2>
       <div class="group ordgroup">
         <div class="ordlist" id="ord-list"></div>
       </div>

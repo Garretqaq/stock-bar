@@ -90,17 +90,19 @@ Vite 是多页面打包，入口在 `vite.config.ts` 的 `rollupOptions.input` �
 - 托盘只由主面板 `main.ts` 的 `updateTray()` 负责更新。它用签名 `traySig` 去重，内容没变就不推送。设置窗口只用 `bar.ts` 做本地预览，不调用托盘命令。
 - 三种样式：`text` 调 `set_tray_text`（默认图标加文字）；`compact` 用 canvas 按 2x、高 36px 绘制 PNG，再调 `set_tray_image`；`icon` 只显示图标。
 - `barColor=false` 时图片按 template 图处理（只用 alpha 通道，系统会自动适配深色和浅色菜单栏）。
-- 菜单栏最多显示 `BAR_MAX = 3` 只股票。
+- 菜单栏最多显示 `BAR_MAX = 10` 只股票。**macOS 菜单栏不会为它腾地方**：放不下时系统会把标题截断，挤得厉害时干脆把整项藏起来（应用没有 Dock 图标，藏了只能再启动一次、走单实例回调打开设置窗口去减数量），所以别把这个上限当成「一定显示得下」。Windows 的 tooltip 有 128 个 UTF-16 字符上限，`tray_tooltip()` 用 `clip_tooltip()` **按整只**裁剪并在末尾补一行省略号（别按字符硬切，会留下半只的残缺数字）；设置窗口的预览按真实菜单栏的样子截断（`prefs.css` 的 `.mb-item` / `.mb-text`），悬浮条在窄屏上由 `fit_ticker()` 夹到工作区宽度以内。
+- 托盘右键菜单（`tray_menu()`）三项：打开设置…（另起线程调 `open_settings_window()`，理由见「建窗口的命令必须是 async」）、桌面悬浮行情条（**只有 Windows 建这一项**，`CheckMenuItem`）、退出 StockBar；左键仍然只弹小窗（`show_menu_on_left_click(false)`）。
+- 悬浮行情条那一项改的是用户设置，而设置存在 localStorage 里、Rust 读不到：菜单点击只 `emit_to` 一个 `tray-menu` 事件给主面板，主面板翻转 `S.ticker`（`save()` + `syncTicker()`）后再调 `set_tray_ticker` 把勾选状态推回来（句柄留在 `TRAY_TICKER_ITEM` 里，其他平台一直是 `None`，命令就是空操作）。改这条链路要三处对齐：菜单 id（`lib.rs`）、`main.ts` 的 `listenAll("tray-menu")`、命令 `set_tray_ticker`。
 
 **Windows 适配**
 - 前端用 `IS_WIN`（UA 判断）区分平台，`applyAppearance` 会给 `<html>` 加 `.win` 类，平台样式差异都挂在 `.win` 下。
-- Windows 托盘不能显示文字、图标是正方形：`updateTray()` 在 Windows 只调 `set_tray_text`（tooltip 显示行情，Rust 侧截断到 127 个 UTF-16 字符），行情文字交给**悬浮行情条**。
-- 悬浮行情条：主面板 `syncTicker()` 是唯一调用 `set_ticker` 的地方（`ticker` 开启、样式不是 `icon`、`bar` 非空时显示）。行情条自己拉数据和渲染，尺寸用 `fit_ticker` 跟随内容；单击调 `ticker_click` 在其旁边弹出主面板；窗口 `focusable(false)`，点击它不会让主面板失焦。位置存在 `localStorage["stockbar.ticker.pos"]`（不走 `saveSettings`，拖动不广播）。
+- Windows 托盘不能显示文字、图标是正方形：`updateTray()` 在 Windows 只调 `set_tray_text`（tooltip 显示行情，Rust 侧按整只截断到 127 个 UTF-16 字符以内），行情文字交给**悬浮行情条**。
+- 悬浮行情条：主面板 `syncTicker()` 是唯一调用 `set_ticker` 的地方（`ticker` 开启、样式不是 `icon`、`bar` 非空时显示）。行情条自己拉数据和渲染，尺寸用 `fit_ticker` 跟随内容；单击调 `ticker_click` 在其旁边弹出主面板；窗口 `focusable(false)`，点击它不会让主面板失焦。位置存在 `localStorage["stockbar.ticker.pos"]`（不走 `saveSettings`，拖动不广播）。开关有两条入口，改的都是同一份 `S.ticker`：设置窗口「仪表盘」页的开关（只有 Windows 渲染这一行），以及托盘右键菜单里的那一项（见「菜单栏（托盘）」）；菜单里的勾选状态由主面板 `syncTrayTicker()` 推给 Rust（`renderFromSettings()` 与启动时各推一次）。
 - 托盘图标：`tray.png` 是黑色剪影，Windows 不支持 template，深色任务栏（注册表 `SystemUsesLightTheme=0`）下由 `default_tray_icon()` 染成白色，系统切换主题时重新着色。
 - 主面板在 Windows 关闭系统阴影、窗口放大到 376×576，由 CSS 留 8px 边距自己画圆角阴影；WebView2 的 `backdrop-filter` 透不到桌面，所以 `.win .panel` 用不透明底。设置窗口在 Windows 用原生标题栏（不渲染仿红绿灯和拖动区，标题栏深浅随应用主题 `setTheme`），整体是 Windows 11「设置」风格：`prefs.css` 末尾的 `.win` 区块（导航强调色竖条、每项一张 4px 圆角卡片、带「开/关」文字的开关、方形复选框），预览是桌面 + 任务栏 + 悬浮行情条（内容与真实行情条共用 `bar.ts` 的 `tickerHtml`）。开发时 `pnpm dev` 打开 `settings.html?win` 可在浏览器预览 Windows 布局。
 
 **Rust 侧**
-- 前端可以调用的命令：`set_tray_text`、`set_tray_image`、`open_settings`（可带 `page` 指定打开哪一页）、`set_ticker`、`fit_ticker`、`ticker_click`、`hide_window`、`quit_app`、`mcp_ready`、`mcp_reply`、`mcp_info`、`mcp_set_enabled`、`app_version`、`update_check`、`update_install`、`update_restart`、`open_release_page`、`settings_ready`。新增命令要同时改两处：在 `generate_handler![]` 里注册，前端通过 `call()` 调用。MCP 与更新的命令壳写在 `lib.rs`、实现放在 `bridge.rs` / `update.rs`（原因见「坑」）。
+- 前端可以调用的命令：`set_tray_text`、`set_tray_image`、`set_tray_ticker`、`open_settings`（可带 `page` 指定打开哪一页）、`set_ticker`、`fit_ticker`、`ticker_click`、`hide_window`、`quit_app`、`mcp_ready`、`mcp_reply`、`mcp_info`、`mcp_set_enabled`、`app_version`、`update_check`、`update_install`、`update_restart`、`open_release_page`、`settings_ready`。新增命令要同时改两处：在 `generate_handler![]` 里注册，前端通过 `call()` 调用。MCP 与更新的命令壳写在 `lib.rs`、实现放在 `bridge.rs` / `update.rs`（原因见「坑」）。
 - **建窗口的命令必须是 `async fn`**：Windows 上 WebView2 不会在事件回调里重入，同步命令跑在 IPC 回调里，`WebviewWindowBuilder::build()` 会让 `create_controller` 永远等不到完成回调，整个应用卡死（tauri 文档的 Known issues / wry#583）。`open_settings`（建设置窗口）与 `set_ticker`（建行情条）因此都是 async，真正的建窗逻辑放在同步的 `open_settings_window()` / `set_ticker_window()` 里，由 async 命令（跑在 tokio 线程池上）调用；单实例回调里也是另起线程调 `open_settings_window()`，不在窗口过程里建窗。
 - 用 `LAST_HIDDEN_MS` 做防抖（macOS 250ms，Windows/Linux 400ms，见 `TOGGLE_DEBOUNCE_MS`），实现"再点一次图标收起小窗"（点击时窗口会先失焦、自动隐藏）。改托盘点击逻辑时不要破坏这个行为。
 - 主面板每次弹出都会收到 `panel-shown` 事件，触发入场动画并立即刷新数据。

@@ -63,8 +63,14 @@ describe("loadSettings", () => {
   it("bar 只保留自选或大盘指数，且不超过 BAR_MAX", () => {
     put({ watchlist: ["1.600519", "0.300750"], bar: ["9.999", "1.000001", "1.600519", "0.300750", "0.399001"] });
     const s = loadSettings();
-    expect(s.bar).toEqual(["1.000001", "1.600519", "0.300750"]);
+    expect(s.bar).toEqual(["1.000001", "1.600519", "0.300750", "0.399001"]);
     expect(s.bar.length).toBeLessThanOrEqual(BAR_MAX);
+  });
+
+  it("bar 超过 BAR_MAX 时只保留前 BAR_MAX 只", () => {
+    const ids = Array.from({ length: BAR_MAX + 2 }, (_, i) => `1.${600000 + i}`);
+    put({ watchlist: ids, bar: ids });
+    expect(loadSettings().bar).toEqual(ids.slice(0, BAR_MAX));
   });
 
   it("barFields 为空时恢复默认字段", () => {

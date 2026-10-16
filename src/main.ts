@@ -1304,6 +1304,33 @@ function syncTicker(): void {
   void call("set_ticker", { show, x: pos?.x ?? null, y: pos?.y ?? null });
 }
 
+/**
+ * Windows：托盘右键菜单里「桌面悬浮行情条」的勾选状态跟着设置走。
+ * 设置存在 localStorage 里、Rust 读不到，所以由本窗口把状态推过去（菜单项只建在 Windows 上）。
+ */
+function syncTrayTicker(): void {
+  if (!IN_TAURI || !IS_WIN) return;
+  void call("set_tray_ticker", { on: S.ticker });
+}
+
+/**
+ * 托盘右键菜单里的项（Rust 侧）：只有悬浮行情条这一项要前端执行 ——
+ * 它改的是用户设置，而设置存在 localStorage 里，所以 Rust 只发事件，
+ * 改完由本窗口调 set_tray_ticker 把勾选状态推回去（见 lib.rs 的 tray_menu）。
+ */
+void (async () => {
+  await listenAll<string>("tray-menu", (action) => {
+    if (action !== "ticker" || !IS_WIN) return;
+    S.ticker = !S.ticker;
+    save(); // 广播给设置窗口：那边「桌面悬浮行情条」的开关与预览一起跟上
+    syncTicker();
+    syncTrayTicker();
+  });
+  // 监听确实挂上之后再推一次勾选状态：万一在这之前点了菜单里的那一项，
+  // 菜单翻了勾、设置却没改，这里把状态重新对齐（与 MCP 的 mcp_ready 一个道理）
+  syncTrayTicker();
+})();
+
 // ---------- 数据刷新 ----------
 
 function select(id: string): void {
@@ -1371,12 +1398,13 @@ function assignSettings(next: Settings): void {
   if (trendOpen && !S.watchlist.includes(trendOpen) && !isIndex(trendOpen)) trendOpen = null;
 }
 
-/** 按当前 S 重画：外观、列表、菜单栏、行情条 */
+/** 按当前 S 重画：外观、列表、菜单栏、行情条（含托盘菜单里的勾选状态） */
 function renderFromSettings(): void {
   applyColorMode();
   renderAll();
   void updateTray();
   syncTicker();
+  syncTrayTicker();
   void refresh();
 }
 

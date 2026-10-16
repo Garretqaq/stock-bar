@@ -1,6 +1,6 @@
 [package]
 name = "stock-bar"
-version = "0.0.8"
+version = "0.0.9"
 description = "菜单栏盯盘小工具（东方财富行情）"
 edition = "2021"
 

@@ -162,6 +162,7 @@ const ICON_MORE = `<svg viewBox="0 0 24 24"><path d="M4.5 7.5h15M4.5 12h15M4.5 1
 
 const app = $("#app");
 app.innerHTML = `
+  <div class="frost" aria-hidden="true"></div>
   <header class="top">
     <span class="top-spacer" aria-hidden="true"></span>
     <div class="title">

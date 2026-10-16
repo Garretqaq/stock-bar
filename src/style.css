@@ -122,17 +122,29 @@ button {
 
 .panel {
   position: relative;
+  z-index: 0; /* 建层叠上下文：底下那层玻璃（.frost）用 z-index:-1 待在面板里、内容画在它上面 */
   display: flex;
   flex-direction: column;
   width: 100%;
   height: 100%;
-  background: var(--bg);
-  -webkit-backdrop-filter: blur(30px) saturate(1.8);
-  backdrop-filter: blur(30px) saturate(1.8);
   border: 1px solid var(--border);
   border-radius: 14px;
   overflow: hidden;
   font-variant-numeric: tabular-nums;
+}
+
+/* 面板的毛玻璃独立铺成最底下一层（面板自己不再承担模糊），这是为了吸顶条：
+   条的背景模糊一旦**嵌在**带 backdrop-filter 的祖先里，浏览器给它的「底」就不是祖先的合成结果，
+   而是祖先那层底色（--bg 那层半透明白），于是条比周围的面板表面白出一截 —— 就是那块「白的」。
+   挪成兄弟层之后，条背后是真实像素（这层玻璃 + 从下面滚过去的行），也就是「毛玻璃顶栏」的经典用法。 */
+.frost {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: var(--bg);
+  -webkit-backdrop-filter: blur(30px) saturate(1.8);
+  backdrop-filter: blur(30px) saturate(1.8);
+  pointer-events: none;
 }
 
 .panel.enter {
@@ -539,10 +551,12 @@ button {
 /* 列表的「头部条」：自选的分组筛选条（.gtabs）与板块的控制条（.bctl），两个视图同一套做法 ——
    单行横排（分组多了 / 口径多的那些胶囊横向滚动，见下面的 .gtab-scroll），
    列表往下滚时它吸在顶部（sticky）：随时能切分组 / 换口径、切涨跌榜，不用先滚回最上面。
-   吸顶要盖住从下面滚过去的行，所以得有底色（与面板同色）**再叠一层背景模糊**，只靠半透明底
-   会透出后面滚过去的行（截图里能看见清晰残影）；间距也从 margin 挪进 padding，否则 margin
-   那块没被底色盖住，行会从缝里透出来。
-   z-index 要低于搜索结果的弹层（10），高于列表里的行（拖动中的行是 3，会浮在它上面） */
+   吸顶要盖住从下面滚过去的行，这里靠**背景模糊**：面板自己已经是一层 --bg（半透明 + 模糊），
+   条再叠一整层 --bg 会叠成接近纯白，比周围的面板表面白出一截 —— 看着就是「一块白的」。
+   所以条不叠底色，只把滚过去的内容糊掉（糊过去时还留一点淡影：要彻底盖住就得压一层不透明的底，
+   那就又变回白块了，两害相权取了现在这个）。
+   间距走 padding 不走 margin，否则 margin 那块没被盖住，行会从缝里透出来。
+   z-index 要低于搜索结果的弹层（10）、高于列表里的行（拖动中的行是 3，会浮在它上面） */
 .gtabs,
 .bctl {
   position: sticky;
@@ -552,10 +566,17 @@ button {
   align-items: center;
   gap: 6px;
   padding: 3px 0 5px;
-  background: var(--bg);
-  -webkit-backdrop-filter: blur(12px) saturate(1.8);
-  backdrop-filter: blur(12px) saturate(1.8);
+  -webkit-backdrop-filter: blur(18px);
+  backdrop-filter: blur(18px);
   border-bottom: 1px solid var(--line);
+}
+/* Windows：面板本身是不透明的白（见 .win .panel），条压一层 --bg 与面板同色、不会有色差，
+   而 WebView2 那边的背景模糊不保证生效，所以那边保留底色，把滚过去的行彻底盖住 */
+.win .gtabs,
+.win .bctl {
+  background: var(--bg);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
 .gtab-scroll {
   display: flex;
@@ -575,7 +596,8 @@ button {
   flex: 0 0 auto;
   height: 26px;
   padding: 0 10px;
-  border: 1px solid transparent;
+  /* 描边常驻：头部条不再压白底（见上面的注释），胶囊靠这一圈描边从面板表面上立起来 */
+  border: 1px solid var(--border);
   border-radius: 13px;
   font-size: 12px;
   font-weight: 500;
@@ -585,7 +607,7 @@ button {
 }
 .gtab:hover {
   color: var(--text);
-  border-color: var(--border);
+  border-color: var(--idx-border-hover);
 }
 .gtab b {
   font-size: 10.5px;
@@ -608,10 +630,14 @@ button {
   flex: 0 0 auto;
   width: 26px;
   height: 26px;
+  border: 1px solid var(--border);
   border-radius: 13px;
   color: var(--sub);
   background: var(--card);
-  transition: color 0.18s ease, background 0.18s ease;
+  transition: color 0.18s ease, background 0.18s ease, border-color 0.18s ease;
+}
+.gtab-more:hover {
+  border-color: var(--idx-border-hover);
 }
 /* display:inline-flex 会盖掉 [hidden] 的默认 display:none，得自己再写一条 */
 .gtab-more[hidden] {
@@ -1098,6 +1124,10 @@ button {
   backdrop-filter: none;
   border-radius: 8px;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.22);
+}
+/* Windows 的模糊透不到桌面，面板用不透明底自己画，底下那层玻璃就不需要了 */
+.win .frost {
+  display: none;
 }
 /* 托盘在底部：从下往上弹出 */
 .win .panel.enter {

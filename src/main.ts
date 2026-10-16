@@ -2,20 +2,26 @@ import {
   apiErrorText,
   getActiveSource,
   codeOf,
+  fetchBoards,
   fetchMarketAmount,
   fetchQuotes,
   fetchTrend,
+  boardSourceOf,
+  isBoardSecid,
   MARKET_INDEX,
   marketTag,
   regionOf,
   searchStocks,
   sessionStatus,
+  type Board,
+  type BoardKind,
   type MarketAmount,
   type Quote,
   type SearchItem,
   type TrendData,
 } from "./api";
 import { barImage, barText, canvasPng } from "./bar";
+import { BOARD_KINDS, boardRows, leaderTag, type BoardOrder } from "./boards";
 import {
   INDICES,
   UNGROUPED,
@@ -74,6 +80,29 @@ let refreshing = false;
 let market: MarketAmount | null = null;
 let marketSeq = 0;
 
+// ---------- 板块榜单 ----------
+// 板块不是标的（见 CONTEXT.md 与 docs/adr/0001-boards-are-read-only.md）：
+// 下面这些状态一律不进设置、不持久化，主面板每次弹出都回到「自选 / 行业 / 涨幅榜」。
+/** 当前视图：自选列表 / 板块榜单 */
+let view: "watch" | "board" = "watch";
+let boardKind: BoardKind = "industry";
+let boardOrder: BoardOrder = "up";
+/** 是否显示行业里的 Ⅱ / Ⅲ 细分（默认藏起来，它们是重复项，见 boards.ts） */
+let boardSubs = false;
+/** 当前口径下最近一次成功拉到的板块；拉失败时保留上一份，不清空 */
+let boards: Board[] = [];
+let boardsLoading = false;
+let boardsErr = false;
+/** 拉取序号：口径切换后回来的旧数据直接丢掉 */
+let boardsSeq = 0;
+/** 正在路上的口径（同一口径不重复发请求，5 秒一轮的刷新不会叠起来） */
+let boardsBusy: BoardKind | null = null;
+/**
+ * 板块名。板块不在 quotes 里，而分时面板的标题要显示名字，
+ * 所以拉到的名字都记下来（不随口径切换清空，展开中的板块换了口径也还认得出）。
+ */
+const boardNames = new Map<string, string>();
+
 // ---------- 工具 ----------
 const $ = <T extends HTMLElement = HTMLElement>(sel: string, root: ParentNode = document) =>
   root.querySelector<T>(sel)!;
@@ -115,7 +144,8 @@ function fmtAmountDiff(v: number | null | undefined): string {
 }
 
 function nameOf(secid: string): string {
-  return quotes.get(secid)?.name ?? codeOf(secid);
+  // 板块不在 quotes 里（它没有报价），名字来自板块列表
+  return quotes.get(secid)?.name ?? boardNames.get(secid) ?? codeOf(secid);
 }
 
 type Dir = "up" | "down" | "flat";
@@ -153,6 +183,10 @@ app.innerHTML = `
     <section class="indices" id="indices"></section>
     <div class="trend trend-index" id="trend-index"><div class="trend-card"><div class="trend-head"><span class="trend-title"></span><span class="trend-meta"></span></div><canvas></canvas><div class="trend-foot"></div></div></div>
 
+    <div class="vtabs" id="vtabs" role="tablist" aria-label="视图">
+      <button class="vtab on" data-view="watch" role="tab" aria-selected="true">自选</button>
+      <button class="vtab" data-view="board" role="tab" aria-selected="false">板块</button>
+    </div>
     <div class="search">
       <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
       <input id="search-input" placeholder="搜索代码 / 名称 / 拼音" autocomplete="off" spellcheck="false" />
@@ -163,6 +197,13 @@ app.innerHTML = `
       <button class="gtab-more" id="gtab-more" hidden title="更多分组" aria-label="更多分组" aria-haspopup="menu">${ICON_MORE}</button>
     </div>
     <section class="list" id="list"></section>
+    <div class="bctl" id="bctl" hidden>
+      <div class="bkind" id="bkind"></div>
+      <button class="gtab" id="border"></button>
+      <button class="gtab" id="bsubs" title="显示行业细分（Ⅱ / Ⅲ）">细分</button>
+      <span class="bcount" id="bcount"></span>
+    </div>
+    <section class="list" id="boards" hidden></section>
   </main>
 
   <footer class="bottom">
@@ -230,7 +271,7 @@ async function toggleTrend(id: string): Promise<void> {
 
 /** 只切换 class、不重建 DOM，保证展开/收起过渡完整播放 */
 function syncOpenState(): void {
-  document.querySelectorAll<HTMLElement>(".idx, #list .row").forEach((el) => {
+  document.querySelectorAll<HTMLElement>(".idx, #list .row, #boards .row").forEach((el) => {
     el.classList.toggle("active", el.dataset.id === S.selected);
     el.classList.toggle("open", el.dataset.id === trendOpen);
   });
@@ -244,8 +285,11 @@ function openHolders(id: string): HTMLElement[] {
 async function loadTrend(id: string, animate: boolean): Promise<void> {
   const seq = ++trendSeq;
   try {
-    // 大盘指数多取一天：用来算「与上一日同期」的成交额对比
-    const data = await fetchTrend(id, isIndex(id) ? 2 : 1, S.source);
+    // 板块分时**跟着这一行自己的来源**走（90.BK… 找东财、91.pt… 找腾讯）：换源之后屏上
+    // 可能还留着上一家的板块，按设置的源去拉会画不出来。大盘指数多取一天，
+    // 用来算「与上一日同期」的成交额对比。
+    const src = boardSourceOf(id) ?? S.source;
+    const data = await fetchTrend(id, isIndex(id) ? 2 : 1, src);
     if (seq !== trendSeq || trendOpen !== id) return;
     trendCache.set(id, data);
     trendErr.delete(id);
@@ -282,7 +326,7 @@ function renderTrendPanels(): void {
   const idxOpen = INDICES.some((it) => it.secid === trendOpen);
   // 收起时保留旧 id，让收起过渡期间仍显示原图
   if (idxOpen) idxPanel.dataset.id = trendOpen!;
-  const panels = [idxPanel, ...document.querySelectorAll<HTMLElement>("#list .trend")];
+  const panels = [idxPanel, ...document.querySelectorAll<HTMLElement>("#list .trend, #boards .trend")];
   for (const el of panels) {
     const open = el === idxPanel ? idxOpen : el.dataset.id === trendOpen;
     el.classList.toggle("show", open);
@@ -441,8 +485,9 @@ function drawTrend(holder: HTMLElement, progress = 1): void {
     if (p.price > max) max = p.price;
   }
   const pre = data.preClose ?? pts[0].price;
-  // 指数的"均价"字段不是真实均价，只给个股画均价线；纵轴范围同时容纳均价
-  const showAvg = !INDICES.some((it) => it.secid === id);
+  // 指数与板块的"均价"字段都不是真实均价（东财给的是另一套口径），只给个股画均价线；
+  // 纵轴范围同时容纳均价
+  const showAvg = !INDICES.some((it) => it.secid === id) && !isBoardSecid(id);
   let rMin = min;
   let rMax = max;
   if (showAvg) {
@@ -740,8 +785,8 @@ function renderTabs(): void {
   // 否则会出现没有任何标签高亮、列表却还筛着的状态
   const fellBack = groupFilter !== null && !tabs.some((t) => t.gid === groupFilter);
   if (fellBack) groupFilter = null;
-  const show = S.groups.length > 0;
-  box.hidden = !show;
+  // 板块视图里没有自选列表，筛选条也就不该出现
+  const show = S.groups.length > 0 && view === "watch";
   if (!show) {
     box.dataset.key = "";
     if (tabScroll.innerHTML) tabScroll.innerHTML = "";
@@ -1095,6 +1140,241 @@ $("#list").addEventListener("contextmenu", (e) => {
   ]);
 });
 
+// ---------- 板块榜单 ----------
+// 板块不是标的：它只是一块只读榜单，不进自选 / 分组 / 置顶 / 菜单栏 / MCP
+//（见 CONTEXT.md 与 docs/adr/0001-boards-are-read-only.md）。
+
+/** 视图切换：自选 ↔ 板块。切到板块时才去拉榜单（不打开这个视图的用户一次请求都不多发） */
+function setView(next: "watch" | "board"): void {
+  if (view === next) return;
+  view = next;
+  renderView();
+  if (next === "board") void loadBoards();
+}
+
+/**
+ * 按当前视图决定显示哪一块，并重画它。
+ * 大盘指数卡片两个视图都留着（看板块也要对着大盘看）；搜索框在板块视图里收起 ——
+ * 搜索接口不返回板块，摆在板块榜上会让人以为能搜板块。
+ */
+function renderView(): void {
+  const board = view === "board";
+  $("#vtabs")
+    .querySelectorAll<HTMLElement>(".vtab")
+    .forEach((b) => {
+      const on = (b.dataset.view === "board") === board;
+      b.classList.toggle("on", on);
+      b.setAttribute("aria-selected", String(on));
+    });
+  $(".search").hidden = board;
+  $("#list").hidden = board;
+  $("#bctl").hidden = !board;
+  $("#boards").hidden = !board;
+  if (board) {
+    $("#gtabs").hidden = true; // 筛选条属于自选列表（renderTabs 里还有一道按视图的判断）
+    renderBoards();
+  } else {
+    renderList(); // 里面会顺带按视图决定筛选条出不出现
+  }
+}
+
+/**
+ * 拉当前口径的全部板块，按设置里的数据源取（auto 时东财不通会自动退腾讯）。
+ * 失败时保留上一份榜单：多一份旧数据也好过整块闪没（与分时一致）。
+ * 只在板块视图打开时被调用 —— 不打开这个视图的用户，一次请求都不会多发。
+ */
+async function loadBoards(): Promise<void> {
+  const kind = boardKind;
+  if (boardsBusy === kind) return; // 同一口径还在路上：等它回来
+  const seq = ++boardsSeq;
+  boardsBusy = kind;
+  boardsLoading = true;
+  renderBoards();
+  try {
+    const got = await fetchBoards(kind, S.source, boardSubs);
+    if (seq !== boardsSeq) return; // 拉的过程中换了口径：这份数据已经没用了
+    boards = got;
+    got.forEach((b) => boardNames.set(b.secid, b.name));
+    // 换了数据源之后，屏上可能还开着一个属于上一家的板块：它的行马上会被重建掉，顺手收起
+    if (isBoardSecid(trendOpen ?? "") && !got.some((b) => b.secid === trendOpen)) trendOpen = null;
+    boardsErr = false;
+  } catch {
+    if (seq === boardsSeq) boardsErr = true;
+  } finally {
+    if (seq === boardsSeq) {
+      boardsBusy = null;
+      boardsLoading = false;
+      renderBoards();
+    }
+  }
+}
+/** 控制条：口径胶囊只建一次，之后只改选中态与两个按钮的文案；count 是当前榜上显示的条数 */
+function renderBoardCtl(count: number): void {
+  const kindBox = $("#bkind");
+  if (!kindBox.dataset.built) {
+    kindBox.dataset.built = "1";
+    kindBox.innerHTML = BOARD_KINDS.map(
+      (k) => `<button class="gtab" data-kind="${k.kind}">${k.label}</button>`,
+    ).join("");
+  }
+  kindBox
+    .querySelectorAll<HTMLElement>(".gtab")
+    .forEach((b) => b.classList.toggle("on", b.dataset.kind === boardKind));
+
+  const order = $("#border");
+  order.textContent = boardOrder === "up" ? "涨幅 ↓" : "跌幅 ↑";
+  order.title = boardOrder === "up" ? "当前是涨幅榜，点一下看跌幅榜" : "当前是跌幅榜，点一下看涨幅榜";
+  order.classList.add("on");
+  $("#bsubs").classList.toggle("on", boardSubs);
+  // 条数：两家的板块数量差得很远（行业东财 496 / 腾讯 155），摆出来才不会被当成 bug
+  $("#bcount").textContent = count ? `${count} 个` : "";
+}
+
+/**
+ * 榜单：成员（口径 / 含细分 / 有哪些板块）变了才重建 DOM，名次变化只搬 DOM、行情刷新只改文字 ——
+ * 与自选列表同一套做法，展开中的分时图不被打断。
+ */
+function renderBoards(): void {
+  const box = $("#boards");
+  const rows = boardRows(boards, { showSubs: boardSubs, order: boardOrder });
+  renderBoardCtl(rows.length);
+
+  if (!rows.length) {
+    box.dataset.key = "";
+    box.innerHTML =
+      `<div class="empty list-empty">` +
+      (boardsLoading
+        ? `<div>加载中…</div>`
+        : boardsErr
+          ? `<div>板块榜单加载失败</div><div class="list-tip">下一个刷新周期会自动重试</div>`
+          : `<div>没有板块</div>`) +
+      `</div>`;
+    return;
+  }
+
+  const ids = rows.map((b) => b.secid);
+  // key 只看「有哪些板块」，**不看名次**：涨跌幅每几秒就在动，把顺序算进 key 会让整块反复重建，
+  // 而重建会把展开中的分时图一起丢掉。名次变化改用搬 DOM 处理（见 reorderBoards）。
+  const key = `${boardKind}|${boardSubs}|${[...ids].sort().join(",")}`;
+  if (box.dataset.key !== key) {
+    box.dataset.key = key;
+    box.innerHTML = rows
+      .map((b, i) => {
+        // --i 只用来错开入场动画的延迟：不封顶的话第 500 行要等 20 秒才出现
+        const delay = Math.min(i, 8);
+        return (
+          `<div class="row brow" data-id="${esc(b.secid)}" style="--i:${delay}">` +
+          `<div class="row-main"><div class="row-name"></div><div class="row-meta"></div></div>` +
+          `<div class="pill flat">--</div></div>` +
+          `<div class="trend${trendOpen === b.secid ? " show" : ""}" data-id="${esc(b.secid)}">${trendInner()}</div>`
+        );
+      })
+      .join("");
+    // 重建出来的分时面板只有 .show、还没画过：这里补画一次（数据仍在 trendCache 里）
+    renderTrendPanels();
+  } else {
+    reorderBoards(box, ids);
+  }
+
+  const byId = new Map(rows.map((b) => [b.secid, b]));
+  box.querySelectorAll<HTMLElement>(".row").forEach((row) => {
+    const b = byId.get(row.dataset.id!);
+    if (!b) return;
+    $(".row-name", row).textContent = b.name;
+    // 领涨股告诉你「谁在带」，名字来自接口，必须转义
+    $(".row-meta", row).innerHTML =
+      b.leader == null
+        ? ""
+        : `<span>${leaderTag(b.leaderPct)}</span><span class="lead">${esc(b.leader)}</span>` +
+          (b.leaderPct == null ? "" : `<b class="${dirOf(b.leaderPct)}">${fmtPct(b.leaderPct)}</b>`);
+    const pill = $(".pill", row);
+    pill.textContent = fmtPct(b.pct);
+    pill.className = `pill ${dirOf(b.pct)}`;
+    row.classList.toggle("open", row.dataset.id === trendOpen);
+  });
+}
+
+/**
+ * 把榜单的行按给定顺序搬到位（行后面那块分时面板跟着一起搬）。
+ * 用「搬」而不是重写 innerHTML：展开中的分时图是一张画好的 canvas，
+ * 重建会把它丢掉，而涨跌幅每几秒就会让名次换一换。
+ */
+function reorderBoards(box: HTMLElement, ids: string[]): void {
+  const cur = [...box.querySelectorAll<HTMLElement>(".row")].map((r) => r.dataset.id!);
+  if (cur.length === ids.length && cur.every((id, i) => id === ids[i])) return; // 名次没动
+  // 先把「行 → 它后面那块分时面板」记下来：搬动过程中相邻关系会变
+  const parts = new Map<string, { row: HTMLElement; trend: HTMLElement | null }>();
+  box.querySelectorAll<HTMLElement>(".row").forEach((row) => {
+    const next = row.nextElementSibling as HTMLElement | null;
+    parts.set(row.dataset.id!, {
+      row,
+      trend: next && next.classList.contains("trend") ? next : null,
+    });
+  });
+  // append 会把已有节点搬到末尾，所以按目标顺序逐个 append 出来的就是目标顺序
+  for (const id of ids) {
+    const part = parts.get(id);
+    if (!part) continue;
+    box.append(part.row);
+    if (part.trend) box.append(part.trend);
+  }
+}
+
+/**
+ * 展开 / 收起某个板块的分时。
+ * 与标的的分时（toggleTrend）有一处不同：**不动 S.selected** —— 板块不是标的，
+ * 不该被写进设置里当「当前选中的标的」。
+ */
+async function toggleBoardTrend(id: string): Promise<void> {
+  if (trendOpen === id) {
+    trendOpen = null;
+    syncOpenState();
+    return;
+  }
+  trendOpen = id;
+  syncOpenState();
+  const had = trendCache.has(id);
+  if (had) openHolders(id).forEach(animateTrend);
+  await loadTrend(id, !had);
+}
+
+$("#vtabs").addEventListener("click", (e) => {
+  const v = (e.target as HTMLElement).closest<HTMLElement>(".vtab")?.dataset.view;
+  if (v === "watch" || v === "board") setView(v);
+});
+
+$("#bkind").addEventListener("click", (e) => {
+  const kind = (e.target as HTMLElement).closest<HTMLElement>("[data-kind]")?.dataset.kind as
+    | BoardKind
+    | undefined;
+  if (!kind || kind === boardKind) return;
+  boardKind = kind;
+  // 换了口径，上一类的榜单已经不适用：先清掉，别让它们留在屏上
+  boards = [];
+  boardsErr = false;
+  // 展开中的板块不在新口径里了：收起（它的行马上会被重建掉）
+  if (isBoardSecid(trendOpen ?? "")) trendOpen = null;
+  renderBoards();
+  void loadBoards();
+});
+
+$("#border").addEventListener("click", () => {
+  boardOrder = boardOrder === "up" ? "down" : "up";
+  renderBoards();
+});
+
+$("#bsubs").addEventListener("click", () => {
+  boardSubs = !boardSubs;
+  renderBoards();
+  // 东财一次就把一二级全拿回来了，开关只是本地过滤；腾讯的二级是另一段接口，得重新拉
+  if (boards.some((b) => boardSourceOf(b.secid) === "tencent")) void loadBoards();
+});
+
+$("#boards").addEventListener("click", (e) => {
+  const id = (e.target as HTMLElement).closest<HTMLElement>(".row")?.dataset.id;
+  if (id) void toggleBoardTrend(id);
+});
+
 // ---------- 入场动效 ----------
 
 let staggerTimer: number | undefined;
@@ -1342,8 +1622,10 @@ function select(id: string): void {
 
 async function refresh(): Promise<void> {
   if (refreshing) return;
+  if (refreshing) return;
   refreshing = true;
-  // 北证50 不在用户的指数列表里，但全市场成交额要用它，所以单独补进来
+  // 板块榜单只在板块视图打开时拉：不打开这个视图的用户，一次请求都不会多发
+  if (view === "board") void loadBoards();
   const ids = [
     ...new Set([
       ...INDICES.map((i) => i.secid),
@@ -1373,12 +1655,11 @@ async function refresh(): Promise<void> {
   renderAll();
   updateTray();
 }
-
 function renderAll(): void {
   app.classList.toggle("is-loading", !loaded);
   renderHeader();
   renderIndices();
-  renderList();
+  renderView();
   renderTrendPanels();
 }
 
@@ -1433,12 +1714,21 @@ function schedule(): void {
   timer = window.setInterval(() => refresh(), S.interval * 1000);
 }
 
-// 每次从菜单栏弹出：重播入场动画并立即刷新
+/**
+ * 每次从菜单栏弹出：重播入场动画、回到自选视图、立即刷新。
+ * 视图与板块口径都不持久化（见 docs/adr/0001）：主面板的身份是盯自选，
+ * 记住了「上次在看板块」会让「点图标看一眼自选」变成要先切一下。
+ */
 void listenAll("panel-shown", () => {
   app.classList.remove("enter");
   void app.offsetWidth;
   app.classList.add("enter");
   playStagger();
+  view = "watch";
+  boardKind = "industry";
+  boardOrder = "up";
+  boardSubs = false;
+  renderView();
   refresh();
 });
 

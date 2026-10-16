@@ -200,6 +200,9 @@ export function tencentCode(secid: string): string | null {
       return `us${c}`;
     case "100":
       return INDEX_CODES[c.toUpperCase()] ?? null;
+    case "91":
+      // 腾讯板块（91.pt01801120）：它自己的板块代码就是腾讯代码，直接拿去用
+      return c;
     default:
       return null;
   }
@@ -429,6 +432,172 @@ export async function searchStocks(keyword: string): Promise<SearchItem[]> {
     }));
 }
 
+// ---------- 板块（行业 / 概念 / 地域） ----------
+//
+// 两家都提供板块行情，但那是**两套东西**：代码空间与分类颗粒度都不同（见下面两段）。
+// 所以板块的 secid 自带来源：`90.BK0480` 是东财的，`91.pt01801120` 是腾讯的。
+// 榜单跟着「数据源」设置走，而某一行的分时永远跟着**那一行自己的来源**走 —— 否则
+// 换源之后屏上还留着上一家的板块，点开就会画不出来。
+
+/**
+ * 板块口径。东方财富的 clist 接口用 `fs=m:90+t:N` 区分：1 地域、2 行业、3 概念。
+ * 行业那一类里混着一级、二级、三级，细分的名字带 Ⅱ / Ⅲ 后缀（见 boards.ts 的 isSubBoard）。
+ */
+export type BoardKind = "industry" | "concept" | "region";
+
+/** 板块列表实际取自哪一家（fetchBoards 里 auto 回退之后就已经定下来了） */
+export type BoardSource = "eastmoney" | "tencent";
+
+export interface Board {
+  /** `90.BK0480`（东财）或 `91.pt01801120`（腾讯）—— 分时也用它，两家各自认自己的代码 */
+  secid: string;
+  code: string;
+  name: string;
+  /** 当日涨跌幅（%） */
+  pct: number | null;
+  /** 板块点位 */
+  price: number | null;
+  /** 领涨股名称 */
+  leader: string | null;
+  /** 领涨股涨跌幅（%） */
+  leaderPct: number | null;
+}
+
+// ---------- 东方财富（行业 496 个含二三级细分 / 概念 508 / 地域 31） ----------
+
+const BOARD_FS: Record<BoardKind, string> = {
+  industry: "m:90+t:2",
+  concept: "m:90+t:3",
+  region: "m:90+t:1",
+};
+
+/** 接口每页最多给 100 条（pz 给再大也只回 100） */
+const BOARD_PAGE = 100;
+/** 翻页上限：正常最多 6 页（概念 508 个），留足余量，免得源站给个异常大的 total 时翻不完 */
+const BOARD_MAX_PAGES = 20;
+
+/** 东财板块列表的一页；页码越界时源站返回 data:null，用空数组表示「没有了」 */
+async function boardsPageEastmoney(fs: string, page: number): Promise<{ total: number; rows: Board[] }> {
+  const url =
+    `https://push2.eastmoney.com/api/qt/clist/get?pn=${page}&pz=${BOARD_PAGE}&po=1&np=1&fltt=2&invt=2` +
+    `&fid=f3&fs=${encodeURIComponent(fs)}` +
+    `&fields=f2,f3,f12,f13,f14,f128,f136&ut=${UT}`;
+  const json = await getJson(url);
+  const d = json?.data;
+  const list: any[] = Array.isArray(d?.diff) ? d.diff : d?.diff ? Object.values(d.diff) : [];
+  return {
+    total: num(d?.total) ?? 0,
+    rows: list.map((x) => ({
+      secid: `90.${x.f12}`,
+      code: String(x.f12),
+      name: String(x.f14 ?? x.f12),
+      pct: num(x.f3),
+      price: num(x.f2),
+      // 板块没有成分股时领涨股字段是 "-"
+      leader: x.f128 == null || x.f128 === "-" ? null : String(x.f128),
+      leaderPct: num(x.f136),
+    })),
+  };
+}
+
+/** 东财：某类口径下的全部板块。第一页顺带给出总数，其余页并发拉 */
+async function boardsFromEastmoney(kind: BoardKind): Promise<Board[]> {
+  const fs = BOARD_FS[kind];
+  const first = await boardsPageEastmoney(fs, 1);
+  const out = [...first.rows];
+  const pages = Math.min(BOARD_MAX_PAGES, Math.ceil(first.total / BOARD_PAGE));
+  if (pages > 1) {
+    const rest = await Promise.all(
+      Array.from({ length: pages - 1 }, (_, i) => boardsPageEastmoney(fs, i + 2)),
+    );
+    for (const r of rest) out.push(...r.rows);
+  }
+  return out;
+}
+
+// ---------- 腾讯（一级行业 31 / 二级行业 124 / 概念 805 / 地域 31） ----------
+
+/** 腾讯板块的虚拟市场号：东财板块是 90.，腾讯的用它自己的板块代码，市场号取 91. */
+const TENCENT_BOARD_MARKET = "91";
+/**
+ * 腾讯板块排行的口径。地域用简称（「贵州」），东财那边叫「贵州板块」。
+ * 行业分两级：`hy` 是一级（31 个）、`hy2` 是二级（124 个）。二级里**只有 36 个名字带 Ⅱ**，
+ * 靠名字过滤不干净，所以「细分」开关直接决定要不要拉 hy2 —— 关着就只给一级的 31 个。
+ */
+const TENCENT_BOARD_TYPE: Record<BoardKind, { base: string[]; sub: string[] }> = {
+  industry: { base: ["hy"], sub: ["hy2"] },
+  concept: { base: ["gn"], sub: [] },
+  region: { base: ["dy"], sub: [] },
+};
+/** 腾讯每页最多给 200 条（再大就报参数错误）；offset 翻页有效 */
+const TENCENT_PAGE = 200;
+/** 翻页上限：概念 805 个 = 5 页，留足余量 */
+const TENCENT_MAX_PAGES = 20;
+
+/** 腾讯板块排行的一页。sort_type 只认 price（别的值都报参数错误）—— 排序无所谓，榜单在本地重排 */
+async function boardsPageTencent(type: string, offset: number): Promise<Board[]> {
+  const url =
+    `https://proxy.finance.qq.com/cgi/cgi-bin/rank/pt/getRank?board_type=${type}` +
+    `&sort_type=price&direct=down&offset=${offset}&count=${TENCENT_PAGE}`;
+  const json = await getJson(url);
+  const list: any[] = Array.isArray(json?.data?.rank_list) ? json.data.rank_list : [];
+  return list.map((x) => ({
+    secid: `${TENCENT_BOARD_MARKET}.${x.code}`,
+    code: String(x.code),
+    name: String(x.name ?? x.code),
+    pct: num(x.zdf),
+    price: num(x.zxj),
+    leader: x.lzg?.name == null ? null : String(x.lzg.name),
+    leaderPct: x.lzg ? num(x.lzg.zdf) : null,
+  }));
+}
+
+/** 腾讯：某类口径下的全部板块（「细分」开着时行业多拉一段 hy2，各自翻页） */
+async function boardsFromTencent(kind: BoardKind, subs: boolean): Promise<Board[]> {
+  const out: Board[] = [];
+  const spec = TENCENT_BOARD_TYPE[kind];
+  for (const type of [...spec.base, ...(subs ? spec.sub : [])]) {
+    for (let page = 0; page < TENCENT_MAX_PAGES; page++) {
+      const rows = await boardsPageTencent(type, page * TENCENT_PAGE);
+      out.push(...rows);
+      if (rows.length < TENCENT_PAGE) break; // 最后一页
+    }
+  }
+  return out;
+}
+
+/**
+ * 某类口径下的**全部**板块，按「数据源」设置取：
+ * `auto` 先东财、失败（源站故障 / 超时 / 网络不通）再退腾讯；两家都失败才抛最后一个错误。
+ * `subs` 只有腾讯那边用得上（东财一次就把一二级全拿回来了，过滤在本地做，见 boards.ts）。
+ * 任何一页失败都整体抛出：宁可让调用方留着上一份完整榜单，也不要给一份缺了一半的排序。
+ */
+export async function fetchBoards(
+  kind: BoardKind,
+  source: DataSource = "auto",
+  subs = false,
+): Promise<Board[]> {
+  const order: BoardSource[] =
+    source === "tencent"
+      ? ["tencent"]
+      : source === "eastmoney"
+        ? ["eastmoney"]
+        : ["eastmoney", "tencent"];
+  let lastErr: unknown;
+  for (const which of order) {
+    try {
+      const got =
+        which === "eastmoney" ? await boardsFromEastmoney(kind) : await boardsFromTencent(kind, subs);
+      // 成功但一条都没有：当成这家给不出数据，换下一家再试
+      if (got.length) return got;
+      lastErr = new ApiError("server", "返回数据为空");
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw lastErr ?? new ApiError("server", "板块列表获取失败");
+}
+
 // ---------- 分时图数据 ----------
 
 export interface TrendPoint {
@@ -616,7 +785,8 @@ async function trendFromTencent(secid: string, days: number): Promise<TrendData>
     let count = 0;
     for (const line of (Array.isArray(g?.data) ? g.data : []) as string[]) {
       const p = String(line).trim().split(/\s+/);
-      if (p.length < 4) continue;
+      // 一行是「时间 价格 累计量 [累计额]」：个股 4 列，板块（pt…）只有 3 列
+      if (p.length < 3) continue;
       const hm = p[0];
       // 只保留交易时段内的点：A 股个股会多给 15:00 之后的盘后成交
       if (!inSession(region, hm)) continue;
@@ -626,10 +796,11 @@ async function trendFromTencent(secid: string, days: number): Promise<TrendData>
       prevParts = p;
       const price = num(p[1]);
       const cumVol = num(p[2]);
-      const cumAmt = num(p[3]);
+      const cumAmt = p.length >= 4 ? num(p[3]) : null;
       if (price == null) continue;
       // 累计额偶发回退（接口给出坏行）：差分基准不能跟着回退，否则下一个正常点
       // 的增量会把当天累计额算成两倍。回退时该分钟增量记 null，基准维持不变。
+      // 板块本来就没有累计额（cumAmt 恒为 null），于是成交额与均价线都没有 —— 正是想要的
       const bad = cumAmt == null || cumAmt < prevAmt;
       const amount = bad ? null : cumAmt - prevAmt;
       if (cumAmt != null && cumAmt >= prevAmt) prevAmt = cumAmt;
@@ -763,6 +934,20 @@ export async function fetchMarketAmount(
 export function codeOf(secid: string): string {
   return secid.slice(secid.indexOf(".") + 1);
 }
+
+/**
+ * 板块的 secid 属于哪一家：`90.BK…` 是东财的，`91.pt…` 是腾讯的；不是板块就返回 null。
+ * 板块不是标的（见 CONTEXT.md 与 docs/adr/0001）：它只在板块榜单里被浏览。
+ * 这一处判断有两个用处：分时该找哪一家要（各认各的代码），以及板块不画均价线。
+ */
+export function boardSourceOf(secid: string): BoardSource | null {
+  const m = marketOf(secid);
+  if (m === "90") return "eastmoney";
+  if (m === TENCENT_BOARD_MARKET) return "tencent";
+  return null;
+}
+
+export const isBoardSecid = (secid: string): boolean => boardSourceOf(secid) !== null;
 
 function marketOf(secid: string): string {
   return secid.slice(0, secid.indexOf("."));

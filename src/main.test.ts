@@ -3,6 +3,7 @@
 // 行右键菜单能不能置顶 / 取消置顶，置顶区有没有和普通自选区分开。
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { HOLD_MS } from "./sortable";
+import type { Board } from "./api";
 
 // 每个用例都重新 import 一遍 main.ts（模块级会挂监听 / 起定时器），跑完清掉假的定时器，
 // 免得后面用例拿到上一个用例残留的 interval
@@ -11,6 +12,26 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+/** 假板块列表：行业那一份里混着两条 Ⅱ / Ⅲ 细分（与真实接口一样，是同值的重复项） */
+const BOARDS: Board[] = [
+  { secid: "90.BK0480", code: "BK0480", name: "航天航空", pct: 5.4, price: 50520.08, leader: "晨曦航空", leaderPct: 20.02 },
+  { secid: "90.BK0994", code: "BK0994", name: "空间站概念", pct: 4.73, price: 2008.83, leader: "华力创通", leaderPct: 20.04 },
+  { secid: "90.BK0148", code: "BK0148", name: "吉林板块", pct: 3.11, price: 20173.83, leader: "长春一东", leaderPct: 10 },
+  { secid: "90.BK1305", code: "BK1305", name: "燃料电池", pct: -2.2, price: 273.47, leader: "中视传媒", leaderPct: -3.5 },
+  { secid: "90.BK1230", code: "BK1230", name: "航海装备Ⅲ", pct: 6.93, price: 5157.01, leader: "中科海讯", leaderPct: 19.99 },
+  { secid: "90.BK1229", code: "BK1229", name: "航海装备Ⅱ", pct: 6.93, price: 5157.01, leader: "中科海讯", leaderPct: 19.99 },
+];
+/** 地域那一份：换口径时要看到榜单整份换过来 */
+const REGION_BOARDS: Board[] = [
+  { secid: "90.BK0148", code: "BK0148", name: "吉林板块", pct: 3.11, price: 20173.83, leader: "长春一东", leaderPct: 10 },
+  { secid: "90.BK0169", code: "BK0169", name: "四川板块", pct: 2.83, price: 23992.81, leader: "华图山鼎", leaderPct: 14.76 },
+];
+
+
+/** 腾讯那一套：代码空间是 91.pt…（数量也少得多，只有一级行业） */
+const TENCENT_BOARDS: Board[] = [
+  { secid: "91.pt01801120", code: "pt01801120", name: "食品饮料", pct: 0.66, price: 13938.75, leader: "金达威", leaderPct: 10.03 },
+];
 // 搜索走 JSONP（真浏览器里插 script），报价与分时都要联网，happy-dom 里全换成固定结果
 vi.mock("./api", async (orig) => {
   const actual = await orig<typeof import("./api")>();
@@ -29,6 +50,10 @@ vi.mock("./api", async (orig) => {
       prevDate: null,
     })),
     fetchMarketAmount: vi.fn(async () => null),
+    // 数据源是腾讯时给腾讯那一套（91.pt…），否则给东财的
+    fetchBoards: vi.fn(async (kind: string, source?: string) =>
+      source === "tencent" ? TENCENT_BOARDS : kind === "region" ? REGION_BOARDS : BOARDS,
+    ),
   };
 });
 
@@ -435,5 +460,213 @@ describe("主面板：拖动自选行排序", () => {
     // 整表里它挪到了组内第二只之后；组视图里的先后也跟着变
     expect(saved().watchlist).toEqual(["1.600519", "116.00700", "0.300750"]);
     expect(ids()).toEqual(["116.00700", "0.300750"]);
+  });
+});
+
+// 板块榜单：视图切换、口径 / 排序 / 细分三个开关、点开板块分时。
+// 板块不是标的（见 CONTEXT.md 与 docs/adr/0001），所以这里还要钉住「不动设置」。
+describe("主面板：板块榜单", () => {
+  const tab = (v: string) => document.querySelector<HTMLElement>(`.vtab[data-view="${v}"]`)!;
+  const bRows = () => [...document.querySelectorAll<HTMLElement>("#boards .row")];
+  const bNames = () => bRows().map((r) => r.querySelector(".row-name")!.textContent);
+  const bRowOf = (name: string) =>
+    bRows().find((r) => r.querySelector(".row-name")!.textContent === name)!;
+  /** 切到板块视图并把那次拉取跑完 */
+  const openBoards = async () => {
+    tab("board").click();
+    await vi.advanceTimersByTimeAsync(0);
+  };
+  /** 被 mock 掉的 api 函数（每个用例 boot 之后都是新的一份） */
+  const mocked = async <K extends "fetchBoards" | "fetchTrend">(name: K) =>
+    (await import("./api"))[name] as unknown as ReturnType<typeof vi.fn>;
+
+  beforeEach(() => boot());
+
+  it("默认停在自选视图：板块榜单与控制条都藏着", () => {
+    expect(document.querySelector<HTMLElement>("#boards")!.hidden).toBe(true);
+    expect(document.querySelector<HTMLElement>("#bctl")!.hidden).toBe(true);
+    expect(document.querySelector<HTMLElement>("#list")!.hidden).toBe(false);
+    expect(document.querySelector<HTMLElement>(".search")!.hidden).toBe(false);
+  });
+
+  it("切到板块：搜索框收起、榜单按涨幅降序，默认藏起 Ⅱ / Ⅲ 细分", async () => {
+    await openBoards();
+
+    expect(tab("board").classList.contains("on")).toBe(true);
+    expect(tab("board").getAttribute("aria-selected")).toBe("true");
+    expect(document.querySelector<HTMLElement>(".search")!.hidden).toBe(true);
+    expect(document.querySelector<HTMLElement>("#list")!.hidden).toBe(true);
+    expect(document.querySelector<HTMLElement>("#boards")!.hidden).toBe(false);
+    // 航海装备Ⅱ / Ⅲ 是同值的重复项，默认不该出现在榜上
+    expect(bNames()).toEqual(["航天航空", "空间站概念", "吉林板块", "燃料电池"]);
+  });
+
+  it("一行里有涨跌幅和领涨股", async () => {
+    await openBoards();
+
+    const row = bRowOf("航天航空");
+    expect(row.querySelector(".pill")!.textContent).toBe("+5.40%");
+    expect(row.querySelector(".pill")!.className).toBe("pill up");
+    expect(row.querySelector(".row-meta")!.textContent).toBe("领涨晨曦航空+20.02%");
+  });
+
+  it("领涨股自己在跌时写成「领跌」", async () => {
+    await openBoards();
+
+    const meta = bRowOf("燃料电池").querySelector(".row-meta")!;
+    expect(meta.textContent).toBe("领跌中视传媒-3.50%");
+    expect(meta.querySelector("b")!.className).toBe("down");
+  });
+
+  it("点「涨幅 ↓」切成跌幅榜：跌得最狠的排到最前", async () => {
+    await openBoards();
+    document.querySelector<HTMLElement>("#border")!.click();
+
+    expect(document.querySelector<HTMLElement>("#border")!.textContent).toBe("跌幅 ↑");
+    expect(bNames()).toEqual(["燃料电池", "吉林板块", "空间站概念", "航天航空"]);
+  });
+
+  it("点「细分」：Ⅱ / Ⅲ 的细分放出来，仍按涨幅排", async () => {
+    await openBoards();
+    document.querySelector<HTMLElement>("#bsubs")!.click();
+
+    expect(bNames()).toEqual([
+      "航海装备Ⅲ",
+      "航海装备Ⅱ",
+      "航天航空",
+      "空间站概念",
+      "吉林板块",
+      "燃料电池",
+    ]);
+  });
+
+  it("换口径：按新口径重新拉一次，榜单整份换过来", async () => {
+    await openBoards();
+    const fetchBoards = await mocked("fetchBoards");
+    expect(fetchBoards).toHaveBeenLastCalledWith("industry", "auto", false);
+
+    [...document.querySelectorAll<HTMLElement>("#bkind .gtab")]
+      .find((b) => b.textContent === "地域")!
+      .click();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchBoards).toHaveBeenLastCalledWith("region", "auto", false);
+    expect(bNames()).toEqual(["吉林板块", "四川板块"]);
+  });
+
+  it("点一行展开这个板块的分时，但不改「当前选中的标的」", async () => {
+    await openBoards();
+    bRowOf("航天航空").click();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(document.querySelector<HTMLElement>("#boards .trend.show")!.dataset.id).toBe("90.BK0480");
+    expect(bRowOf("航天航空").classList.contains("open")).toBe(true);
+    expect(saved().selected).toBe("1.600519"); // 板块不是标的，不进设置
+    expect(saved().watchlist).toEqual(["1.600519", "0.300750", "116.00700"]);
+  });
+
+  it("板块分时只走东方财富：腾讯不提供板块数据", async () => {
+    await openBoards();
+    const fetchTrend = await mocked("fetchTrend");
+    bRowOf("航天航空").click();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(fetchTrend).toHaveBeenCalledWith("90.BK0480", 1, "eastmoney");
+  });
+
+  it("点第二下收起分时", async () => {
+    await openBoards();
+    bRowOf("航天航空").click();
+    await vi.advanceTimersByTimeAsync(0);
+
+    bRowOf("航天航空").click();
+    expect(document.querySelector("#boards .trend.show")).toBeNull();
+  });
+
+  it("切回自选：榜单与控制条收起，搜索框和自选列表回来", async () => {
+    await openBoards();
+    tab("watch").click();
+
+    expect(document.querySelector<HTMLElement>("#boards")!.hidden).toBe(true);
+    expect(document.querySelector<HTMLElement>("#bctl")!.hidden).toBe(true);
+    expect(document.querySelector<HTMLElement>(".search")!.hidden).toBe(false);
+    expect(document.querySelector<HTMLElement>("#list")!.hidden).toBe(false);
+    expect(rows().map((r) => r.dataset.id)).toEqual(["1.600519", "0.300750", "116.00700"]);
+  });
+
+  it("只有板块视图在前台时才跟着刷新间隔拉榜单", async () => {
+    await openBoards();
+    const fetchBoards = await mocked("fetchBoards");
+    const opened = fetchBoards.mock.calls.length;
+
+    await vi.advanceTimersByTimeAsync(5000); // 一个刷新周期
+    expect(fetchBoards.mock.calls.length).toBe(opened + 1);
+
+    tab("watch").click();
+    await vi.advanceTimersByTimeAsync(5000); // 切回自选后不该再拉
+    expect(fetchBoards.mock.calls.length).toBe(opened + 1);
+  });
+
+  it("名次变化只搬 DOM：展开中的分时图不会被重建掉", async () => {
+    await openBoards();
+    const fetchBoards = await mocked("fetchBoards");
+    bRowOf("航天航空").click();
+    await vi.advanceTimersByTimeAsync(0);
+    const panel = document.querySelector<HTMLElement>("#boards .trend.show")!;
+    expect(panel.querySelector(".trend-title")!.textContent).toBe("航天航空 · 分时");
+
+    // 下一次刷新时名次换了（燃料电池涨上来了）：成员没变，只是顺序变了
+    fetchBoards.mockResolvedValueOnce([
+      { ...BOARDS[3], pct: 9.9, leaderPct: 10.2 },
+      ...BOARDS.slice(0, 3),
+      ...BOARDS.slice(4),
+    ]);
+    await vi.advanceTimersByTimeAsync(5000);
+
+    expect(bNames()[0]).toBe("燃料电池");
+    // 还是原来那一个节点：重建的话画好的 canvas 就没了（曾经就是这么丢的）
+    expect(document.querySelector("#boards .trend.show")).toBe(panel);
+    expect(panel.querySelector(".trend-title")!.textContent).toBe("航天航空 · 分时");
+  });
+
+  it("成员变了要重建榜单，展开中的分时图跟着补画一次", async () => {
+    await openBoards();
+    bRowOf("航天航空").click();
+    await vi.advanceTimersByTimeAsync(0);
+
+    document.querySelector<HTMLElement>("#bsubs")!.click(); // 放出细分：成员变了
+
+    const panel = document.querySelector<HTMLElement>("#boards .trend.show")!;
+    expect(panel.dataset.id).toBe("90.BK0480");
+    // 新建出来的面板只有 .show、还没画过，标题是空的 —— 补画过才有标题
+    expect(panel.querySelector(".trend-title")!.textContent).toBe("航天航空 · 分时");
+  });
+
+  it("控制条上报出当前榜上有多少个板块", async () => {
+    await openBoards();
+    // 6 条里藏掉 2 条 Ⅱ / Ⅲ 细分
+    expect(document.querySelector("#bcount")!.textContent).toBe("4 个");
+
+    document.querySelector<HTMLElement>("#bsubs")!.click();
+    expect(document.querySelector("#bcount")!.textContent).toBe("6 个");
+  });
+
+  it("榜单按设置里的数据源拉（默认 auto）", async () => {
+    await openBoards();
+    const fetchBoards = await mocked("fetchBoards");
+    expect(fetchBoards).toHaveBeenLastCalledWith("industry", "auto", false);
+  });
+
+  it("数据源是腾讯：榜单换成腾讯那一套，分时也走腾讯", async () => {
+    await boot({ source: "tencent" });
+    await openBoards();
+    const fetchTrend = await mocked("fetchTrend");
+
+    expect(bNames()).toEqual(["食品饮料"]);
+
+    bRowOf("食品饮料").click();
+    await vi.advanceTimersByTimeAsync(0);
+
+    // 91.pt… 是腾讯的代码空间：分时得找腾讯要，不能按设置里的源去猜
+    expect(fetchTrend).toHaveBeenCalledWith("91.pt01801120", 1, "tencent");
   });
 });

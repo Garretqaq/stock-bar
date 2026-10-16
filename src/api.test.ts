@@ -2,12 +2,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError,
   apiErrorText,
+  boardSourceOf,
   codeOf,
   cumAmount,
+  fetchBoards,
   fetchMarketAmount,
   fetchQuotes,
   fetchTrend,
   getActiveSource,
+  isBoardSecid,
   marketTag,
   pickTrendDay,
   regionOf,
@@ -521,5 +524,181 @@ describe("腾讯成交额单位", () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(tx("hk00700", "HK", "6469119686.486"))));
     const got = await fetchQuotes(["116.00700"], "tencent");
     expect(got.get("116.00700")?.amount).toBeNull();
+  });
+});
+
+describe("板块列表：两套数据源", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  /** 东财 clist 的一页 */
+  const emPage = (rows: unknown[], total: number) =>
+    new Response(JSON.stringify({ data: { total, diff: rows } }));
+  const emRow = (
+    code: string,
+    name: string,
+    pct: number,
+    leader: string | null = "晨曦航空",
+    leaderPct: number | string | null = 20.02,
+  ) => ({
+    f2: 50520.08,
+    f3: pct,
+    f12: code,
+    f13: 90,
+    f14: name,
+    f128: leader,
+    f136: leaderPct,
+  });
+
+  /** 腾讯排行的一页 */
+  const txPage = (rows: unknown[]) =>
+    new Response(JSON.stringify({ code: 0, data: { rank_list: rows } }));
+  const txRow = (code: string, name: string, zdf: string, leader = "金达威", leaderPct = "10.03") => ({
+    code,
+    name,
+    zdf,
+    zxj: "13938.75",
+    lzg: { name: leader, zdf: leaderPct },
+  });
+
+  it("东财：secid 带 90. 前缀、按 total 翻页、领涨股为 '-' 时给 null", async () => {
+    const urls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (u: string) => {
+        urls.push(u);
+        return u.includes("pn=1")
+          ? emPage([emRow("BK0480", "航天航空", 5.4)], 101)
+          : emPage([emRow("BK1305", "燃料电池", -2.2, "-", "-")], 101);
+      }),
+    );
+    const got = await fetchBoards("industry", "eastmoney");
+
+    expect(urls).toHaveLength(2);
+    expect(got.map((b) => b.secid)).toEqual(["90.BK0480", "90.BK1305"]);
+    expect(got[0]).toMatchObject({ name: "航天航空", pct: 5.4, leader: "晨曦航空", leaderPct: 20.02 });
+    expect(got[1]).toMatchObject({ leader: null, leaderPct: null });
+  });
+
+  it("腾讯：行业默认只拉一级 hy，开关打开才追加 hy2", async () => {
+    const urls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (u: string) => {
+        urls.push(u);
+        return u.includes("board_type=hy&")
+          ? txPage([txRow("pt01801120", "食品饮料", "0.66")])
+          : txPage([txRow("pt01801121", "白酒Ⅱ", "1.28")]);
+      }),
+    );
+
+    const base = await fetchBoards("industry", "tencent");
+    expect(urls).toHaveLength(1);
+    expect(base.map((b) => b.secid)).toEqual(["91.pt01801120"]);
+
+    urls.length = 0;
+    const withSubs = await fetchBoards("industry", "tencent", true);
+    expect(urls).toHaveLength(2);
+    expect(withSubs.map((b) => b.secid)).toEqual(["91.pt01801120", "91.pt01801121"]);
+    expect(withSubs[0]).toMatchObject({ name: "食品饮料", pct: 0.66, leader: "金达威", leaderPct: 10.03 });
+  });
+  it("腾讯：满页就继续翻，最后一页不满就停", async () => {
+    const urls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (u: string) => {
+        urls.push(u);
+        const off = Number(new URL(u).searchParams.get("offset"));
+        const n = off === 0 ? 200 : 3;
+        return txPage(Array.from({ length: n }, (_, i) => txRow(`pt${off + i}`, `板块${off + i}`, "1.00")));
+      }),
+    );
+
+    const got = await fetchBoards("concept", "tencent");
+
+    expect(urls).toHaveLength(2);
+    expect(got).toHaveLength(203);
+  });
+
+  it("auto：东财不通时自动退腾讯", async () => {
+    const urls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (u: string) => {
+        urls.push(u);
+        if (u.includes("push2.eastmoney.com")) {
+          // 连探活（根路径）都不通：整条链路失联
+          return new Response("", { status: new URL(u).pathname === "/" ? 404 : 502 });
+        }
+        return txPage([txRow("pt01801120", "食品饮料", "0.66")]);
+      }),
+    );
+
+    const got = await fetchBoards("industry", "auto");
+
+    expect(got[0].secid).toBe("91.pt01801120");
+    expect(urls.some((u) => u.includes("push2.eastmoney.com"))).toBe(true);
+    expect(urls.some((u) => u.includes("proxy.finance.qq.com"))).toBe(true);
+  });
+
+  it("source=tencent 只打腾讯，一次都不碰东财", async () => {
+    const urls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (u: string) => {
+        urls.push(u);
+        return txPage([txRow("pt01801120", "食品饮料", "0.66")]);
+      }),
+    );
+
+    await fetchBoards("concept", "tencent");
+
+    expect(urls.every((u) => !u.includes("eastmoney.com"))).toBe(true);
+  });
+
+  it("两家都失败时抛出，不返回半份榜单", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("", { status: 502 })));
+    await expect(fetchBoards("industry", "auto")).rejects.toThrow(ApiError);
+  });
+});
+
+describe("板块 secid 的来源", () => {
+  it("90. 是东财的、91. 是腾讯的，其余不算板块", () => {
+    expect(boardSourceOf("90.BK0480")).toBe("eastmoney");
+    expect(boardSourceOf("91.pt01801120")).toBe("tencent");
+    expect(boardSourceOf("1.600519")).toBeNull();
+    expect(isBoardSecid("90.BK0480")).toBe(true);
+    expect(isBoardSecid("91.pt01801120")).toBe(true);
+    expect(isBoardSecid("1.600519")).toBe(false);
+  });
+
+  it("腾讯板块的代码就是腾讯代码，直接拿去报价 / 分时", () => {
+    expect(tencentCode("91.pt01801120")).toBe("pt01801120");
+  });
+});
+
+describe("腾讯板块分时（只有 3 列）", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("按「时间 价格 累计量」解析：没有成交额、也没有均价线", async () => {
+    const body = {
+      code: 0,
+      data: {
+        pt01801120: {
+          data: [{ data: ["0930 13807.76 772021.0", "0931 13829.21 1109572.0"], date: "20261016", prec: "13847.83" }],
+          qt: { pt01801120: ["2", "食品饮料", "01801120", "13938.75", "13847.83"] },
+        },
+      },
+    };
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(body))));
+
+    const got = await fetchTrend("91.pt01801120", 1, "tencent");
+
+    expect(got.name).toBe("食品饮料");
+    expect(got.preClose).toBe(13847.83);
+    expect(got.points.map((p) => [p.time, p.price])).toEqual([
+      ["0930", 13807.76],
+      ["0931", 13829.21],
+    ]);
+    expect(got.points.every((p) => p.amount === null && p.avg === null)).toBe(true);
   });
 });

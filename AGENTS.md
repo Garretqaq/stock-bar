@@ -28,7 +28,7 @@ cd src-tauri && cargo check   # Rust 侧检查
 index.html      → src/main.ts   + src/style.css   主面板（托盘弹出的 360×560 无边框小窗，label="main"）
 settings.html   → src/prefs.ts  + src/prefs.css   设置窗口（仪表盘 / 行情 / MCP / 关于 / 设置五页，label="settings"，由 Rust 动态创建）
 ticker.html     → src/ticker.ts + src/ticker.css  Windows 悬浮行情条（label="ticker"，由 set_ticker 动态创建/关闭）
-src/api.ts       东方财富接口：批量报价 ulist.np、分时 trends2、搜索 suggest（JSONP）、secid/市场/交易时段工具函数
+src/api.ts       东方财富接口：批量报价 ulist.np、分时 trends2、搜索 suggest（JSONP）、板块列表 clist（fetchBoards）、secid/市场/交易时段工具函数
 src/settings.ts  Settings 类型、默认值、localStorage 读写和旧数据迁移、跨窗口同步、主题和涨跌配色、自选分组的纯函数（`itemsOf` / `moveInView` / `normalizeGroups` 等）
 src/bar.ts       菜单栏内容生成：单行文字 barText / 双行紧凑 canvas PNG barImage
 src/tauri.ts     Tauri 桥接层：call / emitAll / listenAll（非 Tauri 环境自动降级为空操作），平台判断 IS_WIN、canvas 字体栈 UI_FONT
@@ -36,6 +36,7 @@ src/ctxmenu.ts   通用右键菜单 openMenu / closeMenu（样式 ctxmenu.css，
 src/drag.ts      拖动排序的纯计算：slotAt（竖排落点）/ slotAtX（横排落点）/ slotAtGrid（换行摊开的落点，按两轴算）/ shiftIndex（拖动中其他行让开多少），设置窗口与主面板共用
 src/tabs.ts      分组筛选条的纯计算：isDragMove / isDragClick（横滑拖动与「拖完那一下 click」的判定）/ scrollDeltaFor（把选中的标签带进视野要滚多少），主面板用
 src/sortable.ts  拖动排序的 DOM 侧逻辑：指针 / 位移 / 落点（纯计算在 drag.ts）+ 键盘 Alt + ←→；设置窗口（自选行、分组胶囊）与主面板（自选行）共用，行选择器之外的行不参与拖动
+src/boards.ts    板块榜单的纯逻辑：口径文案（行业 / 概念 / 地域）、Ⅱ / Ⅲ 细分识别与过滤、涨跌榜排序（联网在 api.ts 的 fetchBoards，DOM 在主面板）
 src/mcp.ts       MCP 命令处理：看 / 搜 / 增删自选、置顶、排序、分组增删改排序的纯逻辑（搜索与报价由调用方注入）；另含设置面板 MCP 卡片用的 clientConfig()（客户端配置 JSON）与 bridgeState()（状态文案）
 src/update.ts    版本更新的纯逻辑：状态文案、下载进度、提示条文案（联网在 Rust 侧）
 src-tauri/src/lib.rs   托盘、弹窗定位（按鼠标位置把面板夹进工作区，见「坑」）、失焦自动收起、单实例、所有 #[tauri::command]
@@ -45,6 +46,7 @@ src-tauri/capabilities/default.json   三个窗口（main / settings / ticker）
 .github/workflows/build.yml   双端打包：推 v* 标签构建 macOS（通用二进制）+ Windows 安装包与更新包，合并出 latest.json 并创建 Release 草稿，或手动触发上传 Artifacts
 mcp/lib.mjs + mcp/stockbar-mcp.mjs   零依赖 MCP 服务（stdio JSON-RPC）：工具表、端点发现、把命令转给本地桥（`pnpm mcp` 可直接跑）
 scripts/latest-json.mjs   把各平台的更新包与签名整理成 latest.json 片段并合并成一份（CI 用；纯逻辑有单测）
+docs/adr/0001-boards-are-read-only.md   架构决定：板块只做只读榜单，不进自选（为什么板块不是标的）
 ```
 
 Vite 是多页面打包，入口在 `vite.config.ts` 的 `rollupOptions.input` 里，新增页面要在这里登记。
@@ -108,8 +110,21 @@ Vite 是多页面打包，入口在 `vite.config.ts` 的 `rollupOptions.input` �
 - 主面板每次弹出都会收到 `panel-shown` 事件，触发入场动画并立即刷新数据。
 - 新建窗口或使用新的插件 API 时，记得在 `capabilities/default.json` 里加上对应的 window label 和 permission。
 
+**板块榜单（主面板的第二块视图）**
+- 顶栏下面有一排「自选 / 板块」切换（`#vtabs` 与 `setView()`）：板块视图是**只读榜单**，把某一口径下的全部板块按涨跌幅排开。板块**不是标的**（见 `CONTEXT.md` 与 `docs/adr/0001-boards-are-read-only.md`）：不能加入自选、不参与分组与置顶、不进「菜单栏显示」，MCP 也不暴露。
+- **两套数据源**（`fetchBoards(kind, source, subs)`，跟着设置里的「数据源」走，`auto` 时东财不通自动退腾讯 —— 断网 / 被墙的网络下板块功能才不至于整个瞎掉）。两家是**两套东西**，所以板块 secid 自带来源：`90.BK0480` 是东财的、`91.pt01801120` 是腾讯的（`boardSourceOf()`；`tencentCode()` 把 91 原样透传）。哪一家都不许拿对方的名字去硬拼代码 —— 拼错了画出来的是**另一个板块**。
+  - 东财 `clist`（`fs=m:90+t:2/3/1`）：行业 496（含二三级细分）、概念 508、地域 31；**每页最多 100 条**，第一页拿总数、其余页并发拉。
+  - 腾讯 `proxy.finance.qq.com` 的 `rank/pt/getRank`（`board_type=hy/hy2/gn/dy`）：一级行业 31、二级行业 124、概念 805、地域 31；**每页最多 200 条**，`offset` 翻页，`sort_type` 只认 `price`（排序无所谓，榜单在本地重排）。
+  - 任何一页失败都整体抛出 —— 调用方保留上一份榜单，宁可旧也不要一份缺了一半的排序。
+- 控制条（`#bctl`）上三个开关都只在内存里、**不持久化**：口径（`boardKind`）、涨跌榜（`boardOrder`，涨幅降序 ⇄ 跌幅升序）、是否含细分（`boardSubs`）。主面板每次弹出都回到「自选 / 行业 / 涨幅榜」（见 `panel-shown` 那段）。右端的小字（`#bcount`）报出当前榜上有多少个板块 —— 两家的数量差得远（行业 496 vs 31），摆出来才不会被当成 bug。
+- 榜单行是「板块名 + 领涨股 + 涨跌幅」。领涨股那一行的前缀按**数字的正负**说：负的说「领跌」（东方财富的字段名一律叫「领涨股」，可跌的板块里它给的那只也在跌，写成「领涨」就是反话）。判断看正负、**不看颜色** —— 设置里可以换成绿涨红跌，颜色说明不了涨跌（`src/boards.ts` 的 `leaderTag`）。
+- 两家的细分口径不一样，别混为一谈：东财是**一次拿全再按名字过滤**（二级 / 三级细分带 Ⅱ / Ⅲ 后缀，实测同一细分在 Ⅱ 与 Ⅲ 两个代码下点位、涨跌幅一模一样，所以默认藏起来）；腾讯的二级是**另一段接口**，而且 124 个里只有 36 个名字带 Ⅱ，靠名字滤不干净 —— 所以腾讯那边由「细分」开关**直接决定拉不拉 hy2**（关着只给一级 31 个），开关翻转时 `loadBoards()` 要重拉一次（判断依据是当前榜里有没有 `91.` 的条目）。过滤规则本身在 `src/boards.ts` 的 `isSubBoard` / `filterSubs`。
+- **榜单行的 key 只看「有哪些板块」，绝不看名次**：涨跌幅每几秒就在动，把顺序算进 key 会让整块反复重建，而重建会把展开中的分时图（一张画好的 canvas）一起丢掉。名次变化用 `reorderBoards()` 搬 DOM，成员真的变了（换口径 / 开关细分 / 板块增减）才重建，并在重建后补画一次（`renderTrendPanels()`）。
+- 点一行展开该板块的分时（`toggleBoardTrend()`）：**不动 `S.selected`** —— 选中项仍然只表示「标的」，不会被板块 secid 污染。分时**跟着这一行自己的来源**走（`boardSourceOf(id) ?? S.source`）：`90.BK…` 找东财的 `trends2`，`91.pt…` 找腾讯的 `day/query`（板块是 3 列、没有累计额，所以成交额与均价线都是 null —— 见 `trendFromTencent` 里放宽的那处）。两类板块都不画均价线（`isBoardSecid()`，与大盘指数同理）。
+- 只在板块视图打开时才拉榜单（`refresh()` 里的 `if (view === "board")`）：不打开这个视图的用户，一次请求都不会多发。搜索框在板块视图里收起（搜索接口不返回板块，摆在那儿只会让人以为能搜），大盘指数卡片两个视图都留着 —— 看板块也要对着大盘看。
 **行情接口（api.ts）**
-- secid 格式是 `市场.代码`：`1` 沪、`0` 深（代码以 8/4/92 开头的算北交所）、`116` 港股、`105/106/107` 美股、`100` 海外指数。
+- secid 格式是 `市场.代码`：`1` 沪、`0` 深（代码以 8/4/92 开头的算北交所）、`116` 港股、`105/106/107` 美股、`100` 海外指数；`90` 是板块（如 `90.BK0480`），它**不是标的**，见「板块榜单」。
+- `90` 是东财的板块、`91` 是腾讯的板块（都用各自的原生代码），两者都**不是标的**，见「板块榜单」。腾讯的板块列表走 `proxy.finance.qq.com`，CSP 的 `connect-src` 里必须放行它（`tauri.conf.json` 的 `csp` 与 `devCsp` 都要）。
 - 东方财富在没有数据时返回 `"-"`，要统一用 `num()` 转成 `null`。界面上所有数值都要处理 `null` 的情况（显示 `--`）。
 - 搜索接口不返回 CORS 头，只能走 JSONP。报价和分时接口用 `fetch`，超时 8 秒。
 - 分时 `trends2` 只有大盘指数取两天（`fetchTrend(id, isIndex(id) ? 2 : 1)`），个股仍是单日、行为不变。`pickTrendDay()` 只把最新一天交给图表，另一天用来算「与上一日同期」的成交额（`TrendData.amount` / `prevAmount` / `prevDate`，按分钟成交额 `f57` 累加，按条数对齐同一时长）。横轴全天分钟数由 `trendsTotal` 减上一日点数得到。主面板里只有大盘指数的分时面板有 `.trend-foot` 节点，个股行内面板没有。

@@ -616,6 +616,67 @@ button {
   stroke-linecap: round;
 }
 
+/* ---------- 视图切换（自选 / 板块） ---------- */
+
+/* 两格分段控件：与分组胶囊同一套视觉，等宽并排 */
+.vtabs {
+  display: flex;
+  gap: 4px;
+  margin: 2px 0 6px;
+  padding: 2px;
+  border-radius: 15px;
+  background: var(--card);
+}
+.vtab {
+  flex: 1;
+  height: 26px;
+  border-radius: 13px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--sub);
+  transition: color 0.18s ease, background 0.18s ease;
+}
+.vtab:hover {
+  color: var(--text);
+}
+.vtab.on {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+/* ---------- 板块榜单 ---------- */
+
+/* 这几个都是 display:flex，会盖掉 [hidden] 默认的 display:none，得各自再写一条 */
+.search[hidden],
+.bctl[hidden],
+.list[hidden] {
+  display: none;
+}
+/* 控制条：口径胶囊 + 涨跌榜切换 + 细分开关，360px 宽一行放得下 */
+.bctl {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 2px 0 6px;
+}
+.bkind {
+  display: flex;
+  gap: 6px;
+}
+/* 榜单行的第二行是领涨股：长了就省略，别把涨跌幅挤出去 */
+.brow .row-meta {
+  overflow: hidden;
+  white-space: nowrap;
+}
+.brow .lead {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* 榜单行不能拖（拖动排序是自选列表的事），名称上要能正常滚动列表 */
+.brow .row-name {
+  touch-action: auto;
+}
+
 .list {
   display: flex;
   flex-direction: column;
@@ -631,6 +692,12 @@ button {
   border-radius: 10px;
   cursor: pointer;
   transition: background 0.18s ease, transform 0.18s var(--ease-out);
+}
+/* 控制条右端的小字：当前榜上有多少个板块（两家的数量差得远，摆出来才不会让人以为是 bug） */
+.bcount {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--sub);
 }
 .row:hover {
   background: var(--hover);

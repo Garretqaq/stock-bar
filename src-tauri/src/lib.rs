@@ -11,6 +11,7 @@ use tauri::{
 use tauri_plugin_positioner::{Position, WindowExt};
 
 mod bridge;
+mod qqrank;
 mod update;
 
 const TRAY_ID: &str = "main";
@@ -603,6 +604,16 @@ fn mcp_set_enabled(app: AppHandle, on: bool) -> bridge::McpInfo {
 }
 
 
+// ---------- 腾讯板块排行 ----------
+// 命令壳在这里，本体在 qqrank.rs（理由同 MCP / 更新：子模块里定义命令宏路径难伺候）。
+// 这条接口不返回 CORS 头，webview 里 fetch 读不到，只能由 Rust 侧代取。
+
+/// 取一页腾讯板块排行（口径 hy / hy2 / gn / dy），原样回 JSON 文本
+#[tauri::command]
+async fn qq_board_rank(ftype: String, offset: u32) -> Result<String, String> {
+    qqrank::page(ftype, offset).await
+}
+
 // ---------- 版本更新 ----------
 // 命令壳在这里，本体在 update.rs（理由同 MCP：子模块里定义命令宏路径难伺候）
 
@@ -665,6 +676,7 @@ pub fn run() {
             mcp_reply,
             mcp_info,
             mcp_set_enabled,
+            qq_board_rank,
             app_version,
             update_check,
             update_install,

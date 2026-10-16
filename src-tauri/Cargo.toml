@@ -22,6 +22,13 @@ tiny_http = "0.12"
 # 桥的令牌：用系统随机源，别自己拼（本来就在依赖树里）
 getrandom = "0.3"
 tauri-plugin-updater = "2"
+# 腾讯板块排行的取数：那条接口不返回 CORS 头，webview 里 fetch 读不到，改由 Rust 侧取
+# （见 src/qqrank.rs）。与 tauri-plugin-updater 用同一份 reqwest，features 对齐 ——
+# 别引入第二套 TLS 后端（rustls 的 provider 由插件那侧打开 ring 提供）
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
+# rustls 的加密后端：上面的 reqwest 用 rustls-no-provider，不装 provider 就建不出 Client
+# （tauri-plugin-updater 也是这么做的，见其 updater.rs；两边都装一次是安全的）
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 
 [profile.release]
 codegen-units = 1

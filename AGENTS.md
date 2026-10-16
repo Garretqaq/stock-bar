@@ -106,7 +106,7 @@ Vite 是多页面打包，入口在 `vite.config.ts` 的 `rollupOptions.input` �
 - 主面板在 Windows 关闭系统阴影、窗口放大到 376×576，由 CSS 留 8px 边距自己画圆角阴影；WebView2 的 `backdrop-filter` 透不到桌面，所以 `.win .panel` 用不透明底。设置窗口在 Windows 用原生标题栏（不渲染仿红绿灯和拖动区，标题栏深浅随应用主题 `setTheme`），整体是 Windows 11「设置」风格：`prefs.css` 末尾的 `.win` 区块（导航强调色竖条、每项一张 4px 圆角卡片、带「开/关」文字的开关、方形复选框），预览是桌面 + 任务栏 + 悬浮行情条（内容与真实行情条共用 `bar.ts` 的 `tickerHtml`）。开发时 `pnpm dev` 打开 `settings.html?win` 可在浏览器预览 Windows 布局。
 
 **Rust 侧**
-- 前端可以调用的命令：`set_tray_text`、`set_tray_image`、`set_tray_ticker`、`open_settings`（可带 `page` 指定打开哪一页）、`set_ticker`、`fit_ticker`、`ticker_click`、`hide_window`、`quit_app`、`mcp_ready`、`mcp_reply`、`mcp_info`、`mcp_set_enabled`、`app_version`、`update_check`、`update_install`、`update_restart`、`open_release_page`、`settings_ready`。新增命令要同时改两处：在 `generate_handler![]` 里注册，前端通过 `call()` 调用。MCP 与更新的命令壳写在 `lib.rs`、实现放在 `bridge.rs` / `update.rs`（原因见「坑」）。
+- 前端可以调用的命令：`set_tray_text`、`set_tray_image`、`set_tray_ticker`、`open_settings`（可带 `page` 指定打开哪一页）、`set_ticker`、`fit_ticker`、`ticker_click`、`hide_window`、`quit_app`、`mcp_ready`、`mcp_reply`、`mcp_info`、`mcp_set_enabled`、`qq_board_rank`（腾讯板块排行，见「板块榜单」）、`app_version`、`update_check`、`update_install`、`update_restart`、`open_release_page`、`settings_ready`。新增命令要同时改两处：在 `generate_handler![]` 里注册，前端通过 `call()` 调用（要拿到失败原因就用 `callOrThrow()`）。MCP、更新与板块排行的命令壳写在 `lib.rs`、实现放在 `bridge.rs` / `update.rs` / `qqrank.rs`（原因见「坑」）。
 - **建窗口的命令必须是 `async fn`**：Windows 上 WebView2 不会在事件回调里重入，同步命令跑在 IPC 回调里，`WebviewWindowBuilder::build()` 会让 `create_controller` 永远等不到完成回调，整个应用卡死（tauri 文档的 Known issues / wry#583）。`open_settings`（建设置窗口）与 `set_ticker`（建行情条）因此都是 async，真正的建窗逻辑放在同步的 `open_settings_window()` / `set_ticker_window()` 里，由 async 命令（跑在 tokio 线程池上）调用；单实例回调里也是另起线程调 `open_settings_window()`，不在窗口过程里建窗。
 - 用 `LAST_HIDDEN_MS` 做防抖（macOS 250ms，Windows/Linux 400ms，见 `TOGGLE_DEBOUNCE_MS`），实现"再点一次图标收起小窗"（点击时窗口会先失焦、自动隐藏）。改托盘点击逻辑时不要破坏这个行为。
 - 主面板每次弹出都会收到 `panel-shown` 事件，触发入场动画并立即刷新数据。
@@ -116,7 +116,7 @@ Vite 是多页面打包，入口在 `vite.config.ts` 的 `rollupOptions.input` �
 - 顶栏下面有一排「自选 / 板块」切换（`#vtabs` 与 `setView()`）：板块视图是**只读榜单**，把某一口径下的全部板块按涨跌幅排开。板块**不是标的**（见 `CONTEXT.md` 与 `docs/adr/0001-boards-are-read-only.md`）：不能加入自选、不参与分组与置顶、不进「菜单栏显示」，MCP 也不暴露。
 - **两套数据源**（`fetchBoards(kind, source, subs)`，跟着设置里的「数据源」走，`auto` 时东财不通自动退腾讯 —— 断网 / 被墙的网络下板块功能才不至于整个瞎掉）。两家是**两套东西**，所以板块 secid 自带来源：`90.BK0480` 是东财的、`91.pt01801120` 是腾讯的（`boardSourceOf()`；`tencentCode()` 把 91 原样透传）。哪一家都不许拿对方的名字去硬拼代码 —— 拼错了画出来的是**另一个板块**。
   - 东财 `clist`（`fs=m:90+t:2/3/1`）：行业 496（含二三级细分）、概念 508、地域 31；**每页最多 100 条**，第一页拿总数、其余页并发拉。
-  - 腾讯 `proxy.finance.qq.com` 的 `rank/pt/getRank`（`board_type=hy/hy2/gn/dy`）：一级行业 31、二级行业 124、概念 805、地域 31；**每页最多 200 条**，`offset` 翻页，`sort_type` 只认 `price`（排序无所谓，榜单在本地重排）。
+  - 腾讯 `proxy.finance.qq.com` 的 `rank/pt/getRank`（`board_type=hy/hy2/gn/dy`）：一级行业 31、二级行业 124、概念 805、地域 31；**每页最多 200 条**，`offset` 翻页，`sort_type` 只认 `price`（排序无所谓，榜单在本地重排）。**这条接口没有 CORS 头，webview 里读不到**（`cb=` / `callback=` 也不给 JSONP），所以应用里由 Rust 侧代取（`qq_board_rank`，见 `src-tauri/src/qqrank.rs`）；只有浏览器预览（`pnpm dev`）还退回直连 fetch，那边会被 CORS 拦掉 —— 预览里看不到腾讯那一份榜单是已知的。
   - 任何一页失败都整体抛出 —— 调用方保留上一份榜单，宁可旧也不要一份缺了一半的排序。
 - 控制条（`#bctl`）上三个开关都只在内存里、**不持久化**：口径（`boardKind`）、涨跌榜（`boardOrder`，涨幅降序 ⇄ 跌幅升序）、是否含细分（`boardSubs`）。主面板每次弹出都回到「自选 / 行业 / 涨幅榜」（见 `panel-shown` 那段）。右端的小字（`#bcount`）报出当前榜上有多少个板块 —— 两家的数量差得远（行业 496 vs 31），摆出来才不会被当成 bug；搜索时它报的是匹配数。这条控制条与自选的筛选条**共用同一条吸顶规则**（见「状态与同步」里的那条）。
 - 榜单行是「板块名 + 领涨股 + 涨跌幅」。领涨股那一行的前缀按**数字的正负**说：负的说「领跌」（东方财富的字段名一律叫「领涨股」，可跌的板块里它给的那只也在跌，写成「领涨」就是反话）。判断看正负、**不看颜色** —— 设置里可以换成绿涨红跌，颜色说明不了涨跌（`src/boards.ts` 的 `leaderTag`）。
@@ -126,9 +126,9 @@ Vite 是多页面打包，入口在 `vite.config.ts` 的 `rollupOptions.input` �
 - 只在板块视图打开时才拉榜单（`refresh()` 里的 `if (view === "board")`）：不打开这个视图的用户，一次请求都不会多发。搜索框两个视图都留着，但**两边是两回事**：自选那边走远程 suggest，板块这边是在 `boards` 那份内存列表上**就地过滤**（`src/boards.ts` 的 `searchBoards`，按名字或代码、不发请求）—— 所以它只搜当前口径，搜不到别的口径里的板块，空结果里会写明这一点（想跨口径搜得把另外两类也拉下来，东财 1035 个 = 11 次请求，先没做）。换视图会把搜索词清掉（两边语义不同）。大盘指数卡片两个视图都留着 —— 看板块也要对着大盘看。
 **行情接口（api.ts）**
 - secid 格式是 `市场.代码`：`1` 沪、`0` 深（代码以 8/4/92 开头的算北交所）、`116` 港股、`105/106/107` 美股、`100` 海外指数；`90` 是板块（如 `90.BK0480`），它**不是标的**，见「板块榜单」。
-- `90` 是东财的板块、`91` 是腾讯的板块（都用各自的原生代码），两者都**不是标的**，见「板块榜单」。腾讯的板块列表走 `proxy.finance.qq.com`，CSP 的 `connect-src` 里必须放行它（`tauri.conf.json` 的 `csp` 与 `devCsp` 都要）。
+- `90` 是东财的板块、`91` 是腾讯的板块（都用各自的原生代码），两者都**不是标的**，见「板块榜单」。腾讯的板块列表**走 Rust 侧**（命令 `qq_board_rank` → `src-tauri/src/qqrank.rs`），不在 webview 里 fetch，所以 `connect-src` 里**不需要**放行 `proxy.finance.qq.com` —— 那条接口不返回 CORS 头（实测只对自家站点回 `Access-Control-Allow-Origin`），也不支持 JSONP，前端 fetch 一定被拦，之前板块榜单落到腾讯就加载失败就是这个原因。
 - 东方财富在没有数据时返回 `"-"`，要统一用 `num()` 转成 `null`。界面上所有数值都要处理 `null` 的情况（显示 `--`）。
-- 搜索接口不返回 CORS 头，只能走 JSONP。报价和分时接口用 `fetch`，超时 8 秒。
+- 搜索接口不返回 CORS 头，只能走 JSONP；腾讯的板块排行同样没有 CORS 头、又不给 JSONP，所以那条由 Rust 侧取（见「板块榜单」）。其余报价与分时接口用 `fetch`，超时 8 秒。判断一个接口能不能在前端直接 fetch，先看它回不回 `Access-Control-Allow-Origin`（用 `-H "Origin: tauri://localhost"` 试）—— 应用 webview 是照 CORS 规则办的。
 - 分时 `trends2` 只有大盘指数取两天（`fetchTrend(id, isIndex(id) ? 2 : 1)`），个股仍是单日、行为不变。`pickTrendDay()` 只把最新一天交给图表，另一天用来算「与上一日同期」的成交额（`TrendData.amount` / `prevAmount` / `prevDate`，按分钟成交额 `f57` 累加，按条数对齐同一时长）。横轴全天分钟数由 `trendsTotal` 减上一日点数得到。主面板里只有大盘指数的分时面板有 `.trend-foot` 节点，个股行内面板没有。
 - `ut` 和 `token` 是接口自带的公开常量，不是密钥。
 - `sessionStatus(region, now, lastTrade)` 按时区判断交易时段；没有节假日日历，而是用报价里的最后成交时间 `Quote.time`（接口字段 `f124`）推断：工作日开盘 10 分钟后最后成交仍不在当天，就显示「休市」。开盘前无法提前得知当天是否休市。

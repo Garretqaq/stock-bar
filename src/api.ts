@@ -1,5 +1,6 @@
 // 东方财富公开行情接口封装
 // secid = 市场代码.证券代码：1 沪、0 深、116 港股、105/106/107 美股、100 海外指数
+import { IN_TAURI, callOrThrow } from "./tauri";
 
 const UT = "b2884a393a59ad64002292a3e90d46a5";
 const SEARCH_TOKEN = "D43BF722C8E33BDC906FB84D85E326E8";
@@ -533,13 +534,18 @@ const TENCENT_BOARD_TYPE: Record<BoardKind, { base: string[]; sub: string[] }> =
 const TENCENT_PAGE = 200;
 /** 翻页上限：概念 805 个 = 5 页，留足余量 */
 const TENCENT_MAX_PAGES = 20;
-
-/** 腾讯板块排行的一页。sort_type 只认 price（别的值都报参数错误）—— 排序无所谓，榜单在本地重排 */
+/**
+ * 腾讯板块排行的一页。
+ *
+ * 这条接口**不返回 CORS 头**（实测只对自家站点回 `Access-Control-Allow-Origin`，
+ * 对 `tauri://localhost` / `http://tauri.localhost` 都没有），也不支持 JSONP
+ * （`cb=` / `callback=` 都只回纯 JSON，与搜索接口不同）——所以在 webview 里 fetch 一定被拦，
+ * 榜单只要落到腾讯就加载失败。应用里改由 Rust 侧代取（`qq_board_rank`，见 src-tauri/src/qqrank.rs），
+ * 不经 webview 也就没有 CORS / CSP 这回事；东财那侧有 CORS 头，仍旧走 fetch。
+ * `sort_type` 只认 `price`（别的值报参数错误），顺序无所谓，榜单在本地重排。
+ */
 async function boardsPageTencent(type: string, offset: number): Promise<Board[]> {
-  const url =
-    `https://proxy.finance.qq.com/cgi/cgi-bin/rank/pt/getRank?board_type=${type}` +
-    `&sort_type=price&direct=down&offset=${offset}&count=${TENCENT_PAGE}`;
-  const json = await getJson(url);
+  const json = await qqRankJson(type, offset);
   const list: any[] = Array.isArray(json?.data?.rank_list) ? json.data.rank_list : [];
   return list.map((x) => ({
     secid: `${TENCENT_BOARD_MARKET}.${x.code}`,
@@ -550,6 +556,32 @@ async function boardsPageTencent(type: string, offset: number): Promise<Board[]>
     leader: x.lzg?.name == null ? null : String(x.lzg.name),
     leaderPct: x.lzg ? num(x.lzg.zdf) : null,
   }));
+}
+
+/**
+ * 腾讯板块排行的原始 JSON。
+ * 应用里走 Rust 侧的 `qq_board_rank`（理由见 boardsPageTencent）；浏览器预览（`pnpm dev`）
+ * 没有 Rust 侧，退到直接 fetch —— 那边会被 CORS 拦掉，所以板块榜单在预览里看不到腾讯那一份。
+ */
+async function qqRankJson(type: string, offset: number): Promise<any> {
+  if (IN_TAURI) {
+    let text: string;
+    try {
+      text = await callOrThrow<string>("qq_board_rank", { ftype: type, offset });
+    } catch (e) {
+      // Rust 侧把原因当字符串抛回来（连不上 / 非 200）：归到「源站故障」这一类
+      throw new ApiError("server", `板块接口失败：${typeof e === "string" ? e : String(e)}`);
+    }
+    try {
+      return JSON.parse(text);
+    } catch {
+      throw new ApiError("server", "板块接口返回的不是 JSON");
+    }
+  }
+  const url =
+    `https://proxy.finance.qq.com/cgi/cgi-bin/rank/pt/getRank?board_type=${type}` +
+    `&sort_type=price&direct=down&offset=${offset}&count=${TENCENT_PAGE}`;
+  return getJson(url);
 }
 
 /** 腾讯：某类口径下的全部板块（「细分」开着时行业多拉一段 hy2，各自翻页） */

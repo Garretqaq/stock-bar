@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError,
   apiErrorText,
@@ -700,5 +700,88 @@ describe("腾讯板块分时（只有 3 列）", () => {
       ["0931", 13829.21],
     ]);
     expect(got.points.every((p) => p.amount === null && p.avg === null)).toBe(true);
+  });
+});
+
+// 腾讯板块排行在应用里由 Rust 侧代取（这条接口不返回 CORS 头，webview 里 fetch 一定被拦，
+// 见 src/api.ts 的 boardsPageTencent）。这里用假的 __TAURI_INTERNALS__ 把命令接线跑通：
+// 传的是哪几个参数、回来的 JSON 怎么变成 Board。
+describe("腾讯板块排行：应用里走 Rust 侧", () => {
+  const rankBody = (rows: unknown[]) =>
+    JSON.stringify({ code: 0, msg: "ok", data: { rank_list: rows } });
+  const oneRow = { code: "pt01801120", name: "食品饮料", zdf: "0.84", zxj: "13964.02", lzg: { name: "金达威", zdf: "7.39" } };
+
+  let calls: { cmd: string; args: Record<string, unknown> }[];
+  /** 命令的实现：每个用例自己定（回什么 / 抛什么） */
+  let reply: () => Promise<unknown>;
+
+  beforeEach(() => {
+    calls = [];
+    vi.resetModules();
+    (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ = {
+      invoke: async (cmd: string, args: Record<string, unknown>) => {
+        calls.push({ cmd, args });
+        return reply();
+      },
+    };
+  });
+  afterEach(() => {
+    delete (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__;
+    vi.unstubAllGlobals();
+  });
+
+  it("走命令而不是 fetch：参数是口径与偏移，回来的一行照常变成 Board", async () => {
+    reply = async () => rankBody([oneRow]);
+    const fetchMock = vi.fn(async (_u: string) => new Response("{}"));
+    vi.stubGlobal("fetch", fetchMock);
+    const { fetchBoards } = await import("./api");
+
+    const got = await fetchBoards("industry", "tencent");
+
+    expect(calls).toEqual([{ cmd: "qq_board_rank", args: { ftype: "hy", offset: 0 } }]);
+    expect(got[0]).toMatchObject({
+      secid: "91.pt01801120",
+      code: "pt01801120",
+      name: "食品饮料",
+      pct: 0.84,
+      price: 13964.02,
+      leader: "金达威",
+      leaderPct: 7.39,
+    });
+    // 那条接口没有 CORS 头：应用里一次都不该再直连它
+    expect(fetchMock.mock.calls.some(([u]) => String(u).includes("proxy.finance.qq.com"))).toBe(false);
+  });
+
+  it("「细分」开着时行业多拉一段 hy2，两段各自按整页偏移翻页", async () => {
+    reply = async () => rankBody([oneRow]);
+    const { fetchBoards } = await import("./api");
+
+    await fetchBoards("industry", "tencent", true);
+
+    expect(calls.map((c) => c.args)).toEqual([
+      { ftype: "hy", offset: 0 },
+      { ftype: "hy2", offset: 0 },
+    ]);
+  });
+
+  it("命令失败（连不上 / 非 200）算源站故障：抛 ApiError，不返回半份榜单", async () => {
+    reply = async () => {
+      throw "板块接口连不上：连接失败";
+    };
+    const api = await import("./api");
+
+    await expect(api.fetchBoards("concept", "tencent")).rejects.toThrow(api.ApiError);
+  });
+
+  it("auto：东财那侧仍然走 fetch，只有腾讯这侧换成命令", async () => {
+    reply = async () => rankBody([oneRow]);
+    const fetchMock = vi.fn(async (_u: string) => new Response("", { status: 502 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const { fetchBoards } = await import("./api");
+
+    const got = await fetchBoards("industry", "auto");
+    expect(got[0].secid).toBe("91.pt01801120");
+    expect(fetchMock.mock.calls.every(([u]) => !String(u).includes("proxy.finance.qq.com"))).toBe(true);
+    expect(calls.length).toBe(1); // 东财失败后这一页才有腾讯那一次
   });
 });

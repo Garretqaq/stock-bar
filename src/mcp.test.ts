@@ -221,11 +221,20 @@ describe("MCP 命令：调整顺序与置顶", () => {
     expect(r.text).toContain("第 2 位");
   });
 
-  it("置顶的标的挪不进非置顶区（落点被钳制）", async () => {
+  it("置顶的标的挪到非置顶区：位置跟着落点走，顺手取消置顶", async () => {
     const r = await run(s, "watchlist.move", { target: "0.300750", position: 3 });
-    expect(r.settings.watchlist).toEqual(["0.300750", "1.600519", "105.NVDA"]);
+    expect(r.settings.watchlist).toEqual(["1.600519", "105.NVDA", "0.300750"]);
+    expect(r.settings.pins).toEqual([]);
+    expect(r.text).toContain("第 3 位");
+    expect(r.text).toContain("已顺手取消置顶");
+  });
+
+  it("非置顶标的挪到置顶行上面：排上去，还顺手置顶", async () => {
+    const r = await run(s, "watchlist.move", { target: "105.NVDA", position: 1 });
+    expect(r.settings.watchlist).toEqual(["105.NVDA", "0.300750", "1.600519"]);
+    expect(r.settings.pins).toEqual(["105.NVDA", "0.300750"]); // 置顶区跟新顺序一致
     expect(r.text).toContain("第 1 位");
-    expect(r.text).toContain("置顶的标的只能在置顶区内移动");
+    expect(r.text).toContain("已顺手置顶");
   });
 
   it("置顶与取消置顶", async () => {

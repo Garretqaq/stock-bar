@@ -42,9 +42,23 @@ export function sortBoards(list: Board[], order: BoardOrder): Board[] {
   });
 }
 
-/** 榜单要显示的那一串：先按「含细分」过滤，再按涨跌排序 */
-export function boardRows(list: Board[], opts: { showSubs: boolean; order: BoardOrder }): Board[] {
-  return sortBoards(filterSubs(list, opts.showSubs), opts.order);
+/**
+ * 按关键词筛板块：名字或代码包含它（不区分大小写）。
+ * 搜的是**当前口径**那份榜单（内存里的 `boards`），不发请求 —— 搜索接口（suggest）不返回板块，
+ * 要跨口径搜就得把另外两类也拉下来（东财 1035 个 = 11 次请求），所以先只搜眼前这份。
+ */
+export function searchBoards(list: Board[], query: string): Board[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return list;
+  return list.filter((b) => b.name.toLowerCase().includes(q) || b.code.toLowerCase().includes(q));
+}
+
+/** 榜单要显示的那一串：先按关键词筛、再按「含细分」过滤，最后按涨跌排序 */
+export function boardRows(
+  list: Board[],
+  opts: { showSubs: boolean; order: BoardOrder; query?: string },
+): Board[] {
+  return sortBoards(filterSubs(searchBoards(list, opts.query ?? ""), opts.showSubs), opts.order);
 }
 
 /**

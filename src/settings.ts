@@ -129,13 +129,6 @@ export function unpinItem(list: string[], pins: string[], id: string): { list: s
   return { list: next, pins: pins.filter((x) => x !== id) };
 }
 
-/** 拖动落点：置顶的只能在置顶区里挪，其余只能在置顶区之后挪 */
-export function clampBlock(list: string[], pins: string[], from: number, to: number): number {
-  const n = pinCount(list, pins);
-  const pinned = from < n;
-  return Math.min(Math.max(to, pinned ? 0 : n), pinned ? Math.max(n - 1, 0) : Math.max(list.length - 1, 0));
-}
-
 // ---------- 自选分组 ----------
 // 分组只是自选列表的分堆方式：整表顺序（watchlist）仍是一份，
 // 菜单栏（bar）与置顶（pins）都不受分组影响。
@@ -165,6 +158,38 @@ export function groupNameOf(groups: Group[], gid: string): string {
  */
 export function moveInView(list: string[], view: string[], from: number, to: number): string[] {
   return moveItem(list, list.indexOf(view[from] ?? ""), list.indexOf(view[to] ?? ""));
+}
+
+/**
+ * 拖动排序：把视图里的 from→to 落回整表，并让**置顶状态跟着落点走**。
+ *
+ * 置顶区与其余自选不再是两个互不跨越的区块：跨过分界就是在两个区块之间搬 ——
+ * 落点那一格原本是置顶的（也就是拖进了置顶区），被拖的这只就顺手置顶；
+ * 落到置顶区之下就顺手取消置顶（拖出分界的那一只也从置顶里出来）。
+ * 于是「置顶区始终是自选最前的一段」这条不变量一直成立，不会出现
+ * 「未置顶的插在置顶的中间」这种要靠 normalizePins 才能救回来的状态。
+ *
+ * 视图（分组视图 / 设置窗口里的分组区块）里的落点按视图算：视图里那一格是置顶的，
+ * 换算到整表它也在置顶区里，所以两边判的是同一件事。
+ */
+export function moveRowInView(
+  list: string[],
+  pins: string[],
+  view: string[],
+  from: number,
+  to: number,
+): { list: string[]; pins: string[] } {
+  const id = view[from];
+  const target = view[to];
+  // 下标 / 视图对不上（行已被重建、列表换了）就原样返回：宁可不动，也别落下半个状态
+  if (id == null || target == null || !list.includes(id) || !list.includes(target)) {
+    return { list: [...list], pins: [...pins] };
+  }
+  const next = moveInView(list, view, from, to);
+  // 落点那一格原本是置顶的（也就是拖进了置顶区）就置顶，落到置顶区之下就取消置顶
+  const zone = new Set(pins.includes(target) ? [...pins, id] : pins.filter((x) => x !== id));
+  // pins 跟着新顺序排（界面只认「在不在 pins 里」，顺序只是让人看着顺）
+  return { list: next, pins: next.filter((x) => zone.has(x)) };
 }
 
 /** 把标的移入某个分组；目标是未分组时删掉它的归属 */

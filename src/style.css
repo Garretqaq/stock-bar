@@ -536,13 +536,26 @@ button {
 .gtabs[hidden] {
   display: none;
 }
-/* 分组筛选条：单行横排，分组多了横向滚动（滚动条隐藏，末尾给 ☰ 入口，
-   滚轮 / 按住拖动也能往右滑），选中态用强调色浅底 + 强调色文字 */
-.gtabs {
+/* 列表的「头部条」：自选的分组筛选条（.gtabs）与板块的控制条（.bctl），两个视图同一套做法 ——
+   单行横排（分组多了 / 口径多的那些胶囊横向滚动，见下面的 .gtab-scroll），
+   列表往下滚时它吸在顶部（sticky）：随时能切分组 / 换口径、切涨跌榜，不用先滚回最上面。
+   吸顶要盖住从下面滚过去的行，所以得有底色（与面板同色）**再叠一层背景模糊**，只靠半透明底
+   会透出后面滚过去的行（截图里能看见清晰残影）；间距也从 margin 挪进 padding，否则 margin
+   那块没被底色盖住，行会从缝里透出来。
+   z-index 要低于搜索结果的弹层（10），高于列表里的行（拖动中的行是 3，会浮在它上面） */
+.gtabs,
+.bctl {
+  position: sticky;
+  top: 0;
+  z-index: 2;
   display: flex;
   align-items: center;
   gap: 6px;
-  margin: 2px 0 6px;
+  padding: 3px 0 5px;
+  background: var(--bg);
+  -webkit-backdrop-filter: blur(12px) saturate(1.8);
+  backdrop-filter: blur(12px) saturate(1.8);
+  border-bottom: 1px solid var(--line);
 }
 .gtab-scroll {
   display: flex;
@@ -652,13 +665,8 @@ button {
 .list[hidden] {
   display: none;
 }
-/* 控制条：口径胶囊 + 涨跌榜切换 + 细分开关，360px 宽一行放得下 */
-.bctl {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin: 2px 0 6px;
-}
+/* 控制条：口径胶囊（.bkind 里的）+ 涨跌榜切换 + 细分开关 + 右端的条数，360px 宽一行放得下。
+   吸顶、底色、间距都在上面那条与 .gtabs 共用的规则里 */
 .bkind {
   display: flex;
   gap: 6px;

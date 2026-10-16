@@ -31,8 +31,6 @@ export interface DragCfg {
   axis?: "x" | "y" | "grid";
   /** 现在能不能拖（行数不足时不动） */
   movable: () => boolean;
-  /** 落点钳制：置顶区里的只能在置顶区里挪，其余只能在置顶区之后挪 */
-  clamp: (from: number, to: number) => number;
   /** 松手后把 from→to 写回设置，commit 由调用方自己来 */
   apply: (from: number, to: number) => void;
   render: () => void;
@@ -143,7 +141,7 @@ export function sortable(cfg: DragCfg, state: { take: boolean } = { take: false 
     // 还没让开够远：行跟着手走，顺序先不动（不然刚按住就手抖一下，行会平白挪走一格）
     const moved = axis === "x" ? Math.abs(dx) : axis === "y" ? Math.abs(dy) : Math.max(Math.abs(dx), Math.abs(dy));
     if (moved < MOVE_SLOP) return;
-    const to = cfg.clamp(drag.from, slotIn(drag.rects, x, y));
+    const to = slotIn(drag.rects, x, y);
     if (to === drag.to) return;
     drag.to = to;
     layoutDrag();
@@ -172,7 +170,7 @@ export function sortable(cfg: DragCfg, state: { take: boolean } = { take: false 
     if (!row || !e.altKey || (e.key !== back && e.key !== fwd)) return;
     const rows = dragRows(cfg);
     const from = rows.indexOf(row);
-    const to = cfg.clamp(from, e.key === back ? from - 1 : from + 1);
+    const to = e.key === back ? from - 1 : from + 1;
     if (from < 0 || to < 0 || to >= rows.length) return;
     e.preventDefault();
     const id = row.dataset[ident];

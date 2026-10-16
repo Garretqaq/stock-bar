@@ -12,12 +12,12 @@ import {
   BAR_MAX,
   INDICES,
   UNGROUPED,
-  clampBlock,
   dropGroupOf,
   groupNameOf,
   isIndex,
   itemsOf,
   moveItem,
+  moveRowInView,
   newGroup,
   normalizePins,
   pinItem,
@@ -395,7 +395,7 @@ async function prepareRemove(s: Settings, args: Record<string, unknown>, deps: M
   });
 }
 
-/** 排：把某只自选挪到指定位置（整张自选表的位次；置顶区与其余自选互不跨越，落点会被钳制） */
+/** 排：把某只自选挪到指定位置（整张自选表的位次；跨过置顶分界会顺手置顶 / 取消置顶） */
 async function prepareMove(s: Settings, args: Record<string, unknown>, deps: McpDeps): Promise<McpPending> {
   const secid = await resolveTarget(s, reqString(args, "target", "标的（secid 或名称）"), deps, true);
   const pos = reqInt(args, "position", "目标位置（从 1 开始）");
@@ -404,12 +404,16 @@ async function prepareMove(s: Settings, args: Record<string, unknown>, deps: Mcp
   return pending((latest) => {
     if (!latest.watchlist.includes(secid)) return unchanged(latest, goneText([secid], (id) => label(id, brief)));
     const from = latest.watchlist.indexOf(secid);
-    const to = clampBlock(latest.watchlist, latest.pins, from, Math.min(Math.max(pos - 1, 0), latest.watchlist.length - 1));
-    const list = moveItem(latest.watchlist, from, to);
-    const note = latest.pins.includes(secid) ? "（置顶的标的只能在置顶区内移动，它就是置顶区的第 1 位）" : "";
+    const to = Math.min(Math.max(pos - 1, 0), latest.watchlist.length - 1);
+    // 与手拖同一条规则（见 settings.ts 的 moveRowInView）：落点在置顶区里就顺手置顶，
+    // 落到置顶区之下就顺手取消置顶 —— 未置顶的挪到置顶行上面也做得到
+    const moved = moveRowInView(latest.watchlist, latest.pins, latest.watchlist, from, to);
+    const was = latest.pins.includes(secid);
+    const now = moved.pins.includes(secid);
+    const note = !was && now ? "（挪进了置顶区，已顺手置顶）" : was && !now ? "（挪出了置顶区，已顺手取消置顶）" : "";
     return changed(
-      { ...latest, watchlist: list },
-      `${label(secid, brief)} 现在排在自选第 ${list.indexOf(secid) + 1} 位 / 共 ${list.length} 只${note}`,
+      { ...latest, watchlist: moved.list, pins: moved.pins },
+      `${label(secid, brief)} 现在排在自选第 ${moved.list.indexOf(secid) + 1} 位 / 共 ${moved.list.length} 只${note}`,
     );
   });
 }

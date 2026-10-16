@@ -240,4 +240,24 @@ describe("设置窗口：自选行的拖动把手", () => {
     expect(row("0.300750").classList.contains("picked")).toBe(true);
     expect(document.querySelector("#sel-count")!.textContent).toBe("1");
   });
+
+  it("从把手拖到置顶行上面：跨过分界就顺手置顶（顺序与 pins 一起写回）", async () => {
+    await bootWith({
+      watchlist: ["1.600519", "0.300750", "116.00700"],
+      selected: "1.600519",
+      bar: [],
+      pins: ["1.600519"],
+    });
+    const handle = row("0.300750").querySelector<HTMLElement>(".stock-handle")!;
+    pointer(handle, "pointerdown", 10); // 把手起拖按下即算，不等「按住」
+    // 落点只看指针的 y（happy-dom 量不出布局）：负值 = 拖到列表上方，落在第 0 格
+    handle.dispatchEvent(
+      new PointerEvent("pointermove", { bubbles: true, button: 0, buttons: 1, pointerId: 1, clientX: 10, clientY: -20 }),
+    );
+    pointer(handle, "pointerup", 10, 0);
+
+    expect(saved().watchlist).toEqual(["0.300750", "1.600519", "116.00700"]);
+    expect(saved().pins).toEqual(["0.300750", "1.600519"]); // 拖进置顶区，顺手顶上
+    expect(row("0.300750").classList.contains("pinned")).toBe(true);
+  });
 });

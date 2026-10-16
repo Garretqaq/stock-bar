@@ -7,7 +7,6 @@ import {
   UNGROUPED,
   addToBar,
   applySearchAction,
-  clampBlock,
   dropGroupOf,
   groupIdOf,
   groupNameOf,
@@ -18,6 +17,7 @@ import {
   loadTickerPos,
   moveInView,
   moveItem,
+  moveRowInView,
   newGroup,
   normalizeGroups,
   normalizePins,
@@ -277,26 +277,62 @@ describe("置顶", () => {
     expect(r.pins).toEqual(["c"]);
   });
 
-  it("clampBlock：置顶的只能在置顶区里挪", () => {
+  it("moveRowInView：跨进置顶区就顺手置顶（顺序也落在那一格）", () => {
+    const list = ["a", "b", "c", "d"];
+    const r = moveRowInView(list, ["a", "b"], list, 3, 1); // d 拖到 b 那一格
+    expect(r.list).toEqual(["a", "d", "b", "c"]);
+    expect(r.pins).toEqual(["a", "d", "b"]); // 置顶区变成最前三只
+  });
+
+  it("moveRowInView：拖到置顶区之下就顺手取消置顶", () => {
+    const list = ["a", "b", "c", "d"];
+    const r = moveRowInView(list, ["a", "b"], list, 0, 2); // 置顶的 a 拖到 c 那一格
+    expect(r.list).toEqual(["b", "c", "a", "d"]);
+    expect(r.pins).toEqual(["b"]);
+  });
+
+  it("moveRowInView：没跨过分界时置顶集合不变（pins 跟着新顺序排）", () => {
     const list = ["a", "b", "c", "d"];
     const pins = ["a", "b"];
-    expect(clampBlock(list, pins, 0, 3)).toBe(1); // 置顶的往下最多到置顶区末尾
-    expect(clampBlock(list, pins, 1, 0)).toBe(0);
-    expect(clampBlock(list, pins, 3, 0)).toBe(2); // 非置顶的往上最多到置顶区之后
-    expect(clampBlock(list, pins, 2, 3)).toBe(3);
+    // 置顶区里两只换位：都还在置顶区里
+    expect(moveRowInView(list, pins, list, 0, 1)).toEqual({ list: ["b", "a", "c", "d"], pins: ["b", "a"] });
+    // 置顶区之下两只换位：一只都不置顶
+    expect(moveRowInView(list, pins, list, 3, 2)).toEqual({ list: ["a", "b", "d", "c"], pins });
+    expect(moveRowInView(list, pins, list, 2, 2)).toEqual({ list, pins }); // 原地不动
+    expect(moveRowInView(list, [], list, 2, 0)).toEqual({ list: ["c", "a", "b", "d"], pins: [] });
   });
 
-  it("clampBlock：没有置顶时只受列表边界限制", () => {
+  it("moveRowInView：全都置顶时在整列里随便挪，一只都不会掉出置顶区", () => {
     const list = ["a", "b", "c"];
-    expect(clampBlock(list, [], 2, 0)).toBe(0);
-    expect(clampBlock(list, [], 0, 2)).toBe(2);
+    const r = moveRowInView(list, [...list], list, 0, 2);
+    expect(r.list).toEqual(["b", "c", "a"]);
+    expect(r.pins).toEqual(["b", "c", "a"]);
   });
 
-  it("clampBlock：全都置顶时可以在整列里挪", () => {
-    const list = ["a", "b", "c"];
-    const pins = ["a", "b", "c"];
-    expect(clampBlock(list, pins, 0, 2)).toBe(2);
-    expect(clampBlock(list, pins, 2, 0)).toBe(0);
+  it("moveRowInView：视图里的落点按视图算（分组视图里换算回整表）", () => {
+    const list = ["b", "a", "d", "c"]; // b 置顶
+    const pins = ["b"];
+    const view = ["b", "a", "c"];
+    const r = moveRowInView(list, pins, view, 1, 0); // a 拖到视图第 0 格（b 那一格）
+    expect(r.list).toEqual(["a", "b", "d", "c"]);
+    expect(r.pins).toEqual(["a", "b"]);
+    // 视图下标对不上时原样返回副本，别去动整表
+    expect(moveRowInView(list, pins, view, 0, 9)).toEqual({ list, pins });
+  });
+
+  it("moveRowInView：怎么拖，置顶区都还是整表最前的一段", () => {
+    const list = ["a", "b", "c", "d"];
+    const bad: string[] = [];
+    for (let n = 0; n <= list.length; n++) {
+      const pins = list.slice(0, n);
+      for (let from = 0; from < list.length; from++) {
+        for (let to = 0; to < list.length; to++) {
+          const r = moveRowInView(list, pins, list, from, to);
+          if (pinCount(r.list, r.pins) !== r.pins.length) bad.push(`${pins.join("")} ${from}->${to} ${r.list.join("")}`);
+        }
+      }
+    }
+    expect(bad).toEqual([]);
   });
 });
 
@@ -345,17 +381,18 @@ describe("自选分组", () => {
     expect(moveInView(list, ["a"], 0, 1)).not.toBe(list);
   });
 
-  it("分组视图里的置顶区：置顶的挪不出去，下标换算回整表也不影响别的分组", () => {
+  it("分组视图里的置顶：跨过分界照样改置顶，换算回整表也不影响别的分组", () => {
     const list2 = ["b", "a", "d", "c"]; // b 置顶且在 g1，d 在 g2
     const pins = ["b"];
     const of = { b: "g1", a: "g1", c: "g1", d: "g2" };
     const view = itemsOf(list2, of, groups, "g1");
     expect(view).toEqual(["b", "a", "c"]);
-    expect(clampBlock(view, pins, 0, 2)).toBe(0); // 置顶的往下只能到置顶区末尾（原地）
-    expect(clampBlock(view, pins, 2, 0)).toBe(1); // 没置顶的往上只能到置顶区之后
-    const moved = moveInView(list2, view, 2, clampBlock(view, pins, 2, 0));
-    expect(moved).toEqual(["b", "c", "a", "d"]);
-    expect(itemsOf(moved, of, groups, "g2")).toEqual(["d"]);
+    // 落到视图第 1 格（a，没置顶）：c 排到 a 前面，置顶状态不变
+    expect(moveRowInView(list2, pins, view, 2, 1)).toEqual({ list: ["b", "c", "a", "d"], pins });
+    // 再往上跨过 b（视图第 0 格）→ 拖进了置顶区，顺手顶上
+    const across = moveRowInView(list2, pins, view, 2, 0);
+    expect(across).toEqual({ list: ["c", "b", "a", "d"], pins: ["c", "b"] });
+    expect(itemsOf(across.list, of, groups, "g2")).toEqual(["d"]);
   });
 
   it("setGroup 移入分组 / 移回未分组，都不改原对象", () => {

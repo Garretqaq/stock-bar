@@ -21,13 +21,12 @@ import {
   type TrendData,
 } from "./api";
 import { barImage, barText, canvasPng } from "./bar";
-import { BOARD_KINDS, boardRows, leaderTag, type BoardOrder } from "./boards";
+import { BOARD_KINDS, boardKindLabel, boardRows, leaderTag, type BoardOrder } from "./boards";
 import {
   INDICES,
   UNGROUPED,
   applyAppearance,
   applySearchAction,
-  clampBlock,
   dropGroupOf,
   groupIdOf,
   groupNameOf,
@@ -37,8 +36,8 @@ import {
   itemsOf,
   loadSettings,
   loadTickerPos,
-  moveInView,
   moveItem,
+  moveRowInView,
   onSettingsChange,
   pinCount,
   pinItem,
@@ -89,6 +88,8 @@ let boardKind: BoardKind = "industry";
 let boardOrder: BoardOrder = "up";
 /** 是否显示行业里的 Ⅱ / Ⅲ 细分（默认藏起来，它们是重复项，见 boards.ts） */
 let boardSubs = false;
+/** 板块搜索词：板块视图里的搜索框就地过滤当前口径那份榜单（见 boards.ts 的 searchBoards） */
+let boardQuery = "";
 /** 当前口径下最近一次成功拉到的板块；拉失败时保留上一份，不清空 */
 let boards: Board[] = [];
 let boardsLoading = false;
@@ -787,6 +788,7 @@ function renderTabs(): void {
   if (fellBack) groupFilter = null;
   // 板块视图里没有自选列表，筛选条也就不该出现
   const show = S.groups.length > 0 && view === "watch";
+  box.hidden = !show;
   if (!show) {
     box.dataset.key = "";
     if (tabScroll.innerHTML) tabScroll.innerHTML = "";
@@ -894,7 +896,6 @@ function openGroupMenu(): void {
         rowDrag: true,
         axis: "grid", // 会换行，落点按两轴算
         movable: () => S.groups.length > 1,
-        clamp: (_from, to) => to, // 行只含用户分组，胶囊之间可以随便换位
         apply: (from, to) => {
           moreDraggedAt = Date.now();
           S.groups = moveItem(S.groups, from, to);
@@ -1080,7 +1081,9 @@ function togglePin(id: string): void {
   renderAll();
 }
 
-// 自选行也能直接拖动排序：顺序写回 watchlist（分组视图里换算成整表下标，置顶的只能在自己那块里挪）
+// 自选行也能直接拖动排序：顺序写回 watchlist。跨过置顶分界就是在两个区块之间搬 ——
+// 拖进置顶区的那一只顺手置顶、拖出去的顺手取消置顶（见 settings.ts 的 moveRowInView），
+// 所以「置顶的始终在最前」一直成立；分组视图里的落点按视图换算回整表下标。
 const listIds = () => [...document.querySelectorAll<HTMLElement>("#list .row")].map((r) => r.dataset.id!);
 /** 刚把某一行拖走的时间：松手跟来的那一下 click 不该顺手展开分时图 */
 let rowDraggedAt = 0;
@@ -1090,10 +1093,11 @@ sortable({
   handle: ".row-name", // 触屏只有从名称起拖才排序：行其他地方拖动仍然是滚列表
   rowDrag: true,
   movable: () => visibleIds().length > 1,
-  clamp: (from, to) => clampBlock(listIds(), S.pins, from, to),
   apply: (from, to) => {
     rowDraggedAt = Date.now();
-    S.watchlist = moveInView(S.watchlist, listIds(), from, to);
+    const next = moveRowInView(S.watchlist, S.pins, listIds(), from, to);
+    S.watchlist = next.list;
+    S.pins = next.pins;
     save();
     renderList();
   },
@@ -1144,18 +1148,24 @@ $("#list").addEventListener("contextmenu", (e) => {
 // 板块不是标的：它只是一块只读榜单，不进自选 / 分组 / 置顶 / 菜单栏 / MCP
 //（见 CONTEXT.md 与 docs/adr/0001-boards-are-read-only.md）。
 
-/** 视图切换：自选 ↔ 板块。切到板块时才去拉榜单（不打开这个视图的用户一次请求都不多发） */
+/**
+ * 视图切换：自选 ↔ 板块。切到板块时才去拉榜单（不打开这个视图的用户一次请求都不多发）。
+ * 换视图时把搜索清掉：两边搜索是两回事（自选走远程 suggest、板块是就地过滤），留着只会让人困惑。
+ */
 function setView(next: "watch" | "board"): void {
   if (view === next) return;
   view = next;
+  searchInput.value = "";
+  boardQuery = "";
+  closeSearch();
   renderView();
   if (next === "board") void loadBoards();
 }
 
 /**
  * 按当前视图决定显示哪一块，并重画它。
- * 大盘指数卡片两个视图都留着（看板块也要对着大盘看）；搜索框在板块视图里收起 ——
- * 搜索接口不返回板块，摆在板块榜上会让人以为能搜板块。
+ * 大盘指数卡片与搜索框两个视图都留着 —— 板块的搜索是**就地过滤**当前口径那份榜单
+ * （搜索接口 suggest 不返回板块，见 boards.ts 的 searchBoards），所以换个提示词即可。
  */
 function renderView(): void {
   const board = view === "board";
@@ -1166,7 +1176,8 @@ function renderView(): void {
       b.classList.toggle("on", on);
       b.setAttribute("aria-selected", String(on));
     });
-  $(".search").hidden = board;
+  $(".search").hidden = false; // 两个视图都用得上，只是提示词不同
+  searchInput.placeholder = board ? "搜索板块名" : "搜索代码 / 名称 / 拼音";
   $("#list").hidden = board;
   $("#bctl").hidden = !board;
   $("#boards").hidden = !board;
@@ -1236,18 +1247,22 @@ function renderBoardCtl(count: number): void {
  */
 function renderBoards(): void {
   const box = $("#boards");
-  const rows = boardRows(boards, { showSubs: boardSubs, order: boardOrder });
+  const rows = boardRows(boards, { showSubs: boardSubs, order: boardOrder, query: boardQuery });
   renderBoardCtl(rows.length);
 
   if (!rows.length) {
+    const kw = boardQuery.trim();
     box.dataset.key = "";
     box.innerHTML =
       `<div class="empty list-empty">` +
-      (boardsLoading
-        ? `<div>加载中…</div>`
-        : boardsErr
-          ? `<div>板块榜单加载失败</div><div class="list-tip">下一个刷新周期会自动重试</div>`
-          : `<div>没有板块</div>`) +
+      (kw
+        ? `<div>没有匹配「${esc(kw)}」的板块</div>` +
+          `<div class="list-tip">只搜当前口径（${boardKindLabel(boardKind)}），换一个口径再试</div>`
+        : boardsLoading
+          ? `<div>加载中…</div>`
+          : boardsErr
+            ? `<div>板块榜单加载失败</div><div class="list-tip">下一个刷新周期会自动重试</div>`
+            : `<div>没有板块</div>`) +
       `</div>`;
     return;
   }
@@ -1466,6 +1481,13 @@ function openSearchMenu(id: string, x: number, y: number): void {
 searchInput.addEventListener("input", () => {
   window.clearTimeout(searchTimer);
   const kw = searchInput.value.trim();
+  // 板块视图：就地过滤当前口径那份榜单，不发请求、也不用等防抖
+  //（搜索接口 suggest 不返回板块，见 boards.ts 的 searchBoards）
+  if (view === "board") {
+    boardQuery = kw;
+    renderBoards();
+    return;
+  }
   if (!kw) return closeSearch();
   searchTimer = window.setTimeout(async () => {
     const seq = ++searchSeq;
@@ -1485,6 +1507,11 @@ searchInput.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
     searchInput.value = "";
     closeSearch();
+    // 板块那边还得把过滤撤掉，榜单才回到全量
+    if (view === "board") {
+      boardQuery = "";
+      renderBoards();
+    }
   }
 });
 
@@ -1622,10 +1649,10 @@ function select(id: string): void {
 
 async function refresh(): Promise<void> {
   if (refreshing) return;
-  if (refreshing) return;
   refreshing = true;
   // 板块榜单只在板块视图打开时拉：不打开这个视图的用户，一次请求都不会多发
   if (view === "board") void loadBoards();
+  // 北证50 不在用户的指数列表里，但全市场成交额要用它，所以单独补进来
   const ids = [
     ...new Set([
       ...INDICES.map((i) => i.secid),

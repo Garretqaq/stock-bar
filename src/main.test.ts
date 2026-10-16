@@ -1,5 +1,5 @@
 // 主面板自选行「置顶」的流程测试：真起一遍 main.ts，用假报价 / 搜索 / 分时喂数据。
-// 纯逻辑（pinItem / unpinItem / pinCount / clampBlock）在 settings.test.ts 里测，这里只管界面接线：
+// 纯逻辑（pinItem / unpinItem / pinCount / moveRowInView）在 settings.test.ts 里测，这里只管界面接线：
 // 行右键菜单能不能置顶 / 取消置顶，置顶区有没有和普通自选区分开。
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { HOLD_MS } from "./sortable";
@@ -359,19 +359,20 @@ describe("主面板：分组胶囊", () => {
   });
 });
 
-// 自选行直接拖动排序：顺序写回 watchlist（分组视图换算成整表下标，置顶的只能在自己那块里挪）
+// 自选行直接拖动排序：顺序写回 watchlist（分组视图换算成整表下标，跨过置顶分界的那一下由
+// moveRowInView 顺手改置顶状态）
 describe("主面板：拖动自选行排序", () => {
   const ids = () => rows().map((r) => r.dataset.id);
   /**
-   * 从某一行起拖：happy-dom 量不出布局，落点恒为最后一格（置顶的会被 clampBlock 拉回置顶区）。
-   * 行上起拖要先按住 HOLD_MS（见 sortable.ts），所以这里得先推进一次假定时器。
+   * 从某一行起拖：happy-dom 量不出布局，所以落点只看指针的 y —— y 为负（拖到列表上方）就落在第 0 格，
+   * 否则恒为最后一格。行上起拖要先按住 HOLD_MS（见 sortable.ts），所以这里得先推进一次假定时器。
    */
-  const dragRow = async (id: string) => {
+  const dragRow = async (id: string, y = 400) => {
     const row = rowOf(id);
     pointer(row, "pointerdown", 10);
     await vi.advanceTimersByTimeAsync(HOLD_MS);
-    pointer(row, "pointermove", 400);
-    pointer(row, "pointerup", 400, 0);
+    pointer(row, "pointermove", y);
+    pointer(row, "pointerup", y, 0);
   };
 
   beforeEach(() => boot());
@@ -436,13 +437,28 @@ describe("主面板：拖动自选行排序", () => {
     expect(saved().watchlist).toEqual(["1.600519", "0.300750", "116.00700"]);
   });
 
-  it("置顶的行拖不出去：落点被钳在置顶区里", async () => {
+  it("置顶的行拖到分界之下：位置跟着落点走，顺手取消置顶", async () => {
     await boot({ pins: ["1.600519"] });
 
-    await dragRow("1.600519");
+    await dragRow("1.600519"); // 落点恒为最后一格
 
-    expect(saved().watchlist).toEqual(["1.600519", "0.300750", "116.00700"]);
-    expect(saved().pins).toEqual(["1.600519"]);
+    expect(saved().watchlist).toEqual(["0.300750", "116.00700", "1.600519"]);
+    expect(saved().pins).toEqual([]);
+    expect(rowOf("1.600519").classList.contains("pinned")).toBe(false);
+    expect(rows()[0].classList.contains("first-unpinned")).toBe(false); // 没有置顶区，也就不画分界
+  });
+
+  it("未置顶的行拖到置顶行上面：排上去，还顺手置顶", async () => {
+    await boot({ pins: ["1.600519"] });
+
+    await dragRow("0.300750", -10); // 落点在置顶区里（第 0 格）
+
+    expect(saved().watchlist).toEqual(["0.300750", "1.600519", "116.00700"]);
+    expect(saved().pins).toEqual(["0.300750", "1.600519"]);
+    expect(rowOf("0.300750").classList.contains("pinned")).toBe(true);
+    expect(rowOf("116.00700").classList.contains("first-unpinned")).toBe(true); // 分界跟着挪到置顶区之后
+    rightClick("0.300750"); // 行右键菜单此时给的是「取消置顶」
+    expect(menuLabels()).toContain("取消置顶");
   });
 
   it("分组视图里拖动：组内先后变了，整表顺序跟着走", async () => {
@@ -460,6 +476,33 @@ describe("主面板：拖动自选行排序", () => {
     // 整表里它挪到了组内第二只之后；组视图里的先后也跟着变
     expect(saved().watchlist).toEqual(["1.600519", "116.00700", "0.300750"]);
     expect(ids()).toEqual(["116.00700", "0.300750"]);
+  });
+
+  it("分组视图里跨过置顶分界拖动：组内顺序与置顶一起改（按可见列表判定）", async () => {
+    await boot({
+      pins: ["1.600519"],
+      groups: [{ id: "g1", name: "持仓" }],
+      groupOf: { "1.600519": "g1", "0.300750": "g1" },
+    });
+    [...document.querySelectorAll<HTMLElement>("#gtab-scroll .gtab")]
+      .find((c) => c.textContent!.includes("持仓"))!
+      .click();
+    expect(ids()).toEqual(["1.600519", "0.300750"]); // 置顶的排在该分组最前
+
+    await dragRow("0.300750", -10); // 拖到置顶那一行上面
+
+    expect(saved().watchlist).toEqual(["0.300750", "1.600519", "116.00700"]);
+    expect(saved().pins).toEqual(["0.300750", "1.600519"]);
+    expect(ids()).toEqual(["0.300750", "1.600519"]);
+  });
+
+  it("Alt + ↑ 跨过置顶分界：一样顺手置顶（鼠标之外的第二条路同一条规则）", async () => {
+    await boot({ pins: ["1.600519"] });
+
+    rowOf("0.300750").dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", altKey: true, bubbles: true }));
+
+    expect(saved().watchlist).toEqual(["0.300750", "1.600519", "116.00700"]);
+    expect(saved().pins).toEqual(["0.300750", "1.600519"]);
   });
 });
 
@@ -489,12 +532,12 @@ describe("主面板：板块榜单", () => {
     expect(document.querySelector<HTMLElement>(".search")!.hidden).toBe(false);
   });
 
-  it("切到板块：搜索框收起、榜单按涨幅降序，默认藏起 Ⅱ / Ⅲ 细分", async () => {
+  it("切到板块：搜索框留着（换成搜板块的提示）、榜单按涨幅降序，默认藏起 Ⅱ / Ⅲ 细分", async () => {
     await openBoards();
 
     expect(tab("board").classList.contains("on")).toBe(true);
     expect(tab("board").getAttribute("aria-selected")).toBe("true");
-    expect(document.querySelector<HTMLElement>(".search")!.hidden).toBe(true);
+    expect(document.querySelector<HTMLElement>(".search")!.hidden).toBe(false);
     expect(document.querySelector<HTMLElement>("#list")!.hidden).toBe(true);
     expect(document.querySelector<HTMLElement>("#boards")!.hidden).toBe(false);
     // 航海装备Ⅱ / Ⅲ 是同值的重复项，默认不该出现在榜上
@@ -668,5 +711,128 @@ describe("主面板：板块榜单", () => {
 
     // 91.pt… 是腾讯的代码空间：分时得找腾讯要，不能按设置里的源去猜
     expect(fetchTrend).toHaveBeenCalledWith("91.pt01801120", 1, "tencent");
+  });
+});
+
+// 分组筛选条的可见性：没建分组时整条不出现；建了就一直在。
+// 板块视图里它要收起来（那边没有自选列表），切回自选必须回来 —— 差一行 box.hidden
+// 就会「胶囊渲染了但整条永远藏着」，这一条就是为那次事故钉的。
+describe("主面板：分组筛选条的可见性", () => {
+  const strip = () => document.querySelector<HTMLElement>("#gtabs")!;
+  const tab = (v: string) => document.querySelector<HTMLElement>(`.vtab[data-view="${v}"]`)!;
+
+  it("没建过分组：整条藏着，连胶囊都不渲染", async () => {
+    await boot();
+
+    expect(strip().hidden).toBe(true);
+    expect(strip().querySelectorAll(".gtab").length).toBe(0);
+  });
+
+  it("建过分组：显示出来，胶囊是「全部 + 各分组（带数量）」", async () => {
+    await boot({
+      groups: [
+        { id: "g1", name: "持仓" },
+        { id: "g2", name: "观察" },
+      ],
+    });
+
+    expect(strip().hidden).toBe(false);
+    expect([...strip().querySelectorAll(".gtab")].map((b) => b.textContent)).toEqual([
+      "全部3",
+      "持仓0",
+      "观察0",
+    ]);
+  });
+
+  it("切到板块再切回自选：筛选条收起来又回来", async () => {
+    await boot({ groups: [{ id: "g1", name: "持仓" }] });
+    expect(strip().hidden).toBe(false);
+
+    tab("board").click();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(strip().hidden).toBe(true); // 板块视图里没有自选列表，筛选条不该出现
+
+    tab("watch").click();
+    expect(strip().hidden).toBe(false);
+  });
+});
+
+// 板块搜索：搜索框在板块视图里就地过滤当前口径那份榜单（不发 suggest 请求）
+describe("主面板：板块搜索", () => {
+  const tab = (v: string) => document.querySelector<HTMLElement>(`.vtab[data-view="${v}"]`)!;
+  const input = () => document.querySelector<HTMLInputElement>("#search-input")!;
+  const bRows = () => [...document.querySelectorAll<HTMLElement>("#boards .row")];
+  const bNames = () => bRows().map((r) => r.querySelector(".row-name")!.textContent);
+  const bRowOf = (name: string) =>
+    bRows().find((r) => r.querySelector(".row-name")!.textContent === name)!;
+  const ALL = ["航天航空", "空间站概念", "吉林板块", "燃料电池"];
+  const openBoards = async () => {
+    tab("board").click();
+    await vi.advanceTimersByTimeAsync(0);
+  };
+  const type = (kw: string) => {
+    input().value = kw;
+    input().dispatchEvent(new Event("input", { bubbles: true }));
+  };
+
+  beforeEach(() => boot());
+
+  it("板块视图里搜索框还在，提示词换成搜板块", async () => {
+    expect(document.querySelector<HTMLElement>(".search")!.hidden).toBe(false);
+    expect(input().placeholder).toBe("搜索代码 / 名称 / 拼音");
+
+    await openBoards();
+    expect(document.querySelector<HTMLElement>(".search")!.hidden).toBe(false);
+    expect(input().placeholder).toBe("搜索板块名");
+  });
+
+  it("输入关键词就地过滤榜单，且不发搜索请求", async () => {
+    await openBoards();
+    type("空间");
+
+    expect(bNames()).toEqual(["空间站概念"]);
+    expect(document.querySelector("#bcount")!.textContent).toBe("1 个");
+    const { searchStocks } = await import("./api");
+    expect(searchStocks).not.toHaveBeenCalled();
+  });
+
+  it("清空关键词：榜单回到全量", async () => {
+    await openBoards();
+    type("空间");
+    expect(bNames()).toEqual(["空间站概念"]);
+
+    type("");
+    expect(bNames()).toEqual(ALL);
+  });
+
+  it("搜不到：给空状态，并说明只搜当前口径", async () => {
+    await openBoards();
+    type("宁德时代");
+
+    const empty = document.querySelector("#boards .empty")!;
+    expect(empty.textContent).toContain("没有匹配「宁德时代」的板块");
+    expect(empty.textContent).toContain("只搜当前口径（行业）");
+  });
+
+  it("搜索状态下点一行仍然展开这个板块的分时", async () => {
+    await openBoards();
+    type("空间");
+
+    bRowOf("空间站概念").click();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(document.querySelector<HTMLElement>("#boards .trend.show")!.dataset.id).toBe("90.BK0994");
+  });
+
+  it("换视图会清掉搜索词：切回板块时是完整榜单", async () => {
+    await openBoards();
+    type("空间");
+    expect(bNames()).toEqual(["空间站概念"]);
+
+    tab("watch").click();
+    expect(input().value).toBe("");
+
+    await openBoards();
+    expect(bNames()).toEqual(ALL);
   });
 });

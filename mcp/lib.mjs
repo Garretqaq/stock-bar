@@ -103,7 +103,8 @@ export const TOOLS = [
     name: "move_in_watchlist",
     description:
       "调整某只自选在列表里的位置。position 用 list_watchlist 给出的「第 N 位」（整张自选表的位置，含置顶区，从 1 开始）。" +
-      "置顶的标的只能在置顶区内移动，落点会被钳制，结果里会回报最终位置。",
+      "跨过置顶分界就是在置顶区与其余自选之间搬：挪进置顶区会顺手置顶，挪到置顶区之下会顺手取消置顶。" +
+      "结果里会回报最终位置，顺带改了置顶状态也会说明。",
     inputSchema: {
       type: "object",
       properties: {

@@ -31,7 +31,6 @@ import {
   addToBar,
   applyAppearance,
   applySearchAction,
-  clampBlock,
   dropGroupOf,
   groupNameOf,
   groupTargets,
@@ -40,8 +39,8 @@ import {
   isIndex,
   itemsOf,
   loadSettings,
-  moveInView,
   moveItem,
+  moveRowInView,
   newGroup,
   onSettingsChange,
   pinCount,
@@ -643,7 +642,8 @@ function renderGroups(): void {
   groupsKey = key;
   box.innerHTML = secs.map((s) => groupSec(s, flat)).join("");
   renderChips(); // 胶囊与区块共用同一个 key：分组、名字、成员变了才重建
-  // 每个区块各自拖动排序：顺序写回整表，其他分组的相对先后不动
+  // 每个区块各自拖动排序：顺序写回整表，其他分组的相对先后不动。
+  // 区块里跨过置顶分界的那一下同样改置顶状态（见 settings.ts 的 moveRowInView）
   for (const body of $$(".sec-body", box)) {
     const live = () => $$(".stock", body).map((r) => r.dataset.id!);
     sortable(
@@ -653,9 +653,10 @@ function renderGroups(): void {
         handle: ".stock-handle",
         rowDrag: false,
         movable: () => live().length > 1,
-        clamp: (from, to) => clampBlock(live(), S.pins, from, to),
         apply: (from, to) => {
-          S.watchlist = moveInView(S.watchlist, live(), from, to);
+          const next = moveRowInView(S.watchlist, S.pins, live(), from, to);
+          S.watchlist = next.list;
+          S.pins = next.pins;
           lastPick = -1; // 顺序变了，Shift 区间选择的锚点作废
           commit();
         },
@@ -1590,7 +1591,6 @@ sortable({
   handle: ".ord-handle",
   rowDrag: true,
   movable: () => S.bar.length > 1,
-  clamp: (_from, to) => to,
   apply: (from, to) => {
     S.bar = moveItem(S.bar, from, to);
     commit();
@@ -1612,7 +1612,6 @@ sortable({
   rowDrag: true,
   axis: "x",
   movable: () => S.groups.length > 1,
-  clamp: (_from, to) => to, // 未分组画在容器之外，胶囊之间可以随便换位
   apply: (from, to) => {
     chipDraggedAt = Date.now(); // 真的换了位：接下来那一下 click 算拖动的尾巴
     const g = S.groups[from];

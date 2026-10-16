@@ -324,19 +324,6 @@ describe("主面板：分组胶囊", () => {
       ]);
       expect(keys()).toEqual(["g1", "g2", "g3"]);
     });
-
-    it("弹层末尾的「＋ 新建分组」：与筛选条右端那颗是同一件事", () => {
-      open();
-      [...document.querySelectorAll<HTMLElement>(".ctx-menu.chips .ctx-chip")]
-        .find((c) => c.textContent === "＋ 新建分组")!
-        .click();
-
-      expect(saved().groups.map((g: { id: string }) => g.id)).toEqual(["g1", "g2", "g3", "g4"]);
-      expect(document.querySelector(".ctx-menu")).toBeNull(); // 点完弹层收起
-      // 建好立刻在筛选条那一格进入改名（与右端那颗 ＋ 完全一样）
-      expect(document.querySelector<HTMLInputElement>(".gtab-input")!.value).toBe("新分组");
-    });
-
     it("Alt + → 把分组往后挪一位：写回设置，弹层按新顺序重开", () => {
       open();
       document
@@ -872,6 +859,13 @@ describe("主面板：分组管理", () => {
     el.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
   };
 
+  /** ☰ 弹层（分组多时才露出，但 happy-dom 里点它就是点它）与里面按名字找胶囊 */
+  const openChips = () => document.querySelector<HTMLElement>("#gtab-more")!.click();
+  const chipNamed = (label: string) =>
+    [...document.querySelectorAll<HTMLElement>(".ctx-menu.chips .ctx-chip")].find(
+      (c) => c.textContent === label,
+    )!;
+
   const withGroups = {
     groups: [
       { id: "g1", name: "持仓" },
@@ -883,11 +877,13 @@ describe("主面板：分组管理", () => {
 
   beforeEach(() => boot(withGroups));
 
-  it("点「＋」新建分组：先按默认名建出来，再就地改名，回车提交", () => {
-    document.querySelector<HTMLElement>("#gtab-add")!.click();
+  it("新建的入口：☰ 弹层末尾那颗「＋ 新建分组」建好就地改名，回车提交", () => {
+    openChips();
+    chipNamed("＋ 新建分组").click();
 
     // 与设置 › 行情 一致：先建（占位名），紧接着进入改名
     expect(groups().map((g) => g.id)).toEqual(["g1", "g2", "g3", "g4"]);
+    expect(document.querySelector(".ctx-menu")).toBeNull(); // 点完弹层收起
     const box = rename()!;
     expect(box).not.toBeNull();
     expect(box.value).toBe("新分组");
@@ -900,9 +896,21 @@ describe("主面板：分组管理", () => {
     expect(tabs().map((t) => t.textContent)).toEqual(["全部3", "持仓1", "关注0", "观察池0", "打板0"]);
   });
 
-  it("右键分组标签：菜单是「重命名 / 删除分组…」，点重命名就地出输入框（预填当前名字）", () => {
+  it("分组少、☰ 没露头时也有入口：右键标签菜单里的「＋ 新建分组」", () => {
+    // happy-dom 量不出宽度，☰ 一直是藏着的那一侧（真实面板里分组少时同样不出现）
+    expect(document.querySelector<HTMLElement>("#gtab-more")!.hidden).toBe(true);
+
     rightClickOn(tabOf("持仓"));
-    expect(menuLabels()).toEqual(["重命名", "删除分组…"]);
+    expect(menuLabels()).toEqual(["＋ 新建分组", "重命名", "删除分组…"]);
+    menuPick("＋ 新建分组");
+
+    expect(groups().map((g) => g.id)).toEqual(["g1", "g2", "g3", "g4"]);
+    expect(rename()!.value).toBe("新分组");
+  });
+
+  it("右键分组标签：菜单第一项是新建，点重命名就地出输入框（预填当前名字）", () => {
+    rightClickOn(tabOf("持仓"));
+    expect(menuLabels()).toEqual(["＋ 新建分组", "重命名", "删除分组…"]);
 
     menuPick("重命名");
     expect(rename()!.value).toBe("持仓");
@@ -970,12 +978,11 @@ describe("主面板：分组管理", () => {
   });
 
   it("☰ 弹层里的胶囊右键也是同一套菜单：改名落在筛选条那一格，删除照样两次确认", () => {
-    const open = () => document.querySelector<HTMLElement>("#gtab-more")!.click();
     const chip = (k: string) => document.querySelector<HTMLElement>(`.ctx-menu.chips .ctx-chip[data-key="${k}"]`)!;
 
-    open();
+    openChips();
     rightClickOn(chip("g2"));
-    expect(menuLabels()).toEqual(["重命名", "删除分组…"]);
+    expect(menuLabels()).toEqual(["＋ 新建分组", "重命名", "删除分组…"]);
 
     // 改名落在筛选条那一格上（弹层已经关掉了）
     menuPick("重命名");
@@ -983,7 +990,7 @@ describe("主面板：分组管理", () => {
     press(rename()!, "Escape"); // 收掉这一轮，好接着试删除
 
     // 删除也一样走两次确认（这颗胶囊没有成员，确认条就不必报去向）
-    open();
+    openChips();
     rightClickOn(chip("g3"));
     menuPick("删除分组…");
     expect(menuLabels()).toEqual(["确认删除「观察池」", "取消"]);

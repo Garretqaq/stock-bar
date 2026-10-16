@@ -200,7 +200,6 @@ app.innerHTML = `
     </div>
     <div class="gtabs" id="gtabs" hidden>
       <div class="gtab-scroll" id="gtab-scroll"></div>
-      <button class="gtab-add" id="gtab-add" title="新建分组" aria-label="新建分组">＋</button>
       <button class="gtab-more" id="gtab-more" hidden title="更多分组" aria-label="更多分组" aria-haspopup="menu">${ICON_MORE}</button>
     </div>
     <section class="list" id="list"></section>
@@ -934,13 +933,16 @@ function removeGroupNow(gid: string): void {
 }
 
 /**
- * 分组标签 / 弹层胶囊的右键菜单：改名与删除。
+ * 分组标签 / 弹层胶囊的右键菜单：新建、改名、删除。
+ * 「＋ 新建分组」放在最前 —— 筛选条上不再有常驻的 ＋（那会一直占掉一格），
+ * 而 ☰ 弹层只在筛选条放不下时才出现，分组少的人就只剩这一个入口了。
  * 调整顺序不在这里 —— 筛选条上「横滑看后面的分组」和「拖胶囊」都是横向手势，放一起会撞，
  * 拖顺序在 ☰ 弹层里做（见 openGroupChips）。
  */
 function openGroupMenu(gid: string, x: number, y: number): void {
   if (!S.groups.some((g) => g.id === gid)) return;
   openMenu(x, y, [
+    { label: "＋ 新建分组", onPick: () => addGroup() },
     { label: "重命名", onPick: () => startRename(gid) },
     { label: "删除分组…", danger: true, onPick: () => confirmRemoveGroup(gid, x, y) },
   ]);
@@ -974,10 +976,6 @@ $("#gtabs").addEventListener("click", (e) => {
   if (gid === undefined) return;
   pickGroup(gid === "*" ? null : gid);
 });
-
-// ＋：新建分组（与设置 › 行情 的「＋ 新建分组」是同一件事）
-$("#gtab-add").addEventListener("click", () => addGroup());
-
 // 右键分组标签：改名 / 删除（「全部」不是分组，没有菜单，但系统右键菜单一样不弹）
 $("#gtabs").addEventListener("contextmenu", (e) => {
   e.preventDefault();
@@ -997,8 +995,8 @@ let moreDraggedAt = 0;
 
 /**
  * 弹层的内容：用户建的分组带 key（可拖），「全部」固定在最前、不给 key 也就拖不走；
- * 末尾补一颗「＋ 新建分组」——分组多了要横滑才能看到筛选条右端那颗 ＋，
- * 而这里分组一次摊开，正在整理分组的人顺手就能加一只（同样不给 key，所以它不参与拖动）。
+ * 末尾再补一颗「＋ 新建分组」——这里分组一次摊开，正在整理分组的人顺手就能加一只
+ * （同样不给 key，所以它不参与拖动排序）。
  */
 function groupChips(): MenuItem[] {
   return [

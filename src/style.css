@@ -622,9 +622,8 @@ button {
 .gtab.on b {
   opacity: 1;
 }
-/* 筛选条右端的两个圆钮：「＋ 新建分组」与「更多分组」（☰ 只在筛选条溢出时出现，点了把全部分组列成菜单） */
-.gtab-more,
-.gtab-add {
+/* 末尾的「更多分组」：只在筛选条溢出时出现，点了把全部分组列成菜单 */
+.gtab-more {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -637,16 +636,14 @@ button {
   background: var(--card);
   transition: color 0.18s ease, background 0.18s ease, border-color 0.18s ease;
 }
-.gtab-more:hover,
-.gtab-add:hover {
+.gtab-more:hover {
   border-color: var(--idx-border-hover);
 }
 /* display:inline-flex 会盖掉 [hidden] 的默认 display:none，得自己再写一条 */
 .gtab-more[hidden] {
   display: none;
 }
-.gtab-more:hover,
-.gtab-add:hover {
+.gtab-more:hover {
   color: var(--text);
 }
 .gtab-more svg {
@@ -658,11 +655,6 @@ button {
   stroke-linecap: round;
 }
 
-/* 筛选条右端的「＋ 新建分组」：与 ☰ 同款圆钮，两者都常驻在筛选条右端 */
-.gtab-add {
-  font-size: 14px;
-  line-height: 1;
-}
 /* 筛选条上改名的那一格：与胶囊同高同圆角，宽度固定（名字上限 12 字，超了在框里滚） */
 .gtab-input {
   flex: 0 0 auto;

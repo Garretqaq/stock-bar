@@ -995,15 +995,22 @@ $("#gtabs").addEventListener("contextmenu", (e) => {
 /** 刚在这层里拖完的时间：松手跟来的那一下 click 不该顺手切分组 */
 let moreDraggedAt = 0;
 
-/** 弹层的内容：用户建的分组带 key（可拖），「全部 / 未分组」固定在最前、不给 key 也就拖不走 */
+/**
+ * 弹层的内容：用户建的分组带 key（可拖），「全部」固定在最前、不给 key 也就拖不走；
+ * 末尾补一颗「＋ 新建分组」——分组多了要横滑才能看到筛选条右端那颗 ＋，
+ * 而这里分组一次摊开，正在整理分组的人顺手就能加一只（同样不给 key，所以它不参与拖动）。
+ */
 function groupChips(): MenuItem[] {
-  return groupTabs().map((t) => ({
-    label: t.name,
-    count: t.n,
-    on: t.gid === groupFilter,
-    key: t.gid || undefined,
-    onPick: () => pickGroup(t.gid),
-  }));
+  return [
+    ...groupTabs().map((t) => ({
+      label: t.name,
+      count: t.n,
+      on: t.gid === groupFilter,
+      key: t.gid || undefined,
+      onPick: () => pickGroup(t.gid),
+    })),
+    { label: "＋ 新建分组", onPick: () => addGroup() },
+  ];
 }
 
 function openGroupChips(): void {

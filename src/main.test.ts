@@ -312,11 +312,29 @@ describe("主面板：分组胶囊", () => {
       document.querySelector<HTMLElement>("#gtab-scroll")!.style.width = "60px";
     });
 
-    it("弹层里只有用户分组带 data-key（「全部」拖不走）", () => {
+    it("弹层里只有用户分组带 data-key（「全部」与末尾的「＋ 新建分组」都拖不走）", () => {
       open();
       expect(popup()).not.toBeNull();
-      expect(popChips().map((c) => c.textContent)).toEqual(["全部3", "持仓1", "关注0", "观察池0"]);
+      expect(popChips().map((c) => c.textContent)).toEqual([
+        "全部3",
+        "持仓1",
+        "关注0",
+        "观察池0",
+        "＋ 新建分组",
+      ]);
       expect(keys()).toEqual(["g1", "g2", "g3"]);
+    });
+
+    it("弹层末尾的「＋ 新建分组」：与筛选条右端那颗是同一件事", () => {
+      open();
+      [...document.querySelectorAll<HTMLElement>(".ctx-menu.chips .ctx-chip")]
+        .find((c) => c.textContent === "＋ 新建分组")!
+        .click();
+
+      expect(saved().groups.map((g: { id: string }) => g.id)).toEqual(["g1", "g2", "g3", "g4"]);
+      expect(document.querySelector(".ctx-menu")).toBeNull(); // 点完弹层收起
+      // 建好立刻在筛选条那一格进入改名（与右端那颗 ＋ 完全一样）
+      expect(document.querySelector<HTMLInputElement>(".gtab-input")!.value).toBe("新分组");
     });
 
     it("Alt + → 把分组往后挪一位：写回设置，弹层按新顺序重开", () => {

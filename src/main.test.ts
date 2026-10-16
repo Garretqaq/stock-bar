@@ -2,6 +2,7 @@
 // 纯逻辑（pinItem / unpinItem / pinCount / clampBlock）在 settings.test.ts 里测，这里只管界面接线：
 // 行右键菜单能不能置顶 / 取消置顶，置顶区有没有和普通自选区分开。
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { HOLD_MS } from "./sortable";
 
 // 每个用例都重新 import 一遍 main.ts（模块级会挂监听 / 起定时器），跑完清掉假的定时器，
 // 免得后面用例拿到上一个用例残留的 interval
@@ -336,25 +337,29 @@ describe("主面板：分组胶囊", () => {
 // 自选行直接拖动排序：顺序写回 watchlist（分组视图换算成整表下标，置顶的只能在自己那块里挪）
 describe("主面板：拖动自选行排序", () => {
   const ids = () => rows().map((r) => r.dataset.id);
-  /** 从某一行起拖：happy-dom 量不出布局，落点恒为最后一格（置顶的会被 clampBlock 拉回置顶区） */
-  const dragRow = (id: string) => {
+  /**
+   * 从某一行起拖：happy-dom 量不出布局，落点恒为最后一格（置顶的会被 clampBlock 拉回置顶区）。
+   * 行上起拖要先按住 HOLD_MS（见 sortable.ts），所以这里得先推进一次假定时器。
+   */
+  const dragRow = async (id: string) => {
     const row = rowOf(id);
     pointer(row, "pointerdown", 10);
+    await vi.advanceTimersByTimeAsync(HOLD_MS);
     pointer(row, "pointermove", 400);
     pointer(row, "pointerup", 400, 0);
   };
 
   beforeEach(() => boot());
 
-  it("拖动一行：顺序写回设置、行跟着重排", () => {
-    dragRow("0.300750");
+  it("拖动一行：顺序写回设置、行跟着重排", async () => {
+    await dragRow("0.300750");
 
     expect(saved().watchlist).toEqual(["1.600519", "116.00700", "0.300750"]);
     expect(ids()).toEqual(["1.600519", "116.00700", "0.300750"]);
   });
 
-  it("拖动松手跟来的那一下 click 不展开分时图", () => {
-    dragRow("0.300750");
+  it("拖动松手跟来的那一下 click 不展开分时图", async () => {
+    await dragRow("0.300750");
     rowOf("0.300750").click(); // 浏览器松手后补的那一下
 
     expect(rowOf("0.300750").classList.contains("open")).toBe(false);
@@ -372,10 +377,44 @@ describe("主面板：拖动自选行排序", () => {
     expect(rowOf("0.300750").classList.contains("open")).toBe(true);
   });
 
+  it("按下就滑开（没按住）：不算拖动，顺序不动", () => {
+    const row = rowOf("0.300750");
+    pointer(row, "pointerdown", 10);
+    pointer(row, "pointermove", 400); // 还没到 HOLD_MS 就滑开了
+    pointer(row, "pointerup", 400, 0);
+
+    expect(saved().watchlist).toEqual(["1.600519", "0.300750", "116.00700"]);
+    expect(rowOf("0.300750").classList.contains("dragging")).toBe(false);
+  });
+
+  it("按住期间晃太多：这一下不当拖动（当成滑动手势）", async () => {
+    const row = rowOf("0.300750");
+    pointer(row, "pointerdown", 10);
+    pointer(row, "pointermove", 30); // 超过 HOLD_SLOP：按住作废
+    await vi.advanceTimersByTimeAsync(HOLD_MS);
+    pointer(row, "pointermove", 400);
+    pointer(row, "pointerup", 400, 0);
+
+    expect(saved().watchlist).toEqual(["1.600519", "0.300750", "116.00700"]);
+  });
+
+  it("按住到时间才进入拖动：那一刻行才挂上 .dragging", async () => {
+    const row = rowOf("0.300750");
+    pointer(row, "pointerdown", 10);
+    expect(row.classList.contains("dragging")).toBe(false); // 还在等「按住」
+
+    await vi.advanceTimersByTimeAsync(HOLD_MS);
+    expect(row.classList.contains("dragging")).toBe(true);
+
+    pointer(row, "pointerup", 10, 0); // 按住后没挪动就松手：顺序不动
+    expect(row.classList.contains("dragging")).toBe(false);
+    expect(saved().watchlist).toEqual(["1.600519", "0.300750", "116.00700"]);
+  });
+
   it("置顶的行拖不出去：落点被钳在置顶区里", async () => {
     await boot({ pins: ["1.600519"] });
 
-    dragRow("1.600519");
+    await dragRow("1.600519");
 
     expect(saved().watchlist).toEqual(["1.600519", "0.300750", "116.00700"]);
     expect(saved().pins).toEqual(["1.600519"]);
@@ -391,7 +430,7 @@ describe("主面板：拖动自选行排序", () => {
       .click();
     expect(ids()).toEqual(["0.300750", "116.00700"]);
 
-    dragRow("0.300750"); // 组内第一只往后挪
+    await dragRow("0.300750"); // 组内第一只往后挪
 
     // 整表里它挪到了组内第二只之后；组视图里的先后也跟着变
     expect(saved().watchlist).toEqual(["1.600519", "116.00700", "0.300750"]);

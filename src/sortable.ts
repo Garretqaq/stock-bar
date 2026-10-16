@@ -2,6 +2,17 @@
 // 设置窗口「行情」页的自选行与分组胶囊、主面板筛选条的分组胶囊共用这一套。
 import { shiftIndex, slotAt, slotAtGrid, slotAtX, type ColRect, type RowRect } from "./drag";
 
+/**
+ * 从行上任意处起拖时要先按住多久（毫秒）。
+ * 从把手起拖是明确的拖动意图，立刻开始；行本身既能点（选中 / 展开分时）又能拖，
+ * 按下就进入拖动的话，手抖几像素顺序就变了，点行也变得很别扭 —— 所以先按住再算数。
+ */
+export const HOLD_MS = 200;
+/** 按住期间指针允许晃动的范围（像素）：超了就当成滚动 / 别的滑动手势，不再进入拖动 */
+const HOLD_SLOP = 8;
+/** 进入拖动后要让开多少像素才算换了落点：手抖几像素不该把行挪走一格 */
+const MOVE_SLOP = 4;
+
 export interface DragCfg {
   /** 行容器 */
   list: HTMLElement;
@@ -11,7 +22,7 @@ export interface DragCfg {
   ident?: string;
   /** 把手选择器 */
   handle: string;
-  /** true = 鼠标可从行任意处起拖；false = 一律从把手起拖（行情页点行是勾选） */
+  /** true = 鼠标可从行任意处起拖（要按住 HOLD_MS）；false = 一律从把手起拖（行情页点行是勾选） */
   rowDrag: boolean;
   /**
    * 排法：不写是竖排列表（自选行 / 分组区块），"x" 是横排一行（行情页那排胶囊），
@@ -42,7 +53,19 @@ interface DragState {
   el: HTMLElement;
 }
 
+/** 从行上任意处按下、还在等「按住」的那一段：时间到了才变成拖动（见 HOLD_MS） */
+interface HoldState {
+  cfg: DragCfg;
+  row: HTMLElement;
+  pointerId: number;
+  /** 最近一次指针位置：进入拖动时当起点用，免得行在那一刻跳一下 */
+  x: number;
+  y: number;
+  timer: number;
+}
+
 let drag: DragState | null = null;
+let hold: HoldState | null = null;
 
 const dragRows = (cfg: DragCfg) => [...cfg.list.querySelectorAll<HTMLElement>(cfg.row)];
 
@@ -75,40 +98,51 @@ export function sortable(cfg: DragCfg, state: { take: boolean } = { take: false 
     // 触屏拖动容易和滚动打架：非鼠标一律只允许从把手起拖
     if (!fromHandle && (!cfg.rowDrag || e.pointerType !== "mouse")) return;
     cancelDrag(); // 上一轮没收拾干净的拖动先复位
-    const rows = dragRows(cfg);
-    const from = rows.indexOf(row);
-    if (from < 0) return;
+    clearHold();
     state.take = fromHandle;
-    drag = {
+    // 从把手按下：立刻开始拖。从行上任意处按下：先按住 HOLD_MS 再算数（见 HOLD_MS 的说明）
+    if (fromHandle) return beginDrag(cfg, row, e.clientX, e.clientY, e.pointerId);
+    hold = {
       cfg,
-      from,
-      to: from,
-      startX: e.clientX,
-      startY: e.clientY,
-      rects: rows.map((r) => {
-        const b = r.getBoundingClientRect();
-        return { top: b.top, height: b.height, left: b.left, width: b.width };
-      }),
-      el: row,
+      row,
+      pointerId: e.pointerId,
+      x: e.clientX,
+      y: e.clientY,
+      timer: window.setTimeout(() => {
+        const h = hold;
+        hold = null;
+        if (h) beginDrag(h.cfg, h.row, h.x, h.y, h.pointerId);
+      }, HOLD_MS),
     };
-    row.classList.add("dragging");
-    list.classList.add("dragging");
-    row.setPointerCapture(e.pointerId);
   });
 
   list.addEventListener("pointermove", (e) => {
+    const x = e.clientX;
+    const y = e.clientY;
+    // 还在等「按住」：晃太多就当成别的手势（滚动、滑开），不再进入拖动；
+    // 小幅移动则把起点跟着挪 —— 等按住的这段时间里指针本来就可能挪几像素
+    if (hold) {
+      if (hold.cfg !== cfg) return;
+      if (Math.abs(x - hold.x) > HOLD_SLOP || Math.abs(y - hold.y) > HOLD_SLOP) return clearHold();
+      hold.x = x;
+      hold.y = y;
+      return;
+    }
     if (drag?.cfg !== cfg) return;
     // 行已被重建（别的窗口改了顺序）或按键已松开：立刻中止，别拿旧下标去动新列表
     if (!drag.el.isConnected || !e.buttons) return cancelDrag();
-    const x = e.clientX;
-    const y = e.clientY;
     // 竖排只跟纵向、横排只跟横向：另一根轴上的手抖不该让行歪出去
+    const dx = x - drag.startX;
+    const dy = y - drag.startY;
     drag.el.style.transform =
       axis === "x"
-        ? `translateX(${x - drag.startX}px)`
+        ? `translateX(${dx}px)`
         : axis === "y"
-          ? `translateY(${y - drag.startY}px)`
-          : `translate(${x - drag.startX}px, ${y - drag.startY}px)`;
+          ? `translateY(${dy}px)`
+          : `translate(${dx}px, ${dy}px)`;
+    // 还没让开够远：行跟着手走，顺序先不动（不然刚按住就手抖一下，行会平白挪走一格）
+    const moved = axis === "x" ? Math.abs(dx) : axis === "y" ? Math.abs(dy) : Math.max(Math.abs(dx), Math.abs(dy));
+    if (moved < MOVE_SLOP) return;
     const to = cfg.clamp(drag.from, slotIn(drag.rects, x, y));
     if (to === drag.to) return;
     drag.to = to;
@@ -116,10 +150,19 @@ export function sortable(cfg: DragCfg, state: { take: boolean } = { take: false 
     layoutDrag();
   });
 
-  list.addEventListener("pointerup", () => endDrag(true));
-  list.addEventListener("pointercancel", () => endDrag(false));
+  list.addEventListener("pointerup", () => {
+    clearHold(); // 按住还没到时间就松手：这一下只是点行
+    endDrag(true);
+  });
+  list.addEventListener("pointercancel", () => {
+    clearHold();
+    endDrag(false);
+  });
   // 指针被系统抢走（触屏滚动、右键菜单）时捕获会静默丢失，别把半途的顺序写回去
-  list.addEventListener("lostpointercapture", cancelDrag);
+  list.addEventListener("lostpointercapture", () => {
+    clearHold();
+    cancelDrag();
+  });
 
   // 键盘：Alt + ↑/↓（横排是 ←/→）移动（鼠标之外的第二条路）
   list.addEventListener("keydown", (e) => {
@@ -144,6 +187,38 @@ export function sortable(cfg: DragCfg, state: { take: boolean } = { take: false 
     state.take = false;
     return take;
   };
+}
+
+/**
+ * 真的进入拖动：记下起点与各行当时的位置，把行挂到指针上。
+ * 起点用「当前」指针位置而不是按下的位置 —— 等按住的这段时间里指针可能挪了几像素，
+ * 拿按下的位置当起点，行会在开始拖动的那一刻跳一下。
+ */
+function beginDrag(cfg: DragCfg, row: HTMLElement, x: number, y: number, pointerId: number): void {
+  const rows = dragRows(cfg);
+  const from = rows.indexOf(row);
+  if (from < 0) return;
+  drag = {
+    cfg,
+    from,
+    to: from,
+    startX: x,
+    startY: y,
+    rects: rows.map((r) => {
+      const b = r.getBoundingClientRect();
+      return { top: b.top, height: b.height, left: b.left, width: b.width };
+    }),
+    el: row,
+  };
+  row.classList.add("dragging");
+  cfg.list.classList.add("dragging");
+  row.setPointerCapture(pointerId);
+}
+
+/** 作废还没进入拖动的那一段「按住」（松手、晃太多、又按下了别处） */
+function clearHold(): void {
+  if (hold) window.clearTimeout(hold.timer);
+  hold = null;
 }
 
 /** 拖动中让其他行让开：按目标顺序给每行一个位移，被拖的那行跟手 */

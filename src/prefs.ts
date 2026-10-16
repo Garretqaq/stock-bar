@@ -853,6 +853,9 @@ function startRename(gid: string): void {
     else renderMarket();
   };
   input.addEventListener("keydown", (e) => {
+    // 输入法还在拼字（拼音候选没定下来）时敲的回车 / Esc 是给输入法的，不是给这一格的：
+    // 不管它就会把拼音字母当成名字提交（WebKit 这边 isComposing 不一定给，229 是通用兜底）
+    if (e.isComposing || e.keyCode === 229) return;
     if (e.key === "Enter") {
       e.preventDefault();
       finish(true);

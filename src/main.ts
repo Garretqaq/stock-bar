@@ -23,6 +23,7 @@ import {
 import { barImage, barText, canvasPng } from "./bar";
 import { BOARD_KINDS, boardKindLabel, boardRows, leaderTag, type BoardOrder } from "./boards";
 import {
+  GROUP_NAME_MAX,
   INDICES,
   UNGROUPED,
   applyAppearance,
@@ -38,9 +39,12 @@ import {
   loadTickerPos,
   moveItem,
   moveRowInView,
+  newGroup,
   onSettingsChange,
   pinCount,
   pinItem,
+  removeGroup,
+  renameGroup,
   saveSettings,
   searchActions,
   setGroup,
@@ -196,6 +200,7 @@ app.innerHTML = `
     </div>
     <div class="gtabs" id="gtabs" hidden>
       <div class="gtab-scroll" id="gtab-scroll"></div>
+      <button class="gtab-add" id="gtab-add" title="新建分组" aria-label="新建分组">＋</button>
       <button class="gtab-more" id="gtab-more" hidden title="更多分组" aria-label="更多分组" aria-haspopup="menu">${ICON_MORE}</button>
     </div>
     <section class="list" id="list"></section>
@@ -750,6 +755,9 @@ const tabMore = $("#gtab-more");
 /** 正在看的分组：null = 全部；未分组是空字符串，不能用假值判断 */
 let groupFilter: string | null = null;
 
+/** 正在改名的分组 id：筛选条上那一格换成输入框 */
+let tabRename: string | null = null;
+
 /** 按住拖动筛选条：tabDrag 是按下时的位置，tabDraggedAt 是最后一下拖动的时间 */
 let tabDrag: { x: number; left: number } | null = null;
 let tabDraggedAt = 0;
@@ -783,6 +791,9 @@ function groupTabs(): { gid: string | null; name: string; n: number }[] {
 function renderTabs(): void {
   const box = $("#gtabs");
   const tabs = groupTabs();
+
+  // 正在改名的分组已经不在筛选条上了（别的窗口把它删了）：改名态跟着作废
+  if (tabRename && !tabs.some((t) => t.gid === tabRename)) tabRename = null;
   // 正在看的分组已经不在筛选条上了（成员被移空、分组被删）：退回「全部」，
   // 否则会出现没有任何标签高亮、列表却还筛着的状态
   const fellBack = groupFilter !== null && !tabs.some((t) => t.gid === groupFilter);
@@ -794,13 +805,23 @@ function renderTabs(): void {
     box.dataset.key = "";
     if (tabScroll.innerHTML) tabScroll.innerHTML = "";
     tabMore.hidden = true;
+    tabRename = null; // 筛选条收起来了：改名态别留着（看不见的输入框也拿不到焦点）
     return;
   }
-  const key = `${groupFilter ?? "*"}|${tabs.map((t) => `${t.gid}:${t.name}:${t.n}`).join(",")}`;
+  // 改名中的那一格进 key：改名期间不因为「内容没变」被重画掉，输入框才拿得住焦点与光标
+  const key = `${tabRename ?? ""}|${groupFilter ?? "*"}|${tabs.map((t) => `${t.gid}:${t.name}:${t.n}`).join(",")}`;
   if (key !== box.dataset.key) {
+    // 别处（另一个窗口 / MCP）此刻改了设置，整条会被重画：手正打着的字先留一份，重画后填回去，
+    // 否则「改了一半的名字被换回原名」看着就是自己白打了（只有同一格才认这份草稿）
+    const editing = $<HTMLInputElement>(".gtab-input", tabScroll);
+    const draft = editing && editing.dataset.gid === tabRename ? editing.value : undefined;
     box.dataset.key = key;
     tabScroll.innerHTML = tabs
       .map((t) => {
+        // 正在改名的那一格：换成输入框（与设置 › 行情 一样就地改，只是这里改的是筛选条上的标签）
+        if (t.gid && t.gid === tabRename) {
+          return `<input class="gtab-input" data-gid="${t.gid}" maxlength="${GROUP_NAME_MAX}" aria-label="分组名称" />`;
+        }
         const on = t.gid === groupFilter;
         return (
           `<button class="gtab${on ? " on" : ""}" data-gid="${t.gid ?? "*"}" aria-pressed="${on}">` +
@@ -808,6 +829,7 @@ function renderTabs(): void {
         );
       })
       .join("");
+    if (tabRename) mountRename(draft);
   }
   syncTabMore();
   // 退回「全部」也算换了选中项：它多半藏在左边，得带进视野
@@ -820,14 +842,13 @@ function syncTabMore(): void {
 }
 
 /**
- * 选中的分组要留在视野里：从 ☰ 里选中的分组可能还藏在右边。
+ * 把筛选条上的某一格带进视野（默认是当前选中的那个）。
  * 直接跳（不 smooth）：这是菜单里点一下的即时反馈，跳过去最干脆；
  * 平滑滚动在有些 webview 里不推进（面板不可见时被节流），那就等于没滚 —— 标签还藏在右边。
  */
-function scrollTabIntoView(): void {
-  const on = $(".gtab.on", tabScroll);
-  if (!on || tabScroll.scrollWidth <= tabScroll.clientWidth) return;
-  const d = scrollDeltaFor(on.getBoundingClientRect(), tabScroll.getBoundingClientRect());
+function scrollTabIntoView(el: Element | null = $(".gtab.on", tabScroll)): void {
+  if (!el || tabScroll.scrollWidth <= tabScroll.clientWidth) return;
+  const d = scrollDeltaFor(el.getBoundingClientRect(), tabScroll.getBoundingClientRect());
   if (!d) return;
   tabScroll.scrollLeft += d;
 }
@@ -840,6 +861,109 @@ function pickGroup(gid: string | null): void {
   scrollTabIntoView(); // 选中的那个可能还藏在右边
 }
 
+// ---------- 分组管理（新建 / 改名 / 删除） ----------
+// 分组的几件事各有各的去处：筛选条上按分组筛、☰ 弹层里拖顺序，这里补上「新建 / 改名 / 删除」。
+// 与设置 › 行情 是同一份数据、同一套纯函数（settings.ts 的 newGroup / renameGroup / removeGroup），
+// 所以两边怎么改都立刻一致。
+
+/** 新建分组：默认名字只是占位，建好立刻在筛选条上进入改名（与设置 › 行情 一致） */
+function addGroup(): void {
+  const g = newGroup(S.groups);
+  S.groups = [...S.groups, g];
+  tabRename = g.id;
+  save();
+  renderAll(); // renderTabs 会把新那一格渲染成输入框，并在重建后把光标交出去
+}
+
+/** 就地改名：筛选条上那一格换成输入框 */
+function startRename(gid: string): void {
+  if (!S.groups.some((g) => g.id === gid)) return;
+  tabRename = gid;
+  renderList();
+}
+
+/**
+ * 筛选条上那一格的改名输入框：挂上焦点与收尾。
+ * 回车 / 失焦提交，Esc 放弃 —— 与设置 › 行情的分组改名同一套手感。
+ * draft：整条被重画之前留下的草稿（见 renderTabs），有它就把手打了一半的字填回去。
+ */
+function mountRename(draft?: string): void {
+  const gid = tabRename;
+  const input = $<HTMLInputElement>(".gtab-input", tabScroll);
+  if (!gid || !input) return;
+  input.value = draft ?? groupNameOf(S.groups, gid);
+  syncTabMore(); // ☰ 出不出现会改变能滚的空间：先把它定下来，「带进视野」才算得准
+  scrollTabIntoView(input); // 改名的那一格可能还横滑在右边
+  input.focus();
+  // 新起一次改名：旧名整段选中，直接打字就替换掉；接着改草稿的话，光标落在末尾
+  if (draft == null) input.select();
+  else input.setSelectionRange(input.value.length, input.value.length);
+  let done = false;
+  const finish = (submit: boolean) => {
+    if (done) return;
+    done = true;
+    tabRename = null;
+    if (submit) {
+      S.groups = renameGroup(S.groups, gid, input.value); // 空名字视为放弃，原样返回
+      save();
+    }
+    renderList(); // 输入框换回标签（tabRename 进 key，这一下必然重建）
+  };
+  input.addEventListener("keydown", (e) => {
+    // 输入法还在拼字（拼音候选没定下来）时敲的回车 / Esc 是给输入法的，不是给这一格的：
+    // 不管它就会把拼音字母当成名字提交（WebKit 这边 isComposing 不一定给，229 是通用兜底）
+    if (e.isComposing || e.keyCode === 229) return;
+    if (e.key === "Enter") {
+      e.preventDefault();
+      finish(true);
+    } else if (e.key === "Escape") {
+      e.stopPropagation(); // 别让「Esc 收起面板」跟着触发
+      finish(false);
+    }
+  });
+  input.addEventListener("blur", () => finish(true));
+}
+
+/** 删除分组：成员回落到未分组（自选一只都不少），自选顺序与菜单栏都不受影响 */
+function removeGroupNow(gid: string): void {
+  const next = removeGroup(S.groups, S.groupOf, gid);
+  S.groups = next.groups;
+  S.groupOf = next.groupOf;
+  save();
+  renderAll(); // 正在看的正是这个分组时，renderTabs 会把筛选退回「全部」
+}
+
+/**
+ * 分组标签 / 弹层胶囊的右键菜单：改名与删除。
+ * 调整顺序不在这里 —— 筛选条上「横滑看后面的分组」和「拖胶囊」都是横向手势，放一起会撞，
+ * 拖顺序在 ☰ 弹层里做（见 openGroupChips）。
+ */
+function openGroupMenu(gid: string, x: number, y: number): void {
+  if (!S.groups.some((g) => g.id === gid)) return;
+  openMenu(x, y, [
+    { label: "重命名", onPick: () => startRename(gid) },
+    { label: "删除分组…", danger: true, onPick: () => confirmRemoveGroup(gid, x, y) },
+  ]);
+}
+
+/**
+ * 删除分组不可逆，所以再问一次：菜单就地换成一条「确认删除」（把成员的去向说清楚），
+ * Esc / 点别处即取消。主面板这条筛选条只有 26px 高，摊一条确认条放不下，就用第二次点击来确认。
+ */
+function confirmRemoveGroup(gid: string, x: number, y: number): void {
+  const g = S.groups.find((it) => it.id === gid);
+  if (!g) return; // 菜单是点开那一刻渲染的：这个分组可能已经被别的窗口删掉了
+  const n = itemsOf(S.watchlist, S.groupOf, S.groups, gid).length;
+  openMenu(x, y, [
+    {
+      label: n ? `确认删除「${g.name}」（${n} 只移入未分组）` : `确认删除「${g.name}」`,
+      danger: true,
+      onPick: () => removeGroupNow(gid),
+    },
+    { label: "取消" },
+  ]);
+}
+
 $("#gtabs").addEventListener("click", (e) => {
   // 拖动那一下松手会跟一个 click：别顺手把分组切了
   if (isDragClick(tabDraggedAt, Date.now())) {
@@ -850,6 +974,18 @@ $("#gtabs").addEventListener("click", (e) => {
   if (gid === undefined) return;
   pickGroup(gid === "*" ? null : gid);
 });
+
+// ＋：新建分组（与设置 › 行情 的「＋ 新建分组」是同一件事）
+$("#gtab-add").addEventListener("click", () => addGroup());
+
+// 右键分组标签：改名 / 删除（「全部」不是分组，没有菜单，但系统右键菜单一样不弹）
+$("#gtabs").addEventListener("contextmenu", (e) => {
+  e.preventDefault();
+  const gid = (e.target as HTMLElement).closest<HTMLElement>(".gtab")?.dataset.gid;
+  if (!gid || gid === "*") return;
+  openGroupMenu(gid, e.clientX, e.clientY);
+});
+
 // 末尾 ☰：横滑出去的分组从这里点。内容不按菜单排，而是摊成和筛选条上那排一模一样的
 // 标签（带数量、当前这个高亮），分组多时自动换行，比一长条菜单矮得多。
 // 弹层挂在 ☰ 上，筛选条自己横着滚不会挪动它，所以那种滚动不该把它收起来。
@@ -870,7 +1006,7 @@ function groupChips(): MenuItem[] {
   }));
 }
 
-function openGroupMenu(): void {
+function openGroupChips(): void {
   const r = tabMore.getBoundingClientRect();
   openMenu(r.right, r.bottom + 4, groupChips(), {
     ignoreScrollFrom: tabScroll,
@@ -889,6 +1025,14 @@ function openGroupMenu(): void {
         },
         true,
       );
+
+      // 弹层里的胶囊也能右键：与筛选条上的标签同一套菜单（改名照样落在筛选条那一格上）
+      el.addEventListener("contextmenu", (e) => {
+        const chip = (e.target as HTMLElement).closest<HTMLElement>(".ctx-chip[data-key]");
+        if (!chip?.dataset.key) return;
+        e.preventDefault();
+        openGroupMenu(chip.dataset.key, e.clientX, e.clientY);
+      });
       sortable({
         list: el,
         row: ".ctx-chip[data-key]",
@@ -925,7 +1069,7 @@ function openGroupMenu(): void {
   });
 }
 
-tabMore.addEventListener("click", () => openGroupMenu());
+tabMore.addEventListener("click", () => openGroupChips());
 
 // 横向滑：鼠标滚轮（竖直方向）也能把筛选条推向右边；触控板横滑是浏览器原生的，这里不拦
 tabScroll.addEventListener(
@@ -942,7 +1086,9 @@ tabScroll.addEventListener(
 
 // 鼠标按住拖动也能往右滑：触控板有横滑手势，鼠标没有
 tabScroll.addEventListener("pointerdown", (e) => {
-  if (e.button !== 0 || tabScroll.scrollWidth <= tabScroll.clientWidth) return;
+  // 在改名输入框里按下是选文字，不是「按住横滑筛选条」
+  if (e.button !== 0 || (e.target as HTMLElement).closest(".gtab-input")) return;
+  if (tabScroll.scrollWidth <= tabScroll.clientWidth) return;
   tabDrag = { x: e.clientX, left: tabScroll.scrollLeft };
   tabDraggedAt = 0;
 });

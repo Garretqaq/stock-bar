@@ -836,3 +836,192 @@ describe("主面板：板块搜索", () => {
     expect(bNames()).toEqual(ALL);
   });
 });
+
+// 分组管理（新增 / 改名 / 删除）在主面板上也能做，不必为改个名字去开设置窗口。
+// 与设置 › 行情 是同一份数据、同一套纯函数（settings.ts），这里只管界面接线：
+// ＋ 建组后就地改名、右键标签 / 弹层胶囊给菜单、删除要走两次确认。
+describe("主面板：分组管理", () => {
+  const tabs = () => [...document.querySelectorAll<HTMLElement>("#gtab-scroll .gtab")];
+  const tabOf = (name: string) => tabs().find((t) => t.textContent!.startsWith(name))!;
+  const rename = () => document.querySelector<HTMLInputElement>(".gtab-input");
+  const groups = () => saved().groups as { id: string; name: string }[];
+  const groupOf = () => saved().groupOf as Record<string, string>;
+  const rightClickOn = (el: Element) =>
+    el.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, clientX: 5, clientY: 5 }));
+  /** 按一次键（可以顺带改掉输入框里的内容，模拟用户先打字再按回车） */
+  const press = (el: HTMLInputElement, key: string, value?: string) => {
+    if (value != null) el.value = value;
+    el.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
+  };
+
+  const withGroups = {
+    groups: [
+      { id: "g1", name: "持仓" },
+      { id: "g2", name: "关注" },
+      { id: "g3", name: "观察池" },
+    ],
+    groupOf: { "0.300750": "g1" },
+  };
+
+  beforeEach(() => boot(withGroups));
+
+  it("点「＋」新建分组：先按默认名建出来，再就地改名，回车提交", () => {
+    document.querySelector<HTMLElement>("#gtab-add")!.click();
+
+    // 与设置 › 行情 一致：先建（占位名），紧接着进入改名
+    expect(groups().map((g) => g.id)).toEqual(["g1", "g2", "g3", "g4"]);
+    const box = rename()!;
+    expect(box).not.toBeNull();
+    expect(box.value).toBe("新分组");
+    expect(document.activeElement).toBe(box); // 直接把光标交出去，不必再点一下
+
+    press(box, "Enter", "打板");
+
+    expect(groups().map((g) => g.name)).toEqual(["持仓", "关注", "观察池", "打板"]);
+    expect(rename()).toBeNull();
+    expect(tabs().map((t) => t.textContent)).toEqual(["全部3", "持仓1", "关注0", "观察池0", "打板0"]);
+  });
+
+  it("右键分组标签：菜单是「重命名 / 删除分组…」，点重命名就地出输入框（预填当前名字）", () => {
+    rightClickOn(tabOf("持仓"));
+    expect(menuLabels()).toEqual(["重命名", "删除分组…"]);
+
+    menuPick("重命名");
+    expect(rename()!.value).toBe("持仓");
+    expect(groups().map((g) => g.name)).toEqual(["持仓", "关注", "观察池"]); // 只是进了改名，还没写回
+  });
+
+  it("改名的三种收尾：回车提交、失焦提交、Esc 放弃", () => {
+    rightClickOn(tabOf("关注"));
+    menuPick("重命名");
+    press(rename()!, "Escape", "改了一半"); // Esc 放弃：名字不动，输入框换回标签
+    expect(groups().map((g) => g.name)).toEqual(["持仓", "关注", "观察池"]);
+    expect(rename()).toBeNull();
+
+    rightClickOn(tabOf("关注"));
+    menuPick("重命名");
+    const box = rename()!;
+    box.value = "自选股";
+    box.dispatchEvent(new Event("blur")); // 点到别处也算提交
+    expect(groups().map((g) => g.name)).toEqual(["持仓", "自选股", "观察池"]);
+    expect(tabs().map((t) => t.textContent)).toEqual(["全部3", "持仓1", "自选股0", "观察池0"]);
+  });
+
+  it("右键「全部」不给菜单：它不是分组，改不了名也删不掉", () => {
+    rightClickOn(tabOf("全部"));
+
+    expect(document.querySelector(".ctx-menu")).toBeNull();
+  });
+
+  it("删除分组要两次确认：第一次只换出确认条，确认后成员回到未分组", () => {
+    rightClickOn(tabOf("持仓"));
+    menuPick("删除分组…");
+
+    // 第一次点只是把菜单换成确认：删除不可逆，别一手滑就没了
+    expect(groups().map((g) => g.id)).toEqual(["g1", "g2", "g3"]);
+    expect(menuLabels()).toEqual(["确认删除「持仓」（1 只移入未分组）", "取消"]);
+
+    menuPick("确认删除「持仓」（1 只移入未分组）");
+
+    expect(groups().map((g) => g.id)).toEqual(["g2", "g3"]);
+    expect(groupOf()).toEqual({}); // 成员回到未分组，自选一只都没少
+    expect(tabs().map((t) => t.textContent)).toEqual(["全部3", "关注0", "观察池0"]);
+  });
+
+  it("确认条里点「取消」：什么都不改", () => {
+    rightClickOn(tabOf("持仓"));
+    menuPick("删除分组…");
+    menuPick("取消");
+
+    expect(groups().map((g) => g.id)).toEqual(["g1", "g2", "g3"]);
+    expect(groupOf()).toEqual({ "0.300750": "g1" });
+    expect(rename()).toBeNull();
+  });
+
+  it("删掉的正是当前在看的那个分组：退回「全部」，一只自选都不少", () => {
+    tabOf("持仓").click();
+    expect(rows().map((r) => r.dataset.id)).toEqual(["0.300750"]);
+
+    rightClickOn(tabOf("持仓"));
+    menuPick("删除分组…");
+    menuPick("确认删除「持仓」（1 只移入未分组）");
+
+    // 分组没了，筛选态不能挂在一个不存在的分组上
+    expect(rows().map((r) => r.dataset.id)).toEqual(["1.600519", "0.300750", "116.00700"]);
+    expect(tabs()[0].classList.contains("on")).toBe(true); // 「全部」高亮
+  });
+
+  it("☰ 弹层里的胶囊右键也是同一套菜单：改名落在筛选条那一格，删除照样两次确认", () => {
+    const open = () => document.querySelector<HTMLElement>("#gtab-more")!.click();
+    const chip = (k: string) => document.querySelector<HTMLElement>(`.ctx-menu.chips .ctx-chip[data-key="${k}"]`)!;
+
+    open();
+    rightClickOn(chip("g2"));
+    expect(menuLabels()).toEqual(["重命名", "删除分组…"]);
+
+    // 改名落在筛选条那一格上（弹层已经关掉了）
+    menuPick("重命名");
+    expect(rename()!.value).toBe("关注");
+    press(rename()!, "Escape"); // 收掉这一轮，好接着试删除
+
+    // 删除也一样走两次确认（这颗胶囊没有成员，确认条就不必报去向）
+    open();
+    rightClickOn(chip("g3"));
+    menuPick("删除分组…");
+    expect(menuLabels()).toEqual(["确认删除「观察池」", "取消"]);
+    menuPick("确认删除「观察池」");
+    expect(groups().map((g) => g.id)).toEqual(["g1", "g2"]);
+  });
+
+  it("改名时按 Esc：只放弃改名，不把面板一起收起来（Esc 不冒泡到 document）", () => {
+    rightClickOn(tabOf("持仓"));
+    menuPick("重命名");
+    const seen: string[] = [];
+    const spy = (e: KeyboardEvent) => seen.push(e.key);
+    document.addEventListener("keydown", spy);
+    press(rename()!, "Escape", "改了一半");
+    document.removeEventListener("keydown", spy);
+
+    // 面板自己那层 Esc（收起窗口）挂在 document 上：这一下不该冒到那儿去
+    expect(seen).not.toContain("Escape");
+    expect(groups().map((g) => g.name)).toEqual(["持仓", "关注", "观察池"]);
+  });
+
+  it("输入法还在拼字时的回车不算提交（别把拼音字母当成名字）", () => {
+    rightClickOn(tabOf("持仓"));
+    menuPick("重命名");
+    const box = rename()!;
+    box.value = "chicang";
+    box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", isComposing: true, bubbles: true }));
+
+    expect(groups().map((g) => g.name)).toEqual(["持仓", "关注", "观察池"]);
+    expect(rename()).toBe(box); // 还在这格里改
+  });
+
+  it("改名当中别的窗口改了设置：整条重画，手打了一半的字还在", async () => {
+    rightClickOn(tabOf("关注"));
+    menuPick("重命名");
+    rename()!.value = "改了一半";
+
+    // 另一个窗口（设置窗口 / MCP）改了别处：本窗口接到广播后整条重画
+    localStorage.setItem(
+      "stockbar.settings.v1",
+      JSON.stringify({
+        ...saved(),
+        groups: [
+          { id: "g1", name: "持仓" },
+          { id: "g2", name: "关注着" },
+          { id: "g3", name: "观察池" },
+        ],
+      }),
+    );
+    window.dispatchEvent(new StorageEvent("storage", { key: "stockbar.settings.v1" }));
+    await vi.advanceTimersByTimeAsync(0);
+
+    const box = rename()!;
+    expect(box).not.toBeNull();
+    expect(box.dataset.gid).toBe("g2"); // 还在改原来那个分组
+    expect(box.value).toBe("改了一半"); // 草稿没被重画冲掉
+    expect(document.activeElement).toBe(box);
+  });
+});

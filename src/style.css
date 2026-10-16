@@ -622,8 +622,9 @@ button {
 .gtab.on b {
   opacity: 1;
 }
-/* 末尾的「更多分组」：只在筛选条溢出时出现，点了把全部分组列成菜单 */
-.gtab-more {
+/* 筛选条右端的两个圆钮：「＋ 新建分组」与「更多分组」（☰ 只在筛选条溢出时出现，点了把全部分组列成菜单） */
+.gtab-more,
+.gtab-add {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -636,14 +637,16 @@ button {
   background: var(--card);
   transition: color 0.18s ease, background 0.18s ease, border-color 0.18s ease;
 }
-.gtab-more:hover {
+.gtab-more:hover,
+.gtab-add:hover {
   border-color: var(--idx-border-hover);
 }
 /* display:inline-flex 会盖掉 [hidden] 的默认 display:none，得自己再写一条 */
 .gtab-more[hidden] {
   display: none;
 }
-.gtab-more:hover {
+.gtab-more:hover,
+.gtab-add:hover {
   color: var(--text);
 }
 .gtab-more svg {
@@ -653,6 +656,30 @@ button {
   stroke: currentColor;
   stroke-width: 2.2;
   stroke-linecap: round;
+}
+
+/* 筛选条右端的「＋ 新建分组」：与 ☰ 同款圆钮，两者都常驻在筛选条右端 */
+.gtab-add {
+  font-size: 14px;
+  line-height: 1;
+}
+/* 筛选条上改名的那一格：与胶囊同高同圆角，宽度固定（名字上限 12 字，超了在框里滚） */
+.gtab-input {
+  flex: 0 0 auto;
+  width: 100px;
+  height: 26px;
+  padding: 0 9px;
+  border: 1px solid var(--accent);
+  border-radius: 13px;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text);
+  background: var(--card);
+  outline: none;
+  /* 分组名要能选中 / 复制：这里的 user-select 必须留 text（见 AGENTS.md 里那一条） */
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 /* ---------- 视图切换（自选 / 板块） ---------- */

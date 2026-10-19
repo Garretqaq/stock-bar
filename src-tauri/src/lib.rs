@@ -380,7 +380,7 @@ async fn open_settings(app: AppHandle, page: Option<String>) -> Result<(), Strin
 }
 
 /// 设置窗口里可用的页（与 prefs.ts 的 Page 一一对应）：不认识的页名一律忽略，免得切到空白页
-const PAGES: [&str; 5] = ["dashboard", "market", "mcp", "about", "settings"];
+const PAGES: [&str; 6] = ["dashboard", "market", "alerts", "mcp", "about", "settings"];
 
 /// 窗口是新建的时候，「要打开哪一页」先存在这里：建窗时前端还没挂上监听，事件发出去会丢
 static PENDING_PAGE: LazyLock<Mutex<Option<String>>> = LazyLock::new(|| Mutex::new(None));
@@ -570,6 +570,14 @@ fn hide_window(app: AppHandle) {
     }
 }
 
+/// 点提醒通知后把主面板叫出来：位置与点托盘图标一致（不是切换 —— 面板已经开着就留在原处）
+#[tauri::command]
+fn open_panel(app: AppHandle) {
+    if let Some(win) = app.get_webview_window(WINDOW_LABEL) {
+        show_panel(&win, None);
+    }
+}
+
 #[tauri::command]
 fn quit_app(app: AppHandle) {
     app.exit(0);
@@ -662,6 +670,8 @@ pub fn run() {
         .plugin(tauri_plugin_positioner::init())
         // 应用内更新：端点与公钥在 tauri.conf.json 的 plugins.updater 里（实现见 src/update.rs）
         .plugin(tauri_plugin_updater::Builder::new().build())
+        // 系统通知（提醒触发时那条）：权限与投递都由插件管，前端只管发（见 src/notify.ts）
+        .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![
             set_tray_text,
             set_tray_image,
@@ -671,6 +681,7 @@ pub fn run() {
             fit_ticker,
             ticker_click,
             hide_window,
+            open_panel,
             quit_app,
             mcp_ready,
             mcp_reply,

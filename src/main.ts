@@ -28,6 +28,7 @@ import {
   UNGROUPED,
   applyAppearance,
   applySearchAction,
+  dropAlertsOf,
   dropGroupOf,
   groupIdOf,
   groupNameOf,
@@ -58,6 +59,8 @@ import { openMenu, type MenuItem } from "./ctxmenu";
 import { McpError, prepareCommand } from "./mcp";
 import { hintText, type UpdateInfo } from "./update";
 import { filterToReveal, hitAction } from "./search";
+import { alertText, evaluateAlerts, loadAlertStates, saveAlertStates } from "./alerts";
+import { onNotifyTap, sendNotify } from "./notify";
 
 let S: Settings = loadSettings();
 const save = () => saveSettings(S);
@@ -1249,6 +1252,7 @@ function removeStock(id: string): void {
   S.pins = S.pins.filter((x) => x !== id);
   S.bar = S.bar.filter((x) => x !== id);
   S.groupOf = dropGroupOf(S.groupOf, [id]);
+  S.alerts = dropAlertsOf(S.alerts, [id]);
   if (S.selected === id) S.selected = S.watchlist[0] ?? INDICES[0].secid;
   if (trendOpen === id) trendOpen = null;
   save();
@@ -1978,6 +1982,8 @@ async function refresh(): Promise<void> {
   try {
     const got = await fetchQuotes(ids, S.source);
     got.forEach((q, k) => quotes.set(k, q));
+    // 这一轮的报价到手就判一次提醒（条件刚成立的会发系统通知）
+    void checkAlerts();
     lastOk = Date.now();
     failCount = 0;
     if (trendOpen) {
@@ -2005,6 +2011,55 @@ function renderAll(): void {
   renderTrendPanels();
   renderPreviewLive(); // 搜索面板里预览着的那只，价格也跟着这轮刷新
 }
+
+// ---------- 提醒 ----------
+// 判定挂在 refresh() 里：应用在跑（哪怕面板收着）就一直在判，不依赖面板是否打开。
+// 规则存在设置里（跨窗口同步），触发状态单独存一份（见 alerts.ts 的 loadAlertStates）。
+
+/** 通知编号 → 标的：点通知时用它认出是哪一只。编号只在这一轮运行里有效，重启后点旧通知只会把面板叫出来 */
+const notifyTarget = new Map<number, string>();
+let notifySeq = 1;
+
+/** 拿这一轮的报价判一次提醒：条件刚成立的发系统通知，状态写回那份单独的存储 */
+async function checkAlerts(): Promise<void> {
+  const now = new Date();
+  const res = evaluateAlerts(S.alerts, loadAlertStates(S.alerts), quotes, now, {
+    on: S.alertsOn,
+    // 非交易时段不判：收盘后价格不再动，凭残留的最后一笔成交触发没有意义
+    can: (secid) => sessionStatus(regionOf(secid), now, quotes.get(secid)?.time ?? null).open,
+  });
+  if (res.changed) saveAlertStates(res.states, S.alerts);
+  for (const f of res.fires) {
+    const { title, body } = alertText(f.quote.name || nameOf(f.alert.secid), f.alert, f.quote);
+    const id = notifySeq++;
+    notifyTarget.set(id, f.alert.secid);
+    // 42 亿是插件要求的 32 位整数上限，离它还很远；编号回绕时把老映射一起丢掉
+    if (notifySeq > 1_000_000) notifySeq = 1;
+    while (notifyTarget.size > 64) notifyTarget.delete(notifyTarget.keys().next().value!);
+    // 没授权（或被系统丢掉）就不留这条映射，免得点开时对不上号
+    if (!(await sendNotify(title, body, id))) notifyTarget.delete(id);
+  }
+}
+
+/** 点通知之后要定位的标的：等面板真的弹出来（panel-shown）再滚过去 */
+let pendingReveal: string | null = null;
+
+/**
+ * 定位到某只标的：自选走「跳过去」（切到能看见它的分组、滚过去、展开分时），
+ * 大盘指数就滚到顶部那张卡片（指数一直在最上面，不需要切分组）。
+ */
+function revealInstrument(id: string): void {
+  if (S.watchlist.includes(id)) return jumpToRow(id);
+  document
+    .querySelector<HTMLElement>(`#indices .idx[data-id="${id}"]`)
+    ?.scrollIntoView?.({ block: "nearest", behavior: reduceMotion() ? "auto" : "smooth" });
+}
+
+// 点通知：把面板叫出来并定位过去（Windows 上只在通知还在屏幕上时才报点击）
+void onNotifyTap((id) => {
+  pendingReveal = id == null ? null : (notifyTarget.get(id) ?? null);
+  void call("open_panel");
+});
 
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
   renderTrendPanels();
@@ -2073,6 +2128,10 @@ void listenAll("panel-shown", () => {
   boardSubs = false;
   renderView();
   refresh();
+  // 点提醒通知弹出来的那一次：定位到通知说的那只标的（自选切分组滚过去，指数滚到顶部卡片）
+  const reveal = pendingReveal;
+  pendingReveal = null;
+  if (reveal) revealInstrument(reveal);
 });
 
 document.addEventListener("keydown", (e) => {

@@ -19,14 +19,14 @@ cd src-tauri && cargo check   # Rust 侧检查
 
 - 包管理器用 **pnpm**（`packageManager` 字段已锁定版本），不要用 npm 或 yarn。
 - 改完之后至少跑通 `pnpm check`（类型检查加单元测试）和 `pnpm build`；改了 Rust 就再跑一次 `cargo check`。改了纯逻辑要补对应测试。
-- 单元测试用 **vitest**：`src/*.test.ts` 跑在 happy-dom 环境，覆盖 api / bar / settings / ctxmenu / drag / tabs / search / mcp / update 里的纯逻辑，以及三处界面接线 —— 设置窗口搜索结果右键（`prefs.test.ts`）与主面板自选行置顶、搜索结果点击去向（`main.test.ts`），两者都用假搜索 / 报价真起一遍对应的窗口脚本（`main.ts` 起的是 `#app`，与 `index.html` 一致）；`mcp/*.test.mjs` 与 `scripts/*.test.mjs` 是脚本测试，文件头用 `// @vitest-environment node` 切到 node 环境（含一条真的起进程 + 假本地桥的端到端用例）。没有 lint 或格式化配置。
+- 单元测试用 **vitest**：`src/*.test.ts` 跑在 happy-dom 环境，覆盖 api / bar / settings / ctxmenu / drag / tabs / search / mcp / update / alerts 里的纯逻辑，以及四处界面接线 —— 设置窗口搜索结果右键（`prefs.test.ts`）、主面板自选行置顶与搜索结果点击去向（`main.test.ts`）、提醒的判定接线（`alerts-wiring.test.ts`，单独一个文件：它要一张干净的模块表，跑在 `main.test.ts` 后面时旧实例的定时器还活着），都用假搜索 / 报价真起一遍对应的窗口脚本（`main.ts` 起的是 `#app`，与 `index.html` 一致）；`mcp/*.test.mjs` 与 `scripts/*.test.mjs` 是脚本测试，文件头用 `// @vitest-environment node` 切到 node 环境（含一条真的起进程 + 假本地桥的端到端用例）。没有 lint 或格式化配置。
 - Vite 开发端口固定为 1420（`strictPort`），和 `tauri.conf.json` 里的 `devUrl` 一一对应，两边必须一起改。
 
 ## 目录结构
 
 ```
 index.html      → src/main.ts   + src/style.css   主面板（托盘弹出的 360×560 无边框小窗，label="main"）
-settings.html   → src/prefs.ts  + src/prefs.css   设置窗口（仪表盘 / 行情 / MCP / 关于 / 设置五页，label="settings"，由 Rust 动态创建）
+settings.html   → src/prefs.ts  + src/prefs.css   设置窗口（仪表盘 / 行情 / 提醒 / MCP / 关于 / 设置六页，label="settings"，由 Rust 动态创建）
 ticker.html     → src/ticker.ts + src/ticker.css  Windows 悬浮行情条（label="ticker"，由 set_ticker 动态创建/关闭）
 src/api.ts       东方财富接口：批量报价 ulist.np、分时 trends2、搜索 suggest（JSONP）、板块列表 clist（fetchBoards）、secid/市场/交易时段工具函数
 src/settings.ts  Settings 类型、默认值、localStorage 读写和旧数据迁移、跨窗口同步、主题和涨跌配色、自选分组的纯函数（`itemsOf` / `moveInView` / `normalizeGroups` 等）
@@ -40,6 +40,8 @@ src/boards.ts    板块榜单的纯逻辑：口径文案（行业 / 概念 / 地
 src/search.ts    搜索结果的点击去向：点行本身（hitAction：预览 / 跳过去）与跳过去时该看哪个分组（filterToReveal），主面板用
 src/mcp.ts       MCP 命令处理：看 / 搜 / 增删自选、置顶、排序、分组增删改排序的纯逻辑（搜索与报价由调用方注入）；另含设置面板 MCP 卡片用的 clientConfig()（客户端配置 JSON）与 bridgeState()（状态文案）
 src/update.ts    版本更新的纯逻辑：状态文案、下载进度、提示条文案（联网在 Rust 侧）
+src/alerts.ts    提醒的判定与通知文案：条件判定、边缘触发 + 重新武装、冷却、通知标题与正文、触发状态的存取（纯逻辑，联网与送达在调用方）
+src/notify.ts    系统通知的薄封装：权限查询 / 请求、发一条、点通知的回调（浏览器预览里全部降级为空操作）
 src-tauri/src/lib.rs   托盘、弹窗定位（按鼠标位置把面板夹进工作区，见「坑」）、失焦自动收起、单实例、所有 #[tauri::command]
 src-tauri/src/bridge.rs    MCP 本地桥：回环地址上的 HTTP 入口、令牌与连接信息文件、命令转发与回信配对；info() 给设置面板报桥状态与脚本路径
 src-tauri/src/update.rs    应用内更新：检查 / 下载 / 安装 / 重启，待装的更新存在模块级静态量里（命令壳在 lib.rs）
@@ -48,6 +50,7 @@ src-tauri/capabilities/default.json   三个窗口（main / settings / ticker）
 mcp/lib.mjs + mcp/stockbar-mcp.mjs   零依赖 MCP 服务（stdio JSON-RPC）：工具表、端点发现、把命令转给本地桥（`pnpm mcp` 可直接跑）
 scripts/latest-json.mjs   把各平台的更新包与签名整理成 latest.json 片段并合并成一份（CI 用；纯逻辑有单测）
 docs/adr/0001-boards-are-read-only.md   架构决定：板块只做只读榜单，不进自选（为什么板块不是标的）
+docs/adr/0002-alerts-fire-on-crossing.md   架构决定：提醒是「穿越那一刻通知一次」，含冷却与跨交易日重新武装
 ```
 
 Vite 是多页面打包，入口在 `vite.config.ts` 的 `rollupOptions.input` 里，新增页面要在这里登记。
@@ -92,6 +95,15 @@ Vite 是多页面打包，入口在 `vite.config.ts` 的 `rollupOptions.input` �
 - 待装的更新存在 `update.rs` 的 `PENDING` 静态量里：检查到的那份 `Update` 带着下载地址与签名，装的时候必须用同一个，所以别把它丢掉；安装失败会放回去，重试不必重新检查。
 - 「该打开哪一页」有两套路径：设置窗口已经开着就直接发 `goto-page` 事件；窗口是新建的就先把页名存进 `PENDING_PAGE`，等前端挂好监听调 `settings_ready` 来取（建窗那一刻发事件会早于前端注册监听）。
 
+**提醒与通知（价格 / 涨跌幅规则）**
+- 一条提醒 = 一只标的 + 一个条件 + 一个阈值（`Alert`：`kind` 是 `price` / `pct`，`op` 是 `above` / `below`，`value` 一律存正数，方向由 `op` 表达）。规则存在 `Settings.alerts` 里（走 `saveSettings()` 广播，两个窗口同源一份），**触发状态不存在设置里**：那是每轮判定都会动的东西，单独放在 `localStorage["stockbar.alerts.state.v1"]`（与「悬浮行情条位置」同一个理由），由 `src/alerts.ts` 的 `loadAlertStates()` / `saveAlertStates()` 读写。
+- 标的范围是「自选 + 大盘指数」（都是标的）。板块**不给提醒**（ADR 0001：板块不是标的）；界面上能选的只有 `INDICES` 与 `watchlist`，`normalizeAlerts()` 在载入时把指向别处的规则一起丢掉。删自选要连带删它的规则（`dropAlertsOf()`，界面、MCP 的 `watchlist.remove` 两处都调），否则会留下「没人可盯」的孤儿规则。
+- 判定挂在主面板 `refresh()` 里（拿到这一轮报价之后、`renderAll()` 之前）：应用在跑就一直在判，与面板是否弹出无关。**只在交易时段判** —— `can` 回调按 `sessionStatus(regionOf(secid), now, quote.time)` 逐只判断（港股、美股各按自己的时段与节假日推断），收盘后价格不再动、凭残留的最后一笔成交触发没有意义。
+- 语义是**穿越那一刻通知一次**（见 `docs/adr/0002-alerts-fire-on-crossing.md`）：`evaluateAlerts()` 返回这一轮要发的通知与更新后的状态，`fired` 为真的规则持续成立期间不再重复；条件回到不成立才重新武装。另有两条防轰炸：同一规则两次通知至少隔 `ALERT_COOLDOWN_MS`（10 分钟，冷却期内穿越只标记不发），以及按**交易日键**重新武装（键取报价自带的最后成交时间，用 UTC 取日期 —— 港股、美股在本地时区里会跨到第二天）。这轮没拿到某只标的的报价时**跳过它、状态不动**，别把数据断档当成「条件解除了」。
+- 送达是系统通知（`tauri-plugin-notification`，macOS 通知中心 / Windows Toast），封装在 `src/notify.ts`：发之前先查权限（没授权的通知会被系统直接丢掉），权限只在提醒页「请求权限」与「打开总开关」时请求，别在每轮判定里问。通知标题是「标的名 + 条件」，正文给现价与当日涨跌幅（`alertText()`）。浏览器预览（`pnpm dev`）里全部是空操作，所以 `alerts-wiring.test.ts` 验的是状态存储而不是通知。
+- 点通知要把主面板叫出来并定位：主面板起床就挂 `onNotifyTap()`（桌面上只有挂过 `onAction` 监听的窗口才收得到点击），回调里把 `pendingReveal` 记成那只标的、再调 Rust 的 `open_panel`（`lib.rs`，与点托盘图标同一套 `show_panel()` 定位），真正滚动发生在 `panel-shown` 之后 —— 那个事件会先把视图切回自选并刷新，早一步滚就白滚。自选走 `jumpToRow()`（切分组、滚过去、展开分时），大盘指数只滚到顶部卡片。通知编号只在这次运行里有效（`notifyTarget` 映射，最多留 64 条），重启后点旧通知只是把面板叫出来。
+- 设置窗口的「提醒」页（`prefs.ts`，`data-page="alerts"`，排在「行情」之后）只管把规则写进设置：总开关（`alertsOn`）、权限状态 + 请求、测试通知、新建表单（标的 / 条件 / 方向 / 阈值）、规则列表（逐条启停与删除）。列表与标的下拉的 DOM 按「内容键」重建（`alertListKey` / `alertTargetsKey`，键里带标的名 —— 报价到了名字才会从代码变成名称），别每轮 `render()` 都整段重画。
+
 **菜单栏（托盘）**
 - 托盘只由主面板 `main.ts` 的 `updateTray()` 负责更新。它用签名 `traySig` 去重，内容没变就不推送。设置窗口只用 `bar.ts` 做本地预览，不调用托盘命令。
 - 三种样式：`text` 调 `set_tray_text`（默认图标加文字）；`compact` 用 canvas 按 2x、高 36px 绘制 PNG，再调 `set_tray_image`；`icon` 只显示图标。
@@ -108,7 +120,7 @@ Vite 是多页面打包，入口在 `vite.config.ts` 的 `rollupOptions.input` �
 - 主面板在 Windows 关闭系统阴影、窗口放大到 376×576，由 CSS 留 8px 边距自己画圆角阴影；WebView2 的 `backdrop-filter` 透不到桌面，所以 `.win .panel` 用不透明底。设置窗口在 Windows 用原生标题栏（不渲染仿红绿灯和拖动区，标题栏深浅随应用主题 `setTheme`），整体是 Windows 11「设置」风格：`prefs.css` 末尾的 `.win` 区块（导航强调色竖条、每项一张 4px 圆角卡片、带「开/关」文字的开关、方形复选框），预览是桌面 + 任务栏 + 悬浮行情条（内容与真实行情条共用 `bar.ts` 的 `tickerHtml`）。开发时 `pnpm dev` 打开 `settings.html?win` 可在浏览器预览 Windows 布局。
 
 **Rust 侧**
-- 前端可以调用的命令：`set_tray_text`、`set_tray_image`、`set_tray_ticker`、`open_settings`（可带 `page` 指定打开哪一页）、`set_ticker`、`fit_ticker`、`ticker_click`、`hide_window`、`quit_app`、`mcp_ready`、`mcp_reply`、`mcp_info`、`mcp_set_enabled`、`qq_board_rank`（腾讯板块排行，见「板块榜单」）、`app_version`、`update_check`、`update_install`、`update_restart`、`open_release_page`、`settings_ready`。新增命令要同时改两处：在 `generate_handler![]` 里注册，前端通过 `call()` 调用（要拿到失败原因就用 `callOrThrow()`）。MCP、更新与板块排行的命令壳写在 `lib.rs`、实现放在 `bridge.rs` / `update.rs` / `qqrank.rs`（原因见「坑」）。
+- 前端可以调用的命令：`set_tray_text`、`set_tray_image`、`set_tray_ticker`、`open_settings`（可带 `page` 指定打开哪一页）、`set_ticker`、`fit_ticker`、`ticker_click`、`hide_window`、`open_panel`（点提醒通知后把主面板叫出来）、`quit_app`、`mcp_ready`、`mcp_reply`、`mcp_info`、`mcp_set_enabled`、`qq_board_rank`（腾讯板块排行，见「板块榜单」）、`app_version`、`update_check`、`update_install`、`update_restart`、`open_release_page`、`settings_ready`。新增命令要同时改两处：在 `generate_handler![]` 里注册，前端通过 `call()` 调用（要拿到失败原因就用 `callOrThrow()`）。MCP、更新与板块排行的命令壳写在 `lib.rs`、实现放在 `bridge.rs` / `update.rs` / `qqrank.rs`（原因见「坑」）。
 - **建窗口的命令必须是 `async fn`**：Windows 上 WebView2 不会在事件回调里重入，同步命令跑在 IPC 回调里，`WebviewWindowBuilder::build()` 会让 `create_controller` 永远等不到完成回调，整个应用卡死（tauri 文档的 Known issues / wry#583）。`open_settings`（建设置窗口）与 `set_ticker`（建行情条）因此都是 async，真正的建窗逻辑放在同步的 `open_settings_window()` / `set_ticker_window()` 里，由 async 命令（跑在 tokio 线程池上）调用；单实例回调里也是另起线程调 `open_settings_window()`，不在窗口过程里建窗。
 - 用 `LAST_HIDDEN_MS` 做防抖（macOS 250ms，Windows/Linux 400ms，见 `TOGGLE_DEBOUNCE_MS`），实现"再点一次图标收起小窗"（点击时窗口会先失焦、自动隐藏）。改托盘点击逻辑时不要破坏这个行为。
 - 主面板每次弹出都会收到 `panel-shown` 事件，触发入场动画并立即刷新数据。

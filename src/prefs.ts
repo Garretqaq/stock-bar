@@ -31,6 +31,8 @@ import {
   addToBar,
   applyAppearance,
   applySearchAction,
+  clampAlertValue,
+  dropAlertsOf,
   dropGroupOf,
   groupNameOf,
   groupTargets,
@@ -41,6 +43,7 @@ import {
   loadSettings,
   moveItem,
   moveRowInView,
+  newAlert,
   newGroup,
   onSettingsChange,
   pinCount,
@@ -52,6 +55,9 @@ import {
   setGroup,
   setGroupMany,
   unpinItem,
+  type Alert,
+  type AlertKind,
+  type AlertOp,
   type BarField,
   type BarStyle,
   type SearchAction,
@@ -63,14 +69,16 @@ import appIcon from "./assets/app-icon.png";
 // 与 Rust 托盘共用同一张图标（src-tauri/icons/tray.png），避免两份图不一致
 import trayIcon from "../src-tauri/icons/tray.png";
 import { openMenu, type MenuItem } from "./ctxmenu";
+import { alertLabel } from "./alerts";
+import { notifyGranted, requestNotify, sendNotify } from "./notify";
 
 // ---------- 状态 ----------
 
 let S: Settings = loadSettings();
 const quotes = new Map<string, Quote>();
-type Page = "dashboard" | "market" | "mcp" | "about" | "settings";
+type Page = "dashboard" | "market" | "alerts" | "mcp" | "about" | "settings";
 /** 页名白名单：Rust 侧也会过滤（见 lib.rs 的 PAGES），这里再挡一次，免得切到空白页 */
-const PAGES: Page[] = ["dashboard", "market", "mcp", "about", "settings"];
+const PAGES: Page[] = ["dashboard", "market", "alerts", "mcp", "about", "settings"];
 const isPage = (p: unknown): p is Page => PAGES.includes(p as Page);
 const HASH = location.hash.replace("#", "");
 let page: Page = isPage(HASH) ? HASH : "dashboard";
@@ -116,6 +124,7 @@ const I = {
   grip: `<svg class="fill" viewBox="0 0 24 24"><circle cx="9" cy="5" r="1.5"/><circle cx="15" cy="5" r="1.5"/><circle cx="9" cy="12" r="1.5"/><circle cx="15" cy="12" r="1.5"/><circle cx="9" cy="19" r="1.5"/><circle cx="15" cy="19" r="1.5"/></svg>`,
   pin: `<svg viewBox="0 0 24 24"><path d="M12 17v5M9 3h6l-1 7 4 3v2H6v-2l4-3z"/></svg>`,
   about: `<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11.2v5.3"/><circle cx="12" cy="7.9" r="1" class="fill"/></svg>`,
+  bell: `<svg viewBox="0 0 24 24"><path d="M18 8.6a6 6 0 0 0-12 0c0 4.4-2 5.6-2 5.6h16s-2-1.2-2-5.6z"/><path d="M10.3 18a2 2 0 0 0 3.4 0"/></svg>`,
   top: `<svg viewBox="0 0 24 24"><path d="M4.5 4.5h15M12 20V9M7.5 13L12 8.5l4.5 4.5"/></svg>`,
   /** 取消置顶：与 top 同一个顶部横线、箭头朝下（右键菜单里与「置顶」成对出现） */
   topOff: `<svg viewBox="0 0 24 24"><path d="M4.5 4.5h15M12 9v11M7.5 15l4.5 4.5 4.5-4.5"/></svg>`,
@@ -199,6 +208,7 @@ root.innerHTML = `
     <nav class="nav">
       <button class="nav-item" data-page="dashboard"><span class="nav-ico blue">${I.dashboard}</span>仪表盘</button>
       <button class="nav-item" data-page="market"><span class="nav-ico green">${I.market}</span>行情</button>
+      <button class="nav-item" data-page="alerts"><span class="nav-ico red">${I.bell}</span>提醒</button>
       <button class="nav-item" data-page="mcp"><span class="nav-ico violet">${I.mcp}</span>MCP</button>
       <button class="nav-item" data-page="settings"><span class="nav-ico gray">${I.settings}</span>设置</button>
       <button class="nav-item" data-page="about"><span class="nav-ico orange">${I.about}</span>关于</button>
@@ -297,6 +307,55 @@ root.innerHTML = `
           <button class="sel-act danger" data-act="delete">删除自选</button>
           <button class="sel-act ghost" data-act="clear">取消选择</button>
         </div>
+      </div>
+    </section>
+
+    <section class="page" data-page="alerts">
+      <header class="page-head">
+        <h1>提醒</h1>
+        <p>按标的设条件：价格上穿或跌破某个价位，或当日涨跌幅涨超、跌超某个百分比。条件成立的那一刻用系统通知提醒一次，条件回落后再成立才会再提醒。</p>
+      </header>
+
+      <h2 class="group-title">通知<span class="title-hint">走系统通知，应用收在菜单栏里也会弹</span></h2>
+      <div class="group">
+        <div class="row">
+          <div class="row-label">启用提醒<small>关掉后规则全部保留，但一条通知都不发</small></div>
+          <label class="switch"><input type="checkbox" id="alerts-on" /><i></i></label>
+        </div>
+        <div class="row">
+          <div class="row-label">系统通知权限<small>没授权时系统会直接丢掉通知</small></div>
+          <div class="alert-acts">
+            <span class="alert-perm" id="alerts-perm">检测中…</span>
+            <button class="sec-btn" id="alerts-perm-btn">请求权限</button>
+            <button class="sec-btn" id="alerts-test">测试通知</button>
+          </div>
+        </div>
+      </div>
+
+      <h2 class="group-title">新建规则</h2>
+      <div class="group">
+        <div class="alert-form">
+          <select id="alert-target" class="alert-select" aria-label="标的"></select>
+          <div class="seg" id="seg-alert-kind" style="--n:2">
+            <button data-v="price">价格</button>
+            <button data-v="pct">涨跌幅</button>
+          </div>
+          <div class="seg" id="seg-alert-op" style="--n:2">
+            <button data-v="below" id="alert-op-below">跌破</button>
+            <button data-v="above" id="alert-op-above">上穿</button>
+          </div>
+          <label class="alert-input-wrap">
+            <input id="alert-value" type="number" inputmode="decimal" min="0" step="0.01" placeholder="阈值" autocomplete="off" spellcheck="false" />
+            <b id="alert-unit">元</b>
+          </label>
+          <button class="sec-btn primary" id="alert-add">添加规则</button>
+        </div>
+        <div class="alert-hint" id="alert-form-hint"></div>
+      </div>
+
+      <h2 class="group-title">规则 <span class="count" id="alert-count"></span><span class="title-hint">一只标的可以有多条规则</span></h2>
+      <div class="group">
+        <div class="alert-list" id="alert-list"></div>
       </div>
     </section>
 
@@ -474,6 +533,7 @@ function render(): void {
   setSeg("#seg-source", S.source);
   $<HTMLElement>("#source-active").textContent = activeFor(S);
   renderMcp();
+  renderAlerts();
   renderAbout();
 }
 
@@ -785,6 +845,7 @@ function deleteStocks(ids: string[]): void {
   S.pins = S.pins.filter((id) => !del.includes(id));
   S.bar = S.bar.filter((id) => !del.includes(id));
   S.groupOf = dropGroupOf(S.groupOf, del);
+  S.alerts = dropAlertsOf(S.alerts, del);
   if (del.includes(S.selected)) S.selected = S.watchlist[0] ?? INDICES[0].secid;
   del.forEach((id) => picked.delete(id));
   lastPick = -1;
@@ -1337,6 +1398,201 @@ async function openAbout(): Promise<void> {
   await initAbout();
   if (!upBusy && (upPhase === "idle" || upPhase === "error")) void checkUpdate();
 }
+// ---------- 提醒页 ----------
+// 规则的判定在 alerts.ts（纯逻辑），由主面板按刷新循环判定并弹通知；
+// 这一页只管把规则写进设置、以及把「系统通知到底能不能发」说清楚。
+
+/** 新建表单里正在填的那条：条件种类与方向（不写进设置，点「添加规则」才落） */
+let alertDraftKind: AlertKind = "price";
+let alertDraftOp: AlertOp = "below";
+let alertPermOk = false;
+let alertPermBusy = false;
+/** 两处列表的重建键：内容没变就不重画（每几秒一轮轮询都会走到 render()） */
+let alertListKey = "";
+let alertTargetsKey = "";
+
+/** 条件与方向的文案：价格说上穿 / 跌破，涨跌幅说涨超 / 跌超 */
+const OP_NAME: Record<AlertKind, Record<AlertOp, string>> = {
+  price: { above: "上穿", below: "跌破" },
+  pct: { above: "涨超", below: "跌超" },
+};
+
+/** 标的名：报价里认得出就用它，否则退回内置指数名 / 代码 */
+function alertName(secid: string): string {
+  return quotes.get(secid)?.name ?? INDICES.find((it) => it.secid === secid)?.name ?? codeOf(secid);
+}
+
+/** 能设提醒的标的：大盘指数 + 自选（板块不是标的，见 docs/adr/0001） */
+function alertTargetIds(): string[] {
+  return [...INDICES.map((it) => it.secid), ...S.watchlist];
+}
+
+function renderAlertTargets(): void {
+  const sel = $<HTMLSelectElement>("#alert-target");
+  const keep = sel.value;
+  sel.innerHTML =
+    `<optgroup label="大盘指数">` +
+    INDICES.map((it) => `<option value="${esc(it.secid)}">${esc(it.name)}</option>`).join("") +
+    `</optgroup>` +
+    (S.watchlist.length
+      ? `<optgroup label="自选">` +
+        S.watchlist
+          .map((id) => `<option value="${esc(id)}">${esc(alertName(id))}（${esc(codeOf(id))}）</option>`)
+          .join("") +
+        `</optgroup>`
+      : "");
+  // 刚才选的那只还在就留住，否则回落到第一项（别让表单指着一只已经删掉的标的）
+  const ids = alertTargetIds();
+  sel.value = ids.includes(keep) ? keep : (ids[0] ?? "");
+}
+
+function alertRow(a: Alert): string {
+  return `
+    <div class="alert-item${a.enabled ? "" : " off"}" data-id="${esc(a.id)}">
+      <div class="alert-main">
+        <b>${esc(alertName(a.secid))}</b>
+        <small><span class="tag">${marketTag(a.secid)}</span>${esc(codeOf(a.secid))}</small>
+      </div>
+      <span class="alert-cond">${esc(alertLabel(a))}</span>
+      <label class="switch"><input type="checkbox" data-on="${esc(a.id)}"${a.enabled ? " checked" : ""} aria-label="启用 ${esc(alertLabel(a))}" /><i></i></label>
+      <button class="alert-del" data-del="${esc(a.id)}" title="删除规则" aria-label="删除规则">
+        <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>`;
+}
+
+function renderAlertList(): void {
+  $("#alert-count").textContent = S.alerts.length ? `${S.alerts.length} 条` : "";
+  $("#alert-list").innerHTML = S.alerts.length
+    ? S.alerts.map((a) => alertRow(a)).join("")
+    : `<div class="alert-empty">还没有规则。选一只标的、填个阈值，触及条件时会收到一条系统通知。</div>`;
+}
+
+function renderAlertPerm(): void {
+  const el = $("#alerts-perm");
+  el.textContent = alertPermOk ? "已授权" : "未授权";
+  el.classList.toggle("on", alertPermOk);
+  $<HTMLButtonElement>("#alerts-perm-btn").disabled = alertPermOk || alertPermBusy;
+  $<HTMLButtonElement>("#alerts-test").disabled = !alertPermOk;
+}
+
+/** 问一次权限状态：进页面、刚发过通知时都可能需要重问（用户也可能刚去系统设置里改过） */
+async function syncAlertPerm(): Promise<void> {
+  alertPermOk = await notifyGranted();
+  renderAlertPerm();
+}
+
+/** 请求授权：第一次会弹系统窗；之后系统不再问，只能去系统设置里改 */
+async function askAlertPerm(): Promise<void> {
+  if (alertPermBusy) return;
+  alertPermBusy = true;
+  renderAlertPerm();
+  alertPermOk = await requestNotify();
+  alertPermBusy = false;
+  renderAlertPerm();
+  if (!alertPermOk) alertFormHint("系统没有给出权限：去「系统设置 › 通知 › StockBar」里打开");
+}
+
+function alertFormHint(text: string): void {
+  $("#alert-form-hint").textContent = text;
+}
+
+function addAlert(): void {
+  const secid = $<HTMLSelectElement>("#alert-target").value;
+  if (!secid) return alertFormHint("先选一只标的");
+  const raw = Number($<HTMLInputElement>("#alert-value").value);
+  const value = clampAlertValue(alertDraftKind, raw);
+  if (value == null) {
+    return alertFormHint(
+      alertDraftKind === "pct" ? "填 0.1 到 50 之间的百分比" : "填一个大于 0 的价格",
+    );
+  }
+  const a = newAlert(S.alerts, secid, alertDraftKind, alertDraftOp, value);
+  S.alerts = [...S.alerts, a];
+  $<HTMLInputElement>("#alert-value").value = "";
+  commit();
+  alertFormHint(`已添加：${alertName(secid)} ${alertLabel(a)}`);
+}
+
+function renderAlerts(): void {
+  $<HTMLInputElement>("#alerts-on").checked = S.alertsOn;
+  // 条件种类与方向的按钮文案跟着种类走；单价 / 百分比只差一个单位与步进
+  setSeg("#seg-alert-kind", alertDraftKind);
+  setSeg("#seg-alert-op", alertDraftOp);
+  $("#alert-op-below").textContent = OP_NAME[alertDraftKind].below;
+  $("#alert-op-above").textContent = OP_NAME[alertDraftKind].above;
+  $("#alert-unit").textContent = alertDraftKind === "pct" ? "%" : "元";
+  $<HTMLInputElement>("#alert-value").step = alertDraftKind === "pct" ? "0.1" : "0.01";
+  renderAlertPerm();
+
+  // 标的名来自报价，报价还没到之前是代码 —— 名字进了键，所以名字到了会重画一次
+  const targetsKey = alertTargetIds()
+    .map((id) => `${id}:${alertName(id)}`)
+    .join("|");
+  if (targetsKey !== alertTargetsKey) {
+    alertTargetsKey = targetsKey;
+    renderAlertTargets();
+  }
+  const listKey = `${S.alerts.map((a) => `${a.id}:${a.kind}:${a.op}:${a.value}:${a.enabled ? 1 : 0}:${alertName(a.secid)}`).join(",")}|${targetsKey}`;
+  if (listKey !== alertListKey) {
+    alertListKey = listKey;
+    renderAlertList();
+  }
+}
+// 提醒页的交互：总开关、权限、测试通知、新建表单、规则列表
+$("#alerts-on").addEventListener("change", (e) => {
+  S.alertsOn = (e.target as HTMLInputElement).checked;
+  commit();
+  // 刚打开提醒却还没授权，通知会一条都发不出去：顺手问一次
+  if (S.alertsOn && !alertPermOk) void askAlertPerm();
+});
+
+$("#alerts-perm-btn").addEventListener("click", () => void askAlertPerm());
+
+$("#alerts-test").addEventListener("click", async () => {
+  const ok = await sendNotify("StockBar 测试通知", "能看到这条，就说明提醒能送到你面前。");
+  alertFormHint(ok ? "已发出一条测试通知" : "没发出去：系统通知权限没给");
+  void syncAlertPerm();
+});
+
+$("#seg-alert-kind").addEventListener("click", (e) => {
+  const v = (e.target as HTMLElement).closest<HTMLElement>("button")?.dataset.v as AlertKind | undefined;
+  if (!v || v === alertDraftKind) return;
+  alertDraftKind = v;
+  $<HTMLInputElement>("#alert-value").value = "";
+  alertFormHint("");
+  renderAlerts();
+});
+
+$("#seg-alert-op").addEventListener("click", (e) => {
+  const v = (e.target as HTMLElement).closest<HTMLElement>("button")?.dataset.v as AlertOp | undefined;
+  if (!v || v === alertDraftOp) return;
+  alertDraftOp = v;
+  renderAlerts();
+});
+
+$("#alert-add").addEventListener("click", addAlert);
+$<HTMLInputElement>("#alert-value").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") addAlert();
+});
+
+// 规则列表：勾选即启用 / 停用，× 删除（两条都改同一份 S.alerts，存完广播给主面板）
+$("#alert-list").addEventListener("change", (e) => {
+  const input = e.target as HTMLInputElement;
+  const id = input.dataset.on;
+  if (!id) return;
+  S.alerts = S.alerts.map((a) => (a.id === id ? { ...a, enabled: input.checked } : a));
+  commit();
+});
+
+$("#alert-list").addEventListener("click", (e) => {
+  const id = (e.target as HTMLElement).closest<HTMLElement>(".alert-del")?.dataset.del;
+  if (!id) return;
+  const gone = S.alerts.find((a) => a.id === id);
+  S.alerts = S.alerts.filter((a) => a.id !== id);
+  commit();
+  if (gone) alertFormHint(`已删除：${alertName(gone.secid)} ${alertLabel(gone)}`);
+});
 // ---------- 交互 ----------
 
 function go(p: Page): void {
@@ -1347,6 +1603,8 @@ function go(p: Page): void {
   // 切到 MCP 页时顺手问一次桥状态：应用刚起来那会儿可能还没就绪
   // 切到 MCP 页时顺手问一次桥状态：应用刚起来那会儿可能还没就绪
   if (p === "mcp") void loadMcp();
+  // 切到「提醒」页时问一次通知权限：用户可能刚在系统设置里改过，界面上的状态要跟着走
+  if (p === "alerts") void syncAlertPerm();
   // 切到「关于」页时顺手查一次更新，用户点进来多半就是想看有没有新版
   // 切到「关于」页时顺手查一次更新，用户点进来多半就是想看有没有新版
   if (p === "about") void openAbout();
@@ -1736,6 +1994,8 @@ onSettingsChange((next) => {
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => renderPreview());
 
 render();
+// 提醒页要靠系统通知的权限状态：启动就问一次（浏览器预览里它恒为未授权，正好看见提示）
+void syncAlertPerm();
 tickClock();
 window.setInterval(tickClock, 15_000);
 void poll();

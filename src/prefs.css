@@ -1956,6 +1956,197 @@ svg .fill {
   margin-top: 11px;
 }
 
+/* ---------- 提醒页 ---------- */
+
+/* 侧栏图标：提醒用暖红（只是与其它几页的色相分开，没有「危险」的意思） */
+.nav-ico.red {
+  background: linear-gradient(145deg, #ff8a7a, #f2443a);
+}
+
+/* 「系统通知权限」那一行：状态字 + 两颗按钮挤在右侧 */
+.alert-acts {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+.alert-acts .sec-btn,
+.alert-form .sec-btn {
+  margin-left: 0;
+}
+.sec-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.sec-btn.primary {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+.alert-perm {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--sub);
+}
+.alert-perm::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.6;
+}
+.alert-perm.on {
+  color: var(--accent);
+}
+.alert-perm.on::before {
+  opacity: 1;
+}
+
+/* 新建规则：标的下拉 / 条件 / 方向 / 阈值 / 添加，一行放不下就换行 */
+.alert-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+}
+.alert-form .seg {
+  flex: 0 0 auto;
+}
+.alert-select {
+  flex: 1 1 180px;
+  min-width: 0;
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 12.5px;
+  color: var(--text);
+  background: var(--group);
+  appearance: none;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease;
+}
+.alert-select:focus-visible {
+  outline: 0;
+  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 30%, transparent);
+}
+.alert-input-wrap {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 1 110px;
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--group);
+}
+.alert-input-wrap:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 30%, transparent);
+}
+.alert-input-wrap input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  font-size: 12.5px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.alert-input-wrap input::-webkit-outer-spin-button,
+.alert-input-wrap input::-webkit-inner-spin-button {
+  appearance: none;
+  margin: 0;
+}
+.alert-input-wrap b {
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--sub);
+}
+/* 表单下面的即时反馈（加好了 / 删掉了 / 为什么不行）；空着不占高度 */
+.alert-hint {
+  padding: 0 12px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--sub);
+}
+.alert-hint:not(:empty) {
+  padding-bottom: 10px;
+}
+
+/* 规则列表：名称 + 条件 + 启停开关 + 删除 */
+.alert-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+}
+.alert-item + .alert-item {
+  border-top: 1px solid var(--line);
+}
+.alert-item.off .alert-main,
+.alert-item.off .alert-cond {
+  opacity: 0.45;
+}
+.alert-main {
+  flex: 1;
+  min-width: 0;
+}
+.alert-main b {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.alert-main small {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 1px;
+  font-size: 11.5px;
+  color: var(--sub);
+}
+.alert-cond {
+  flex: 0 0 auto;
+  font-size: 12.5px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.alert-del {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  color: var(--sub);
+  transition: color 0.16s ease, background 0.16s ease;
+}
+.alert-del svg {
+  width: 12px;
+  height: 12px;
+  stroke-width: 2;
+}
+.alert-del:hover {
+  color: #ff453a;
+  background: color-mix(in srgb, #ff453a 12%, transparent);
+}
+.alert-empty {
+  padding: 14px 12px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--sub);
+}
+
 /* ==================== Windows：Windows 11「设置」风格 ==================== */
 /* 只在 <html class="win"> 下生效。原生标题栏（不仿红绿灯、无自绘拖动区）、
    左侧导航用强调色竖条标记选中项、每项设置一张 4px 圆角卡片、Segoe UI Variable、

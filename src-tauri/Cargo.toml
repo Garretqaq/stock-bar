@@ -22,6 +22,8 @@ tiny_http = "0.12"
 # 桥的令牌：用系统随机源，别自己拼（本来就在依赖树里）
 getrandom = "0.3"
 tauri-plugin-updater = "2"
+# 系统通知（提醒触发时发一条）：macOS 走通知中心，Windows 走 Toast
+tauri-plugin-notification = "2"
 # 腾讯板块排行的取数：那条接口不返回 CORS 头，webview 里 fetch 读不到，改由 Rust 侧取
 # （见 src/qqrank.rs）。与 tauri-plugin-updater 用同一份 reqwest，features 对齐 ——
 # 别引入第二套 TLS 后端（rustls 的 provider 由插件那侧打开 ring 提供）

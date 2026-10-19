@@ -13,7 +13,8 @@
     "mcp": "node mcp/stockbar-mcp.mjs"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2.12.0"
+    "@tauri-apps/api": "^2.12.0",
+    "@tauri-apps/plugin-notification": "^2.7.0"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.12.0",

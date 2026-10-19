@@ -53,6 +53,10 @@ export interface Settings {
   mcp: boolean;
   /** 启动时自动检查更新（只在发现新版本时提示，不会自己下载安装） */
   updateCheck: boolean;
+  /** 提醒规则（有序：设置页按这个顺序列）；标的只能是自选与大盘指数 */
+  alerts: Alert[];
+  /** 提醒总开关：关掉后规则全部保留，但一条通知都不发 */
+  alertsOn: boolean;
 }
 
 export const STORE_KEY = "stockbar.settings.v1";
@@ -407,6 +411,99 @@ export function normalizeGroups(
   }
   return { groups: out, groupOf: map };
 }
+// ---------- 提醒 ----------
+// 提醒是「规则」，不是另一份行情：一条规则 = 一只标的 + 一个条件 + 一个阈值。
+// 判定与通知文案在 alerts.ts，这里只管把规则存在设置里、并挡住写坏的与没人可盯的。
+
+/** 提醒规则的条件：价格阈值 / 当日涨跌幅阈值 */
+export type AlertKind = "price" | "pct";
+/** 提醒方向：above = 上穿（涨到 / 涨超），below = 跌破（跌到 / 跌超） */
+export type AlertOp = "above" | "below";
+
+/** 一条提醒规则：条件成立时通知一次；同一只标的可以有多条 */
+export interface Alert {
+  /** 稳定短 id（与分组同形：aN，与标的无关，改名换股都不影响） */
+  id: string;
+  /** 标的 secid：只能取自选与大盘指数（板块不是标的，见 docs/adr/0001） */
+  secid: string;
+  kind: AlertKind;
+  op: AlertOp;
+  /** 阈值：价格按元、涨跌幅按百分数，**都存正数**，方向由 op 决定 */
+  value: number;
+  /** 关掉的规则留着但不评估（重新打开不会补发通知） */
+  enabled: boolean;
+}
+
+/** 涨跌幅阈值的上限：A 股涨跌停最宽的北交所是 30%，50% 足够宽容 */
+export const ALERT_PCT_MAX = 50;
+/** 价格阈值上限：别让误输入的一串数字把规则存成天文数字 */
+export const ALERT_PRICE_MAX = 100000;
+/** 规则 id 的合法形状：合法才能安全地拼进选择器与存储 */
+export const ALERT_ID_RE = /^[A-Za-z0-9_-]{1,24}$/;
+
+/**
+ * 阈值规整：涨跌幅留一位小数（0.1% 步进），价格留四位（基金净值有四位）；
+ * 负数按绝对值算 —— 方向由 op 表达，「跌超 5%」的阈值就是 5。
+ */
+export function normalizeAlertValue(kind: AlertKind, v: number): number {
+  const n = Math.abs(Number.isFinite(v) ? v : 0);
+  const step = kind === "pct" ? 10 : 1e4;
+  const max = kind === "pct" ? ALERT_PCT_MAX : ALERT_PRICE_MAX;
+  return Math.min(Math.round(n * step) / step, max);
+}
+
+/** 阈值是否可用（太小、非数都不行）：可用返回规整后的值，否则 null。表单与载入共用 */
+export function clampAlertValue(kind: AlertKind, v: number): number | null {
+  if (!Number.isFinite(v)) return null;
+  const n = normalizeAlertValue(kind, v);
+  return n >= (kind === "pct" ? 0.1 : 0.001) ? n : null;
+}
+
+/** 新建一条规则：id 取已有 aN 里最大的 N +1（与 newGroup 同一套编号） */
+export function newAlert(
+  list: Alert[],
+  secid: string,
+  kind: AlertKind = "price",
+  op: AlertOp = "below",
+  value = 0,
+): Alert {
+  let n = 1;
+  for (const a of list) {
+    const m = /^a(\d+)$/.exec(a.id);
+    if (m) n = Math.max(n, Number(m[1]) + 1);
+  }
+  return { id: `a${n}`, secid, kind, op, value, enabled: true };
+}
+
+/** 删自选时连带删掉它的提醒：不留「没人可盯」的孤儿规则（与分组归属回落同理） */
+export function dropAlertsOf(alerts: Alert[], ids: string[]): Alert[] {
+  return alerts.filter((a) => !ids.includes(a.secid));
+}
+
+/**
+ * 载入 / 外部写入后的规整：丢掉形状不对的规则，以及标的已经不在自选、也不是大盘指数的那几条。
+ * 规则的启用状态、顺序都保留 —— 顺序就是设置页的显示顺序。
+ */
+export function normalizeAlerts(list: string[], indices: string[], raw: unknown): Alert[] {
+  const out: Alert[] = [];
+  const seen = new Set<string>();
+  for (const item of Array.isArray(raw) ? raw : []) {
+    const a = item as Partial<Alert> | null | undefined;
+    const id = typeof a?.id === "string" ? a.id : "";
+    const secid = typeof a?.secid === "string" ? a.secid : "";
+    const kind = a?.kind;
+    const op = a?.op;
+    if (!ALERT_ID_RE.test(id) || seen.has(id)) continue;
+    if (kind !== "price" && kind !== "pct") continue;
+    if (op !== "above" && op !== "below") continue;
+    const value = typeof a?.value === "number" ? clampAlertValue(kind, a.value) : null;
+    if (value == null) continue;
+    if (!list.includes(secid) && !indices.includes(secid)) continue;
+    seen.add(id);
+    out.push({ id, secid, kind, op, value, enabled: a?.enabled !== false });
+  }
+  return out;
+}
 
 export const DEFAULTS: Settings = {
   groups: [],
@@ -425,6 +522,8 @@ export const DEFAULTS: Settings = {
   ticker: true,
   mcp: false,
   updateCheck: true,
+  alerts: [],
+  alertsOn: true,
 };
 
 export function loadSettings(): Settings {
@@ -458,6 +557,10 @@ export function loadSettings(): Settings {
   if (typeof raw.mcp !== "boolean") s.mcp = DEFAULTS.mcp;
   // 更新检查开关：旧数据没有这个字段（或写坏了）时按默认「开启」，别让用户收不到新版本
   if (typeof raw.updateCheck !== "boolean") s.updateCheck = DEFAULTS.updateCheck;
+  // 提醒：标的只能是自选与大盘指数（板块不是标的）；旧数据没有这个字段（或写坏了）时按「没有规则」，
+  // 总开关同理按默认「开」—— 没有规则时它开着也一条都发不出来
+  s.alerts = normalizeAlerts(s.watchlist, INDICES.map((it) => it.secid), raw.alerts);
+  if (typeof raw.alertsOn !== "boolean") s.alertsOn = DEFAULTS.alertsOn;
   return s;
 }
 

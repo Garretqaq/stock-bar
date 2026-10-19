@@ -12,6 +12,7 @@ import {
   BAR_MAX,
   INDICES,
   UNGROUPED,
+  dropAlertsOf,
   dropGroupOf,
   groupNameOf,
   isIndex,
@@ -386,10 +387,14 @@ async function prepareRemove(s: Settings, args: Record<string, unknown>, deps: M
       pins: rest(latest.pins),
       groupOf: dropGroupOf(latest.groupOf, present),
       bar: rest(latest.bar),
+      alerts: dropAlertsOf(latest.alerts, present),
     };
     const fromBar = present.filter((id) => latest.bar.includes(id));
     const parts = [`已从自选移除：${present.map(lab).join("、")}`];
     if (fromBar.length) parts.push(`同时移出菜单栏显示：${fromBar.map(lab).join("、")}`);
+    // 提醒跟着自选走：删了自选，它的规则就没有标的可盯了（与界面里的删除同一条规则）
+    const lost = latest.alerts.filter((a) => present.includes(a.secid)).length;
+    if (lost) parts.push(`同时删除它的提醒 ${lost} 条`);
     if (present.length < ids.length) parts.push(`已不在自选里，跳过：${ids.filter((id) => !present.includes(id)).map(lab).join("、")}`);
     return changed(next, parts.join(" · "));
   });

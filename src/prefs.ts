@@ -159,7 +159,7 @@ const SOURCES: { v: DataSource; name: string }[] = [
   { v: "tencent", name: "腾讯" },
 ];
 
-/** 「当前使用」那行显示的来源名字 */
+/** 数据源的中文名（「数据来源」行的小字里用） */
 const SOURCE_NAME: Record<string, string> = {
   eastmoney: "东方财富",
   tencent: "腾讯",
@@ -446,14 +446,10 @@ root.innerHTML = `
           </div>
         </div>
         <div class="row">
-          <div class="row-label">数据来源<small>源站故障时自动切换</small></div>
+          <div class="row-label">数据来源<small id="source-hint">源站故障时自动切换</small></div>
           <div class="seg" id="seg-source" style="--n:${SOURCES.length}">
             ${SOURCES.map((o) => `<button data-v="${o.v}">${o.name}</button>`).join("")}
           </div>
-        </div>
-        <div class="row" id="row-source-active">
-          <div class="row-label">当前使用</div>
-          <span class="row-value" id="source-active">--</span>
         </div>
       </div>
     </section>
@@ -531,7 +527,7 @@ function render(): void {
   setSeg("#seg-color", S.greenUp ? "green" : "red");
   setSeg("#seg-interval", String(S.interval));
   setSeg("#seg-source", S.source);
-  $<HTMLElement>("#source-active").textContent = activeFor(S);
+  $<HTMLElement>("#source-hint").textContent = sourceHint(S);
   renderMcp();
   renderAlerts();
   renderAbout();
@@ -545,10 +541,12 @@ function setSeg(sel: string, v: string): void {
   btns.forEach((b, j) => b.classList.toggle("on", j === i));
 }
 
-/** 「当前使用」的文案：手动选源就直接显示，自动模式显示实际命中的那家 */
-function activeFor(s: Settings): string {
-  if (s.source !== "auto") return SOURCE_NAME[s.source] ?? "--";
-  return activeSource ? `${SOURCE_NAME[activeSource] ?? activeSource}（自动）` : "自动选择中…";
+/** 「数据来源」行的小字：说清切换策略，自动模式下带上实际命中的那家 */
+function sourceHint(s: Settings): string {
+  if (s.source !== "auto") return "只用这一家，不自动切换";
+  return activeSource
+    ? `源站故障时自动切换 · 当前用${SOURCE_NAME[activeSource] ?? activeSource}`
+    : "源站故障时自动切换";
 }
 
 /** 大盘指数卡片：点卡片即勾选（多选）；右上角图钉是「已在菜单栏」的只读标识 */
@@ -1968,7 +1966,7 @@ async function poll(): Promise<void> {
     renderMarket();
     renderOrder();
     renderPreview();
-    $<HTMLElement>("#source-active").textContent = activeFor(S);
+    $<HTMLElement>("#source-hint").textContent = sourceHint(S);
   } catch {
     /* 预览数据失败不影响设置 */
   }

@@ -261,3 +261,59 @@ describe("设置窗口：自选行的拖动把手", () => {
     expect(row("0.300750").classList.contains("pinned")).toBe(true);
   });
 });
+
+describe("设置窗口：提醒页的标的选择框", () => {
+  // 自选里只有茅台，报价是空的 —— 名字退回代码，正好用来验「代码也能搜」
+  beforeEach(async () => {
+    await boot();
+    document.querySelector<HTMLElement>('.nav-item[data-page="alerts"]')!.click();
+  });
+
+  const input = () => document.querySelector<HTMLInputElement>("#alert-target")!;
+  const items = () => [...document.querySelectorAll<HTMLElement>(".alert-pick-item")];
+  const listHidden = () => document.querySelector<HTMLElement>("#alert-pick-list")!.hidden;
+  const savedAlerts = () => (saved().alerts ?? []) as { secid: string; kind: string; op: string; value: number }[];
+
+  /** 聚焦 → 摊开列表（等价于用户点一下输入框） */
+  const open = () => input().dispatchEvent(new Event("focus"));
+  /** 往输入框里敲字 */
+  const type = (kw: string) => {
+    input().value = kw;
+    input().dispatchEvent(new Event("input"));
+  };
+
+  it("聚焦就摊开全部可选标的：三只大盘指数 + 自选（板块不是标的，不在这里）", () => {
+    open();
+    expect(listHidden()).toBe(false);
+    expect(items()).toHaveLength(4);
+    expect(items()[0].textContent).toContain("上证指数");
+  });
+
+  it("打字即筛（代码也认），点一项就选中并收起，输入框显示「名称（代码）」", () => {
+    open();
+    type("6005");
+    expect(items()).toHaveLength(1);
+    items()[0].click();
+    expect(input().value).toBe("600519（600519）");
+    expect(listHidden()).toBe(true);
+  });
+
+  it("搜不到时给一句说明，不是空白一片", () => {
+    open();
+    type("没有这只");
+    expect(items()).toHaveLength(0);
+    expect(document.querySelector(".alert-pick-empty")!.textContent).toContain("没有匹配的标的");
+  });
+
+  it("选好标的、填上阈值，添加规则写进设置", () => {
+    open();
+    type("6005");
+    items()[0].click();
+    document.querySelector<HTMLInputElement>("#alert-value")!.value = "1500";
+    document.querySelector<HTMLElement>("#alert-add")!.click();
+    expect(savedAlerts()).toHaveLength(1);
+    expect(savedAlerts()[0]).toMatchObject({ secid: "1.600519", kind: "price", op: "below", value: 1500 });
+    // 加完清空阈值，方便接着加下一条
+    expect(document.querySelector<HTMLInputElement>("#alert-value")!.value).toBe("");
+  });
+});

@@ -70,7 +70,7 @@ import appIcon from "./assets/app-icon.png";
 import trayIcon from "../src-tauri/icons/tray.png";
 import { openMenu, type MenuItem } from "./ctxmenu";
 import { alertLabel } from "./alerts";
-import { notifyGranted, requestNotify, sendNotify } from "./notify";
+import { openNotifySettings, sendNotify } from "./notify";
 
 // ---------- 状态 ----------
 
@@ -323,11 +323,10 @@ root.innerHTML = `
           <label class="switch"><input type="checkbox" id="alerts-on" /><i></i></label>
         </div>
         <div class="row">
-          <div class="row-label">系统通知权限<small>没授权时系统会直接丢掉通知</small></div>
+          <div class="row-label">系统通知<small>发不出去时先去系统设置里允许 StockBar 通知</small></div>
           <div class="alert-acts">
-            <span class="alert-perm" id="alerts-perm">检测中…</span>
-            <button class="sec-btn" id="alerts-perm-btn">请求权限</button>
-            <button class="sec-btn" id="alerts-test">测试通知</button>
+            <button class="sec-btn" id="alerts-settings">打开通知设置</button>
+            <button class="sec-btn primary" id="alerts-test">发一条试试</button>
           </div>
         </div>
       </div>
@@ -335,7 +334,10 @@ root.innerHTML = `
       <h2 class="group-title">新建规则</h2>
       <div class="group">
         <div class="alert-form">
-          <select id="alert-target" class="alert-select" aria-label="标的"></select>
+          <div class="alert-pick">
+            <input id="alert-target" class="alert-pick-input" placeholder="搜索标的：名称 / 代码" autocomplete="off" spellcheck="false" aria-label="标的" />
+            <div class="alert-pick-list" id="alert-pick-list" hidden></div>
+          </div>
           <div class="seg" id="seg-alert-kind" style="--n:2">
             <button data-v="price">价格</button>
             <button data-v="pct">涨跌幅</button>
@@ -1400,14 +1402,17 @@ async function openAbout(): Promise<void> {
 // 规则的判定在 alerts.ts（纯逻辑），由主面板按刷新循环判定并弹通知；
 // 这一页只管把规则写进设置、以及把「系统通知到底能不能发」说清楚。
 
-/** 新建表单里正在填的那条：条件种类与方向（不写进设置，点「添加规则」才落） */
+/** 新建表单里正在填的那条：标的、条件种类、方向（都不写进设置，点「添加规则」才落） */
 let alertDraftKind: AlertKind = "price";
 let alertDraftOp: AlertOp = "below";
-let alertPermOk = false;
-let alertPermBusy = false;
-/** 两处列表的重建键：内容没变就不重画（每几秒一轮轮询都会走到 render()） */
+/** 选中的标的（secid）；输入框显示的是它的「名称（代码）」 */
+let alertTarget = "";
+/** 标的选择框：展开状态、键盘高亮到第几项、以及**输入框里的搜索词** */
+let alertPickOpen = false;
+let alertPickAt = 0;
+/** 搜索词单独记一份：输入框显示的是选中那只的名字，一聚焦就会把词清空、列出全部 */
+let alertPickQuery = "";
 let alertListKey = "";
-let alertTargetsKey = "";
 
 /** 条件与方向的文案：价格说上穿 / 跌破，涨跌幅说涨超 / 跌超 */
 const OP_NAME: Record<AlertKind, Record<AlertOp, string>> = {
@@ -1420,28 +1425,77 @@ function alertName(secid: string): string {
   return quotes.get(secid)?.name ?? INDICES.find((it) => it.secid === secid)?.name ?? codeOf(secid);
 }
 
-/** 能设提醒的标的：大盘指数 + 自选（板块不是标的，见 docs/adr/0001） */
-function alertTargetIds(): string[] {
-  return [...INDICES.map((it) => it.secid), ...S.watchlist];
+/** 标的选择框里的一项：显示「名称（代码）」，搜索按名称 / 代码 / secid 都认 */
+interface AlertPick {
+  secid: string;
+  label: string;
+  hint: string;
+  kw: string;
 }
 
-function renderAlertTargets(): void {
-  const sel = $<HTMLSelectElement>("#alert-target");
-  const keep = sel.value;
-  sel.innerHTML =
-    `<optgroup label="大盘指数">` +
-    INDICES.map((it) => `<option value="${esc(it.secid)}">${esc(it.name)}</option>`).join("") +
-    `</optgroup>` +
-    (S.watchlist.length
-      ? `<optgroup label="自选">` +
-        S.watchlist
-          .map((id) => `<option value="${esc(id)}">${esc(alertName(id))}（${esc(codeOf(id))}）</option>`)
-          .join("") +
-        `</optgroup>`
-      : "");
-  // 刚才选的那只还在就留住，否则回落到第一项（别让表单指着一只已经删掉的标的）
-  const ids = alertTargetIds();
-  sel.value = ids.includes(keep) ? keep : (ids[0] ?? "");
+function alertPickList(): AlertPick[] {
+  const pick = (secid: string, name: string, hint: string): AlertPick => {
+    const code = codeOf(secid);
+    return { secid, label: `${name}（${code}）`, hint, kw: `${name} ${code} ${secid}`.toLowerCase() };
+  };
+  return [
+    ...INDICES.map((it) => pick(it.secid, it.name, "大盘指数")),
+    ...S.watchlist.map((id) => pick(id, alertName(id), marketTag(id))),
+  ];
+}
+
+/** 按输入框里的词筛一遍；空词就是全部 */
+function filterAlertPicks(kw: string): AlertPick[] {
+  const q = kw.trim().toLowerCase();
+  const all = alertPickList();
+  return q ? all.filter((p) => p.kw.includes(q)) : all;
+}
+
+/** 画选择框里的列表（收起时清空，别留一堆看不见的行） */
+function renderAlertPick(): void {
+  const box = $("#alert-pick-list");
+  if (!alertPickOpen) {
+    box.hidden = true;
+    box.innerHTML = "";
+    return;
+  }
+  const items = filterAlertPicks(alertPickQuery);
+  alertPickAt = Math.min(Math.max(alertPickAt, 0), Math.max(items.length - 1, 0));
+  box.innerHTML = items.length
+    ? items
+        .map(
+          (p, i) =>
+            `<button type="button" class="alert-pick-item${i === alertPickAt ? " on" : ""}" data-id="${esc(p.secid)}">` +
+            `<b>${esc(p.label)}</b><small>${esc(p.hint)}</small></button>`,
+        )
+        .join("")
+    : `<div class="alert-pick-empty">没有匹配的标的。提醒只能设在自选与大盘指数上。</div>`;
+  box.hidden = false;
+  box.querySelector<HTMLElement>(".alert-pick-item.on")?.scrollIntoView?.({ block: "nearest" });
+}
+
+function openAlertPick(): void {
+  if (alertPickOpen) return;
+  alertPickOpen = true;
+  alertPickAt = 0;
+  // 刚摊开时列出全部：输入框里那只是「当前选中」，不该当成搜索词把自己的候选筛没了
+  alertPickQuery = "";
+  renderAlertPick();
+}
+
+function closeAlertPick(): void {
+  if (!alertPickOpen) return;
+  alertPickOpen = false;
+  renderAlertPick();
+}
+
+/** 选中一只标的：输入框换成「名称（代码）」，选择框收起 */
+function pickAlertTarget(secid: string): void {
+  const hit = alertPickList().find((p) => p.secid === secid);
+  if (!hit) return;
+  alertTarget = secid;
+  $<HTMLInputElement>("#alert-target").value = hit.label;
+  closeAlertPick();
 }
 
 function alertRow(a: Alert): string {
@@ -1466,29 +1520,16 @@ function renderAlertList(): void {
     : `<div class="alert-empty">还没有规则。选一只标的、填个阈值，触及条件时会收到一条系统通知。</div>`;
 }
 
-function renderAlertPerm(): void {
-  const el = $("#alerts-perm");
-  el.textContent = alertPermOk ? "已授权" : "未授权";
-  el.classList.toggle("on", alertPermOk);
-  $<HTMLButtonElement>("#alerts-perm-btn").disabled = alertPermOk || alertPermBusy;
-  $<HTMLButtonElement>("#alerts-test").disabled = !alertPermOk;
-}
-
-/** 问一次权限状态：进页面、刚发过通知时都可能需要重问（用户也可能刚去系统设置里改过） */
-async function syncAlertPerm(): Promise<void> {
-  alertPermOk = await notifyGranted();
-  renderAlertPerm();
-}
-
-/** 请求授权：第一次会弹系统窗；之后系统不再问，只能去系统设置里改 */
-async function askAlertPerm(): Promise<void> {
-  if (alertPermBusy) return;
-  alertPermBusy = true;
-  renderAlertPerm();
-  alertPermOk = await requestNotify();
-  alertPermBusy = false;
-  renderAlertPerm();
-  if (!alertPermOk) alertFormHint("系统没有给出权限：去「系统设置 › 通知 › StockBar」里打开");
+/**
+ * 发一条测试通知，把真实结果说出来。
+ * 别指望「先查权限再发」：macOS 的 WKWebView 里 `Notification.permission` 恒为 granted，
+ * 而 Web 通知这条路本身是死的（见 notify.ts 的说明），所以只有真发一次才知道通不通。
+ */
+async function testNotify(): Promise<void> {
+  const r = await sendNotify("StockBar 测试通知", "能看到这条，就说明提醒能送到你面前。");
+  alertFormHint(
+    r.ok ? "已发出一条测试通知" : `没发出去：${r.error} —— 去「打开通知设置」里允许 StockBar 通知`,
+  );
 }
 
 function alertFormHint(text: string): void {
@@ -1496,7 +1537,7 @@ function alertFormHint(text: string): void {
 }
 
 function addAlert(): void {
-  const secid = $<HTMLSelectElement>("#alert-target").value;
+  const secid = alertTarget;
   if (!secid) return alertFormHint("先选一只标的");
   const raw = Number($<HTMLInputElement>("#alert-value").value);
   const value = clampAlertValue(alertDraftKind, raw);
@@ -1520,38 +1561,85 @@ function renderAlerts(): void {
   $("#alert-op-below").textContent = OP_NAME[alertDraftKind].below;
   $("#alert-op-above").textContent = OP_NAME[alertDraftKind].above;
   $("#alert-unit").textContent = alertDraftKind === "pct" ? "%" : "元";
+  // 选中的那只还在就留着，否则回落到第一只（别让表单指着一只已经删掉的标的）。
+  // 选择框展开着时不动输入框：用户可能正在里面敲搜索词。
   $<HTMLInputElement>("#alert-value").step = alertDraftKind === "pct" ? "0.1" : "0.01";
-  renderAlertPerm();
 
-  // 标的名来自报价，报价还没到之前是代码 —— 名字进了键，所以名字到了会重画一次
-  const targetsKey = alertTargetIds()
-    .map((id) => `${id}:${alertName(id)}`)
-    .join("|");
-  if (targetsKey !== alertTargetsKey) {
-    alertTargetsKey = targetsKey;
-    renderAlertTargets();
+  // 选中的那只还在就留着，否则回落到第一只（别让表单指着一只已经删掉的标的）。
+  // 选择框展开着时不动输入框：用户可能正在里面敲搜索词。
+  const picks = alertPickList();
+  const kept = picks.find((p) => p.secid === alertTarget);
+  if (!kept) {
+    alertTarget = picks[0]?.secid ?? "";
+    if (!alertPickOpen) $<HTMLInputElement>("#alert-target").value = picks[0]?.label ?? "";
+  } else if (!alertPickOpen) {
+    // 名字要到报价回来才会从代码变成名称，所以每轮都对一次（值没变就别动，免得打断输入）
+    const input = $<HTMLInputElement>("#alert-target");
+    if (input.value !== kept.label && document.activeElement !== input) input.value = kept.label;
   }
+  // 标的名来自报价 —— 名字进了键，名字到了规则列表也要跟着重画一次
+  const targetsKey = picks.map((p) => `${p.secid}:${p.label}`).join("|");
+  if (alertPickOpen) renderAlertPick();
   const listKey = `${S.alerts.map((a) => `${a.id}:${a.kind}:${a.op}:${a.value}:${a.enabled ? 1 : 0}:${alertName(a.secid)}`).join(",")}|${targetsKey}`;
   if (listKey !== alertListKey) {
     alertListKey = listKey;
     renderAlertList();
   }
 }
+// 标的选择框：输入即筛（名称 / 代码），↑↓ 选、回车落、Esc 收起；点别处也收起
+const targetInput = $<HTMLInputElement>("#alert-target");
+
+targetInput.addEventListener("focus", () => {
+  // 聚焦时全选：想搜别的标的时直接敲，不用先删掉框里的名字
+  targetInput.select();
+  openAlertPick();
+});
+
+targetInput.addEventListener("input", () => {
+  alertPickQuery = targetInput.value;
+  alertPickAt = 0;
+  alertPickOpen = true;
+  renderAlertPick();
+});
+
+targetInput.addEventListener("keydown", (e) => {
+  const items = filterAlertPicks(alertPickQuery);
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    e.preventDefault();
+    if (!alertPickOpen) return openAlertPick();
+    const step = e.key === "ArrowDown" ? 1 : -1;
+    alertPickAt = Math.min(Math.max(alertPickAt + step, 0), Math.max(items.length - 1, 0));
+    renderAlertPick();
+  } else if (e.key === "Enter") {
+    if (!alertPickOpen) return;
+    e.preventDefault();
+    const hit = items[alertPickAt];
+    if (hit) pickAlertTarget(hit.secid);
+  } else if (e.key === "Escape") {
+    // 收起并恢复成「当前选中那只」：别把搜了一半的词留在框里
+    e.stopPropagation();
+    targetInput.value = alertPickList().find((p) => p.secid === alertTarget)?.label ?? "";
+    closeAlertPick();
+  }
+});
+
+$("#alert-pick-list").addEventListener("click", (e) => {
+  const secid = (e.target as HTMLElement).closest<HTMLElement>(".alert-pick-item")?.dataset.id;
+  if (secid) pickAlertTarget(secid);
+});
+
+document.addEventListener("click", (e) => {
+  if (!(e.target as HTMLElement).closest(".alert-pick")) closeAlertPick();
+});
+
 // 提醒页的交互：总开关、权限、测试通知、新建表单、规则列表
 $("#alerts-on").addEventListener("change", (e) => {
   S.alertsOn = (e.target as HTMLInputElement).checked;
   commit();
-  // 刚打开提醒却还没授权，通知会一条都发不出去：顺手问一次
-  if (S.alertsOn && !alertPermOk) void askAlertPerm();
 });
 
-$("#alerts-perm-btn").addEventListener("click", () => void askAlertPerm());
-
-$("#alerts-test").addEventListener("click", async () => {
-  const ok = await sendNotify("StockBar 测试通知", "能看到这条，就说明提醒能送到你面前。");
-  alertFormHint(ok ? "已发出一条测试通知" : "没发出去：系统通知权限没给");
-  void syncAlertPerm();
-});
+$("#alerts-settings").addEventListener("click", () => void openNotifySettings());
+$("#alerts-test").addEventListener("click", () => void testNotify());
 
 $("#seg-alert-kind").addEventListener("click", (e) => {
   const v = (e.target as HTMLElement).closest<HTMLElement>("button")?.dataset.v as AlertKind | undefined;
@@ -1601,8 +1689,6 @@ function go(p: Page): void {
   // 切到 MCP 页时顺手问一次桥状态：应用刚起来那会儿可能还没就绪
   // 切到 MCP 页时顺手问一次桥状态：应用刚起来那会儿可能还没就绪
   if (p === "mcp") void loadMcp();
-  // 切到「提醒」页时问一次通知权限：用户可能刚在系统设置里改过，界面上的状态要跟着走
-  if (p === "alerts") void syncAlertPerm();
   // 切到「关于」页时顺手查一次更新，用户点进来多半就是想看有没有新版
   // 切到「关于」页时顺手查一次更新，用户点进来多半就是想看有没有新版
   if (p === "about") void openAbout();
@@ -1992,8 +2078,6 @@ onSettingsChange((next) => {
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => renderPreview());
 
 render();
-// 提醒页要靠系统通知的权限状态：启动就问一次（浏览器预览里它恒为未授权，正好看见提示）
-void syncAlertPerm();
 tickClock();
 window.setInterval(tickClock, 15_000);
 void poll();

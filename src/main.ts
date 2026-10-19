@@ -2016,9 +2016,12 @@ function renderAll(): void {
 // 判定挂在 refresh() 里：应用在跑（哪怕面板收着）就一直在判，不依赖面板是否打开。
 // 规则存在设置里（跨窗口同步），触发状态单独存一份（见 alerts.ts 的 loadAlertStates）。
 
-/** 通知编号 → 标的：点通知时用它认出是哪一只。编号只在这一轮运行里有效，重启后点旧通知只会把面板叫出来 */
-const notifyTarget = new Map<number, string>();
-let notifySeq = 1;
+/**
+ * 通知标题 → 标的：点通知时靠它认出是哪一只。
+ * 走的是 Rust 那条投递通道，它不带编号，所以按标题认（标题里是「标的名 + 条件」）。
+ * 映射只在这次运行里有效，重启后点旧通知只会把面板叫出来。
+ */
+const notifyTarget = new Map<string, string>();
 
 /** 拿这一轮的报价判一次提醒：条件刚成立的发系统通知，状态写回那份单独的存储 */
 async function checkAlerts(): Promise<void> {
@@ -2031,13 +2034,10 @@ async function checkAlerts(): Promise<void> {
   if (res.changed) saveAlertStates(res.states, S.alerts);
   for (const f of res.fires) {
     const { title, body } = alertText(f.quote.name || nameOf(f.alert.secid), f.alert, f.quote);
-    const id = notifySeq++;
-    notifyTarget.set(id, f.alert.secid);
-    // 42 亿是插件要求的 32 位整数上限，离它还很远；编号回绕时把老映射一起丢掉
-    if (notifySeq > 1_000_000) notifySeq = 1;
+    notifyTarget.set(title, f.alert.secid);
     while (notifyTarget.size > 64) notifyTarget.delete(notifyTarget.keys().next().value!);
-    // 没授权（或被系统丢掉）就不留这条映射，免得点开时对不上号
-    if (!(await sendNotify(title, body, id))) notifyTarget.delete(id);
+    // 没发出去（系统不让）就不留这条映射，免得点开时对不上号
+    if (!(await sendNotify(title, body)).ok) notifyTarget.delete(title);
   }
 }
 
@@ -2056,8 +2056,8 @@ function revealInstrument(id: string): void {
 }
 
 // 点通知：把面板叫出来并定位过去（Windows 上只在通知还在屏幕上时才报点击）
-void onNotifyTap((id) => {
-  pendingReveal = id == null ? null : (notifyTarget.get(id) ?? null);
+void onNotifyTap((title) => {
+  pendingReveal = title == null ? null : (notifyTarget.get(title) ?? null);
   void call("open_panel");
 });
 

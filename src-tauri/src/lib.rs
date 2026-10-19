@@ -578,6 +578,38 @@ fn open_panel(app: AppHandle) {
     }
 }
 
+/// 发一条系统通知（提醒用）。
+///
+/// 别改用前端的 `sendNotification`：桌面端那个实现是 `new window.Notification(...)`，
+/// 而 WKWebView 根本不实现 Web 通知 —— 发出去石沉大海，权限还会被报成「已授权」
+/// （`window.Notification.permission` 在 WebKit 里恒为 granted）。走 Rust 这条才是原生的。
+#[tauri::command]
+fn notify_send(app: AppHandle, title: String, body: String) -> Result<(), String> {
+    use tauri_plugin_notification::NotificationExt;
+    app.notification()
+        .builder()
+        .title(title)
+        .body(body)
+        .show()
+        .map_err(|e| e.to_string())
+}
+
+/// 打开系统的「通知」设置页：通知发不出去时，用户接下来要去的就那一页
+#[tauri::command]
+fn open_notification_settings() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    let target = "x-apple.systempreferences:com.apple.Notifications-Settings.extension";
+    #[cfg(target_os = "windows")]
+    let target = "ms-settings:notifications";
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    let target = "settings://notifications";
+    #[cfg(target_os = "windows")]
+    let spawned = std::process::Command::new("cmd").args(["/C", "start", "", target]).spawn();
+    #[cfg(not(target_os = "windows"))]
+    let spawned = std::process::Command::new("open").arg(target).spawn();
+    spawned.map(|_| ()).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn quit_app(app: AppHandle) {
     app.exit(0);
@@ -682,6 +714,8 @@ pub fn run() {
             ticker_click,
             hide_window,
             open_panel,
+            notify_send,
+            open_notification_settings,
             quit_app,
             mcp_ready,
             mcp_reply,

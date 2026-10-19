@@ -1983,29 +1983,6 @@ svg .fill {
   border-color: color-mix(in srgb, var(--accent) 45%, transparent);
   background: color-mix(in srgb, var(--accent) 10%, transparent);
 }
-.alert-perm {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--sub);
-}
-.alert-perm::before {
-  content: "";
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: currentColor;
-  opacity: 0.6;
-}
-.alert-perm.on {
-  color: var(--accent);
-}
-.alert-perm.on::before {
-  opacity: 1;
-}
-
 /* 新建规则：标的下拉 / 条件 / 方向 / 阈值 / 添加，一行放不下就换行 */
 .alert-form {
   display: flex;
@@ -2017,23 +1994,78 @@ svg .fill {
 .alert-form .seg {
   flex: 0 0 auto;
 }
-.alert-select {
+/* 标的选择框：可输入筛选的下拉（原生 select 打不了字，这里自己画一个） */
+.alert-pick {
+  position: relative;
   flex: 1 1 180px;
   min-width: 0;
+}
+.alert-pick-input {
+  width: 100%;
   height: 30px;
-  padding: 0 8px;
+  padding: 0 26px 0 8px;
   border: 1px solid var(--line);
   border-radius: 8px;
   font-size: 12.5px;
   color: var(--text);
-  background: var(--group);
-  appearance: none;
+  background-color: var(--group);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238e8e93' stroke-width='2' stroke-linecap='round'%3E%3Ccircle cx='11' cy='11' r='6.5'/%3E%3Cpath d='M20 20l-4.2-4.2'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  background-size: 12px 12px;
   transition: border-color 0.16s ease, box-shadow 0.16s ease;
 }
-.alert-select:focus-visible {
+.alert-pick-input::placeholder {
+  color: var(--sub);
+}
+.alert-pick-input:focus {
   outline: 0;
   border-color: color-mix(in srgb, var(--accent) 50%, transparent);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 30%, transparent);
+}
+.alert-pick-list {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 4px);
+  right: 0;
+  left: 0;
+  max-height: 216px;
+  overflow: auto;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--group);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.18);
+}
+.alert-pick-item {
+  display: flex;
+  width: 100%;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 7px;
+  font-size: 12.5px;
+  text-align: left;
+  color: var(--text);
+  transition: background 0.12s ease;
+}
+.alert-pick-item b {
+  font-weight: 500;
+}
+.alert-pick-item small {
+  margin-left: auto;
+  font-size: 10.5px;
+  color: var(--sub);
+}
+.alert-pick-item:hover,
+.alert-pick-item.on {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.alert-pick-empty {
+  padding: 10px 8px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--sub);
 }
 .alert-input-wrap {
   display: flex;

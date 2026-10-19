@@ -1,49 +1,48 @@
-// 系统通知（macOS 通知中心 / Windows 通知）。浏览器里 `pnpm dev` 预览时全部降级为空操作。
+// 系统通知（macOS 通知中心 / Windows Toast）。浏览器里 `pnpm dev` 预览时全部降级为空操作。
 //
-// 两点与插件行为有关，别当成多余：① 桌面上只有挂过 onAction 监听的窗口才能收到点击，
-// 所以主面板一起床就挂（见 main.ts）；② 没有授权的通知会被系统直接丢掉，发之前先问一句。
+// 为什么不用插件的 JS API：桌面端 `sendNotification()` 的实现就是 `new window.Notification(...)`，
+// 而 macOS 的 WKWebView 不实现 Web 通知 —— 发出去毫无反应，`Notification.permission` 还恒报
+// granted（于是界面显示「已授权」却一条都收不到）。投递因此走 Rust 侧的 `notify_send`
+// （见 lib.rs），它用的是插件在原生侧的通道，并且会把「发没发出去」的原因带回来。
 
-import { IN_TAURI } from "./tauri";
+import { IN_TAURI, call, callOrThrow } from "./tauri";
 
-/** 当前是否已授权（不弹系统窗） */
-export async function notifyGranted(): Promise<boolean> {
-  if (!IN_TAURI) return false;
-  const m = await import("@tauri-apps/plugin-notification");
-  return m.isPermissionGranted().catch(() => false);
+export interface NotifyResult {
+  ok: boolean;
+  /** 没发出去时的原因（系统拒绝、应用没被允许等），直接显示给用户 */
+  error?: string;
 }
 
-/** 请求授权：第一次会弹系统窗；返回是否已经可以发通知 */
-export async function requestNotify(): Promise<boolean> {
-  if (!IN_TAURI) return false;
-  const m = await import("@tauri-apps/plugin-notification");
-  return m.requestPermission().then((s) => s === "granted", () => false);
-}
-
-/**
- * 发一条通知。没授权就什么都不做并返回 false —— 调用方据此决定要不要提示用户去授权，
- * 而不是让一条通知静默消失。
- */
-export async function sendNotify(title: string, body: string, id?: number): Promise<boolean> {
-  if (!IN_TAURI) return false;
-  const m = await import("@tauri-apps/plugin-notification");
-  if (!(await notifyGranted())) return false;
+/** 发一条系统通知；不抛异常，失败原因放在返回值里 */
+export async function sendNotify(title: string, body: string): Promise<NotifyResult> {
+  if (!IN_TAURI) return { ok: false, error: "浏览器预览没有系统通知" };
   try {
-    m.sendNotification({ title, body, id });
-    return true;
-  } catch {
-    return false;
+    await callOrThrow("notify_send", { title, body });
+    return { ok: true };
+  } catch (e) {
+    const s = typeof e === "string" ? e : e instanceof Error ? e.message : String(e);
+    return { ok: false, error: s.trim() || "系统拒绝了这条通知" };
   }
 }
 
-/** 监听「点了通知」：回调带上通知编号（平台没报就传 null） */
-export async function onNotifyTap(fn: (id: number | null) => void): Promise<void> {
+/** 打开系统的「通知」设置页：通知发不出去时，用户接下来要去的就是那一页 */
+export async function openNotifySettings(): Promise<void> {
+  await call("open_notification_settings");
+}
+
+/**
+ * 监听「点了通知」：回调带上通知标题。
+ * Rust 那条通道没有编号可用，标题里已经带着标的与条件（见 alerts.ts 的 alertText），
+ * 调用方按标题认标的即可。
+ */
+export async function onNotifyTap(fn: (title: string | null) => void): Promise<void> {
   if (!IN_TAURI) return;
   const m = await import("@tauri-apps/plugin-notification");
   await m
     .onAction((e) => {
       // 桌面上点通知本身报的是 "tap"；自定义按钮（第一版没做）另有 actionId
       if (e.actionId !== "tap") return;
-      fn(e.notification?.id ?? null);
+      fn(e.notification?.title ?? null);
     })
     .catch(() => {});
 }

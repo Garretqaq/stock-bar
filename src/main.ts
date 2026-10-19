@@ -57,6 +57,7 @@ import { sortable } from "./sortable";
 import { openMenu, type MenuItem } from "./ctxmenu";
 import { McpError, prepareCommand } from "./mcp";
 import { hintText, type UpdateInfo } from "./update";
+import { filterToReveal, hitAction } from "./search";
 
 let S: Settings = loadSettings();
 const save = () => saveSettings(S);
@@ -76,8 +77,17 @@ let timer: number | undefined;
 // ---------- 分时图展开 ----------
 /** 当前展开分时图的 secid，null 表示收起 */
 let trendOpen: string | null = null;
+/**
+ * 搜索面板里就地预览的 secid（还没加入自选的标的）：与列表的 trendOpen 各管各的，
+ * 同一个 `.trend` 面板与同一份 trendCache 两处共用
+ */
+let previewOpen: string | null = null;
 const trendCache = new Map<string, TrendData>();
-let trendSeq = 0;
+/**
+ * 每个标的自己的分时请求序号：列表里展开的和搜索里预览的可能同时在拉，
+ * 共用一个计数器会让后发的那份把先发的那份判成过期
+ */
+const trendSeq = new Map<string, number>();
 let refreshing = false;
 /** 全市场成交额（沪+深+北），只在指数分时面板展开时拉取 */
 let market: MarketAmount | null = null;
@@ -148,9 +158,15 @@ function fmtAmountDiff(v: number | null | undefined): string {
   return `${sign}${yi >= 1000 ? Math.round(yi) : yi.toFixed(1)}亿`;
 }
 
+/**
+ * 搜索结果的名称：还没加入自选的标的既不在 quotes 里，也没有板块名，
+ * 预览面板的标题与列表里的「跳过去」都要认得出它（报价回来之后以报价为准）
+ */
+const searchNames = new Map<string, string>();
+
 function nameOf(secid: string): string {
   // 板块不在 quotes 里（它没有报价），名字来自板块列表
-  return quotes.get(secid)?.name ?? boardNames.get(secid) ?? codeOf(secid);
+  return quotes.get(secid)?.name ?? boardNames.get(secid) ?? searchNames.get(secid) ?? codeOf(secid);
 }
 
 type Dir = "up" | "down" | "flat";
@@ -275,6 +291,15 @@ async function toggleTrend(id: string): Promise<void> {
   await Promise.all([loadTrend(id, !had), isIndex(id) ? loadMarket() : Promise.resolve()]);
 }
 
+/**
+ * 只展开、不收起：搜索结果里「跳到那一行」用 —— 已经展开的那一下不该把它收回去，
+ * 只把选中项与展开状态对齐（点击行本身在本面板里是 toggle）。
+ */
+async function openTrend(id: string): Promise<void> {
+  if (trendOpen !== id) return toggleTrend(id);
+  syncOpenState();
+}
+
 /** 只切换 class、不重建 DOM，保证展开/收起过渡完整播放 */
 function syncOpenState(): void {
   document.querySelectorAll<HTMLElement>(".idx, #list .row, #boards .row").forEach((el) => {
@@ -284,25 +309,32 @@ function syncOpenState(): void {
   renderTrendPanels();
 }
 
+/**
+ * 分时图当前该展开的标的：列表里展开的那只，或搜索面板里预览的那只。
+ * 两处共用同一个 `.trend` 面板与同一份 trendCache，所以判断也只用这一处。
+ */
+const isTrendOpen = (id: string): boolean => id === trendOpen || id === previewOpen;
+
 function openHolders(id: string): HTMLElement[] {
   return [...document.querySelectorAll<HTMLElement>(".trend.show")].filter((el) => el.dataset.id === id);
 }
 
 async function loadTrend(id: string, animate: boolean): Promise<void> {
-  const seq = ++trendSeq;
+  const seq = (trendSeq.get(id) ?? 0) + 1;
+  trendSeq.set(id, seq);
   try {
     // 板块分时**跟着这一行自己的来源**走（90.BK… 找东财、91.pt… 找腾讯）：换源之后屏上
     // 可能还留着上一家的板块，按设置的源去拉会画不出来。大盘指数多取一天，
     // 用来算「与上一日同期」的成交额对比。
     const src = boardSourceOf(id) ?? S.source;
     const data = await fetchTrend(id, isIndex(id) ? 2 : 1, src);
-    if (seq !== trendSeq || trendOpen !== id) return;
+    if (trendSeq.get(id) !== seq || !isTrendOpen(id)) return;
     trendCache.set(id, data);
     trendErr.delete(id);
     if (animate) openHolders(id).forEach(animateTrend);
     else renderTrendPanels();
   } catch {
-    if (seq !== trendSeq) return;
+    if (trendSeq.get(id) !== seq) return;
     if (!trendCache.has(id)) trendErr.add(id);
     renderTrendPanels();
   }
@@ -326,15 +358,21 @@ async function loadMarket(): Promise<void> {
   renderTrendPanels();
 }
 
-/** 同步指数共用面板 + 个股行内嵌面板的展开状态 */
+/**
+ * 同步指数共用面板、个股行内嵌面板与搜索结果里的预览面板的展开状态。
+ * 三处共用一套 `.trend` 面板：谁的 id 正开着就显示谁，靠 CSS 过渡展开 / 收起。
+ */
 function renderTrendPanels(): void {
   const idxPanel = $("#trend-index");
   const idxOpen = INDICES.some((it) => it.secid === trendOpen);
   // 收起时保留旧 id，让收起过渡期间仍显示原图
   if (idxOpen) idxPanel.dataset.id = trendOpen!;
-  const panels = [idxPanel, ...document.querySelectorAll<HTMLElement>("#list .trend, #boards .trend")];
+  const panels = [
+    idxPanel,
+    ...document.querySelectorAll<HTMLElement>("#list .trend, #boards .trend, #search-results .trend"),
+  ];
   for (const el of panels) {
-    const open = el === idxPanel ? idxOpen : el.dataset.id === trendOpen;
+    const open = el === idxPanel ? idxOpen : isTrendOpen(el.dataset.id ?? "");
     el.classList.toggle("show", open);
     if (open && !trendAnim.has(el)) drawTrend(el);
   }
@@ -1562,29 +1600,74 @@ const searchInput = $<HTMLInputElement>("#search-input");
 const searchBox = $("#search-results");
 
 function closeSearch(): void {
-  searchBox.classList.remove("show");
+  // 预览跟着结果一起收起：留着 previewOpen 会让轮询继续拉一只已经看不见的股票
+  previewOpen = null;
+  searchBox.classList.remove("show", "preview");
   searchBox.innerHTML = "";
 }
 
+/**
+ * 预览块：一行实时价格 + 分时图。分时图与自选行展开的是同一个 `.trend` 面板、
+ * 同一份 trendCache（画与展开都交给 renderTrendPanels）。
+ */
+function previewHtml(id: string): string {
+  return (
+    `<div class="sr-preview" data-id="${esc(id)}">` +
+    `<div class="sr-live flat"><b>--</b><span>--</span><span>--</span></div>` +
+    `<div class="trend show" data-id="${esc(id)}">${trendInner()}</div>` +
+    `</div>`
+  );
+}
+
+/** 预览块的实时那一行：价格 / 涨跌额 / 涨跌幅，数据来自 quotes（轮询会把预览的这只一起带上） */
+function renderPreviewLive(): void {
+  const box = searchBox.querySelector<HTMLElement>(".sr-preview");
+  const live = box?.querySelector<HTMLElement>(".sr-live");
+  if (!box || !live) return;
+  const q = quotes.get(box.dataset.id ?? "");
+  const d = dirOf(q?.pct);
+  live.className = `sr-live ${d}`;
+  // 内容只有数字与固定的 class，不需要转义
+  live.innerHTML =
+    `<b>${fmtPrice(q?.price)}</b><span>${fmtChange(q?.change)}</span><span>${fmtPct(q?.pct)}</span>`;
+}
+
+/**
+ * 搜索结果一行一只：点行本身是「先看看」（预览 / 跳过去，见 search.ts 的 hitAction），
+ * 点右边的 ＋ 才是加入自选。预览的那一行就地展开实时价格与分时图，
+ * 其余结果先收起来 —— 360px 宽的小窗里塞不下「一列结果 + 一张图」。
+ */
 function renderSearch(items: SearchItem[]): void {
   searchItems = items;
+  // 结果换了，原来预览的那只已经不在表里：预览跟着收起
+  if (previewOpen && !items.some((it) => it.secid === previewOpen)) previewOpen = null;
   if (!items.length) {
     searchBox.innerHTML = `<div class="sr-empty">没有找到相关股票</div>`;
   } else {
     searchBox.innerHTML = items
       .map((it) => {
+        // 报价回来之前也得叫得出名字：预览面板的标题与「跳过去」那一行都靠它
+        searchNames.set(it.secid, it.name);
         const added = S.watchlist.includes(it.secid);
+        // 大盘指数加不进自选（与 MCP 的 add 同一条规则），那颗按钮只报状态
+        const fixed = added || isIndex(it.secid);
+        const label = added ? "已添加" : isIndex(it.secid) ? "指数" : "＋";
+        const open = previewOpen === it.secid;
         return (
-          `<div class="sr" data-id="${esc(it.secid)}" data-name="${esc(it.name)}">` +
+          `<div class="sr${open ? " open" : ""}" data-id="${esc(it.secid)}" data-name="${esc(it.name)}">` +
           `<div class="sr-main"><div class="sr-name">${esc(it.name)}</div>` +
           `<div class="sr-meta"><span class="tag">${marketTag(it.secid)}</span>${esc(it.code)} · ${esc(it.type)}</div></div>` +
-          `<button class="sr-add ${added ? "added" : ""}" ${added ? "disabled" : ""}>${added ? "已添加" : "＋"}</button>` +
-          `</div>`
+          `<button class="sr-add ${fixed ? "added" : ""}" ${fixed ? "disabled" : ""}>${label}</button>` +
+          `</div>` +
+          (open ? previewHtml(it.secid) : "")
         );
       })
       .join("");
   }
+  searchBox.classList.toggle("preview", previewOpen !== null);
   searchBox.classList.add("show");
+  renderTrendPanels();
+  renderPreviewLive();
 }
 
 /** 最近一次搜索结果：右键操作后重画（加入过的那一行立刻变成「已添加」） */
@@ -1630,9 +1713,79 @@ function openSearchMenu(id: string, x: number, y: number): void {
   );
 }
 
+/** ＋：加入自选（正在看某个分组时直接进这个分组），然后收起结果、选中它、滚到那一行 */
+function addFromSearch(id: string): void {
+  S.watchlist.push(id);
+  if (groupFilter) S.groupOf = setGroup(S.groupOf, id, groupFilter);
+  save();
+  searchInput.value = "";
+  closeSearch();
+  select(id);
+  revealRow(id);
+  void refresh();
+}
+
+/** 把自选列表里的某一行滚进视野（面板是个小窗，跳过去得先让人看得见） */
+function revealRow(id: string): void {
+  requestAnimationFrame(() => {
+    document
+      .querySelector<HTMLElement>(`#list .row[data-id="${id}"]`)
+      ?.scrollIntoView?.({ block: "nearest", behavior: reduceMotion() ? "auto" : "smooth" });
+  });
+}
+
+/**
+ * 已经是自选的标的：跳过去。分组视图里它可能不在这一屏 —— 先切到它所在的分组
+ * （没有归属就回「全部」），再滚过去并展开它的分时图（本来就展开着就只滚过去）。
+ */
+function jumpToRow(id: string): void {
+  if (view === "board") setView("watch");
+  const next = filterToReveal(id, S.groupOf, S.groups, groupFilter);
+  if (next !== groupFilter) {
+    groupFilter = next;
+    renderList();
+  }
+  closeSearch();
+  void openTrend(id);
+  revealRow(id);
+}
+
+/**
+ * 还没加入自选的标的：就地预览（实时价格 + 分时图），自选一只都不动。
+ * 再点同一行收起预览，其余结果重新摊开。
+ */
+async function openPreview(id: string): Promise<void> {
+  if (previewOpen === id) {
+    previewOpen = null;
+    renderSearch(searchItems);
+    return;
+  }
+  previewOpen = id;
+  renderSearch(searchItems);
+  const had = trendCache.has(id);
+  if (had) openHolders(id).forEach(animateTrend);
+  await Promise.all([loadTrend(id, !had), loadPreviewQuote(id)]);
+}
+
+/** 预览那只是实时报价：它不在自选里，常规轮询不管它，展开时先问一次（之后由 refresh 带上） */
+async function loadPreviewQuote(id: string): Promise<void> {
+  try {
+    const q = (await fetchQuotes([id], S.source)).get(id);
+    if (q) quotes.set(id, q);
+  } catch {
+    // 报价拿不到就只显示「--」：分时图自己会报错，不在这里重复提示
+  }
+  if (previewOpen === id) renderPreviewLive();
+}
+
 searchInput.addEventListener("input", () => {
   window.clearTimeout(searchTimer);
   const kw = searchInput.value.trim();
+  // 又在改关键词了：先收起预览，把上一次的结果原样摊回来（新结果到了再整体换掉）
+  if (previewOpen) {
+    previewOpen = null;
+    renderSearch(searchItems);
+  }
   // 板块视图：就地过滤当前口径那份榜单，不发请求、也不用等防抖
   //（搜索接口 suggest 不返回板块，见 boards.ts 的 searchBoards）
   if (view === "board") {
@@ -1657,6 +1810,12 @@ searchInput.addEventListener("input", () => {
 
 searchInput.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
+    // 先收起预览（关键词与结果都留着），再按一次才清空搜索
+    if (previewOpen) {
+      previewOpen = null;
+      renderSearch(searchItems);
+      return;
+    }
     searchInput.value = "";
     closeSearch();
     // 板块那边还得把过滤撤掉，榜单才回到全量
@@ -1668,20 +1827,20 @@ searchInput.addEventListener("keydown", (e) => {
 });
 
 searchBox.addEventListener("click", (e) => {
-  const sr = (e.target as HTMLElement).closest<HTMLElement>(".sr");
-  const id = sr?.dataset.id;
-  if (!id) return;
-  // 内置的大盘指数一直显示在面板上，不能再加一份进自选（与 MCP、右键菜单同一条规则）
-  if (!isIndex(id) && !S.watchlist.includes(id)) {
-    S.watchlist.push(id);
-    // 正在看某个分组时，新加的标的直接进这个分组（「未分组」则不加归属）
-    if (groupFilter) S.groupOf = setGroup(S.groupOf, id, groupFilter);
-    save();
-  }
-  searchInput.value = "";
-  closeSearch();
-  select(id);
-  refresh();
+  const t = e.target as HTMLElement;
+  // 结果框里的点击都不是「点别处」：行会在下面就地重画，等冒泡到 document 时它已经不在
+  // .search 里了，会被当成点别处、把刚展开的预览收掉。预览块（价格行 / 分时图）也得算进来 ——
+  // 它是行的兄弟而不是子节点（.sr 是 flex 行，塞进去会破版），点在图上也只想看看，不想它消失。
+  if (!t.closest(".sr, .sr-preview")) return;
+  e.stopPropagation();
+  const id = t.closest<HTMLElement>(".sr")?.dataset.id;
+  if (!id) return; // 点在预览块里：只是看看
+  // 点右边的 ＋ 才是加入自选；点行本身是「先看看」：
+  // 已经在自选里就跳过去，还没加的就地预览（见 search.ts 的 hitAction）
+  const action = hitAction(id, S.watchlist, !!t.closest(".sr-add"));
+  if (action === "add") addFromSearch(id);
+  else if (action === "jump") jumpToRow(id);
+  else if (action === "preview") void openPreview(id);
 });
 
 // 搜索结果行右键：加入自选 / 加入并移入分组 / 移入分组 / 置顶（与自选行右键同一套 ctxmenu）
@@ -1812,6 +1971,8 @@ async function refresh(): Promise<void> {
       S.selected,
       ...S.watchlist,
       ...S.bar,
+      // 搜索结果里预览着的那只不在自选里，但它的价格与分时也得跟着这一轮一起刷新
+      ...(previewOpen ? [previewOpen] : []),
     ]),
   ];
   try {
@@ -1824,6 +1985,8 @@ async function refresh(): Promise<void> {
       // 指数面板展开着：底部那两行也要跟着刷新
       if (isIndex(trendOpen)) void loadMarket();
     }
+    // 搜索面板里预览着的那只（不在自选里）：价格跟着走了，分时图也要跟着走
+    if (previewOpen) void loadTrend(previewOpen, false);
   } catch (e) {
     failCount++;
     errorMsg = apiErrorText(e);
@@ -1840,6 +2003,7 @@ function renderAll(): void {
   renderIndices();
   renderView();
   renderTrendPanels();
+  renderPreviewLive(); // 搜索面板里预览着的那只，价格也跟着这轮刷新
 }
 
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {

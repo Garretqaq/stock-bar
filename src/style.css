@@ -542,6 +542,38 @@ button {
   color: var(--sub);
 }
 
+/* 就地预览：展开的那一行自己淡一层，其余结果先收起来 ——
+   360px 宽的小窗里塞不下「一列结果 + 一张分时图」（图见 .sr-preview） */
+.sr.open {
+  background: var(--hover);
+}
+.search-results.preview .sr:not(.open) {
+  display: none;
+}
+.sr-preview {
+  padding: 0 4px 2px;
+}
+/* 实时那一行：价格在左，涨跌额与涨跌幅靠右；配色沿用 .up / .down / .flat */
+.sr-live {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 2px 2px 0;
+  font-size: 12px;
+}
+.sr-live b {
+  margin-right: auto;
+  font-size: 18px;
+  font-weight: 600;
+}
+/* 结果框里只有 360px 宽：分时图矮一点，一行结果 + 实时价格 + 图正好放得下 */
+.sr-preview .trend.show {
+  max-height: 190px;
+}
+.sr-preview .trend canvas {
+  height: 110px;
+}
+
 /* ---------- 自选列表 ---------- */
 
 /* 没建过分组时整条藏起来：display:flex 会盖掉 [hidden] 的默认 display:none，得自己再写一条 */

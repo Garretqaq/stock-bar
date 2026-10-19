@@ -3,7 +3,7 @@
 // 行右键菜单能不能置顶 / 取消置顶，置顶区有没有和普通自选区分开。
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { HOLD_MS } from "./sortable";
-import type { Board } from "./api";
+import type { Board, Quote } from "./api";
 
 // 每个用例都重新 import 一遍 main.ts（模块级会挂监听 / 起定时器），跑完清掉假的定时器，
 // 免得后面用例拿到上一个用例残留的 interval
@@ -842,6 +842,119 @@ describe("主面板：板块搜索", () => {
   });
 });
 
+
+// 搜索结果的点击去向：点行本身不再等于「加入自选」——
+// 还没加的只就地预览（实时价格 + 分时图），已经在自选里的跳过去并展开那一行；
+// 加入自选只走右边那颗 ＋（判断在 search.ts 的 hitAction，纯逻辑见 search.test.ts）。
+describe("主面板：搜索结果的点击去向", () => {
+  const input = () => document.querySelector<HTMLInputElement>("#search-input")!;
+  const box = () => document.querySelector<HTMLElement>("#search-results")!;
+  const srs = () => [...document.querySelectorAll<HTMLElement>("#search-results .sr")];
+  const srOf = (id: string) => srs().find((r) => r.dataset.id === id)!;
+  const tabOf = (name: string) =>
+    [...document.querySelectorAll<HTMLElement>("#gtab-scroll .gtab")].find((t) => t.textContent!.startsWith(name))!;
+
+  /** 大族数控还没进自选；贵州茅台在默认自选里；宁德时代也没有归属（分组用例拿它当那只） */
+  const HITS = [
+    { secid: "0.301200", code: "301200", name: "大族数控", type: "深A" },
+    { secid: "1.600519", code: "600519", name: "贵州茅台", type: "沪A" },
+    { secid: "0.300750", code: "300750", name: "宁德时代", type: "深A" },
+  ];
+  const quote = (secid: string, name: string, price: number): Quote => ({
+    secid,
+    code: secid.split(".")[1],
+    market: 0,
+    name,
+    price,
+    change: 1.24,
+    pct: 4.01,
+    time: null,
+    amount: null,
+  });
+
+  /** 换成这一份假搜索结果与假报价，再真打一次搜索（防抖 300ms） */
+  async function search(items = HITS, quotes = new Map<string, Quote>()): Promise<void> {
+    const api = await import("./api");
+    vi.mocked(api.searchStocks).mockResolvedValue(items);
+    vi.mocked(api.fetchQuotes).mockResolvedValue(quotes);
+    input().value = "大族";
+    input().dispatchEvent(new Event("input", { bubbles: true }));
+    await vi.advanceTimersByTimeAsync(300);
+  }
+
+  beforeEach(() => boot());
+
+  it("点右边的 ＋ 才加入自选，加完收起结果", async () => {
+    await search();
+    srOf("0.301200").querySelector<HTMLElement>(".sr-add")!.click();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(saved().watchlist).toContain("0.301200");
+    expect(box().classList.contains("show")).toBe(false);
+  });
+
+  it("点还没加过的一行：只预览，不加进自选", async () => {
+    await search(HITS, new Map([["0.301200", quote("0.301200", "大族数控", 32.15)]]));
+    srOf("0.301200").click();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(saved().watchlist).not.toContain("0.301200");
+    const pv = box().querySelector<HTMLElement>(".sr-preview")!;
+    expect(pv.dataset.id).toBe("0.301200");
+    expect(pv.querySelector(".trend.show")).not.toBeNull(); // 分时图就地展开
+    expect(pv.querySelector(".sr-live b")!.textContent).toBe("32.15"); // 实时价格
+    expect(pv.querySelector<HTMLElement>(".sr-live")!.className).toContain("up");
+    expect(box().classList.contains("preview")).toBe(true); // 其余结果先收起来
+  });
+
+  it("点预览块本身（价格行 / 分时图）不会把预览收掉", async () => {
+    await search();
+    srOf("0.301200").click();
+    await vi.advanceTimersByTimeAsync(0);
+
+    // 预览块是那一行的兄弟节点，点在它上面既不是「点行」也不是「点别处」
+    box().querySelector<HTMLElement>(".sr-live")!.click();
+    box().querySelector<HTMLElement>(".sr-preview canvas")!.click();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(box().classList.contains("show")).toBe(true);
+    expect(box().querySelector(".sr-preview")).not.toBeNull();
+  });
+
+  it("再点同一行收起预览，结果重新摊开", async () => {
+    await search();
+    srOf("0.301200").click();
+    await vi.advanceTimersByTimeAsync(0);
+    srOf("0.301200").click();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(box().querySelector(".sr-preview")).toBeNull();
+    expect(box().classList.contains("preview")).toBe(false);
+  });
+
+  it("已经在自选里的：点行跳过去并展开那一行，不重复加入", async () => {
+    await search();
+    srOf("1.600519").click();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(box().classList.contains("show")).toBe(false);
+    expect(rowOf("1.600519").classList.contains("open")).toBe(true);
+    expect(saved().watchlist.filter((x: string) => x === "1.600519")).toHaveLength(1);
+  });
+
+  it("分组视图里跳过去：它不在这一屏就先切到它所在的分组，没有归属就回「全部」", async () => {
+    await boot({ groups: [{ id: "ai", name: "AI" }], groupOf: { "1.600519": "ai" } });
+    tabOf("AI").click();
+    expect(rowOf("0.300750")).toBeUndefined(); // 分组视图里看不到它
+
+    await search();
+    srOf("0.300750").click();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(tabOf("全部").classList.contains("on")).toBe(true);
+    expect(rowOf("0.300750").classList.contains("open")).toBe(true);
+  });
+});
 // 分组管理（新增 / 改名 / 删除）在主面板上也能做，不必为改个名字去开设置窗口。
 // 与设置 › 行情 是同一份数据、同一套纯函数（settings.ts），这里只管界面接线：
 // ＋ 建组后就地改名、右键标签 / 弹层胶囊给菜单、删除要走两次确认。

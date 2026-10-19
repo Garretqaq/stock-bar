@@ -11,6 +11,7 @@ use tauri::{
 use tauri_plugin_positioner::{Position, WindowExt};
 
 mod bridge;
+mod notify;
 mod qqrank;
 mod update;
 
@@ -580,18 +581,16 @@ fn open_panel(app: AppHandle) {
 
 /// 发一条系统通知（提醒用）。
 ///
-/// 别改用前端的 `sendNotification`：桌面端那个实现是 `new window.Notification(...)`，
-/// 而 WKWebView 根本不实现 Web 通知 —— 发出去石沉大海，权限还会被报成「已授权」
-/// （`window.Notification.permission` 在 WebKit 里恒为 granted）。走 Rust 这条才是原生的。
+/// 实现在 src/notify.rs：macOS 走 UNUserNotificationCenter（插件走的 NSUserNotificationCenter
+/// 在 macOS 26 上已经不弹了），Windows 走插件的 Toast。这里只把「发没发出去」的原因带回去 ——
+/// 界面上的「发一条试试」靠它说真话。
+///
+/// 必须 async：macOS 那边要等系统授权（用户点弹窗）与投递回信，同步命令会卡住主线程。
 #[tauri::command]
-fn notify_send(app: AppHandle, title: String, body: String) -> Result<(), String> {
-    use tauri_plugin_notification::NotificationExt;
-    app.notification()
-        .builder()
-        .title(title)
-        .body(body)
-        .show()
-        .map_err(|e| e.to_string())
+async fn notify_send(app: AppHandle, title: String, body: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || notify::send(&app, &title, &body))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// 打开系统的「通知」设置页：通知发不出去时，用户接下来要去的就那一页
@@ -741,6 +740,10 @@ pub fn run() {
                 let _ = win.set_shadow(false);
                 let _ = win.set_size(tauri::LogicalSize::new(376.0, 576.0));
             }
+
+           // 通知：macOS 上把 UNUserNotificationCenter 的 delegate 挂好（点击通知要能回到主面板），
+           // 顺带让应用在「系统设置 › 通知」里建出条目；Windows 侧是空操作。见 src/notify.rs
+           notify::init(app.handle());
 
             // MCP 本地桥不在这里起：开关是用户设置（存在 localStorage 里，Rust 读不到），
             // 由主面板启动后按设置调 mcp_set_enabled 打开或保持关闭。见 bridge.rs 的 set_enabled()。

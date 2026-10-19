@@ -2487,7 +2487,10 @@ version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9df9128cbbfef73cda168416ccf7f837b62737d748333bfe9ab71c245d76613e"
 dependencies = [
+ "bitflags 2.13.2",
+ "block2",
  "objc2",
+ "objc2-core-location",
  "objc2-foundation",
 ]
 
@@ -3561,9 +3564,13 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
 name = "stock-bar"
-version = "0.0.14"
+version = "0.0.15"
 dependencies = [
+ "block2",
  "getrandom 0.3.4",
+ "objc2",
+ "objc2-foundation",
+ "objc2-user-notifications",
  "reqwest",
  "rustls",
  "serde",

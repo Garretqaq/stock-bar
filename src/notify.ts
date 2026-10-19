@@ -1,11 +1,10 @@
 // 系统通知（macOS 通知中心 / Windows Toast）。浏览器里 `pnpm dev` 预览时全部降级为空操作。
 //
 // 为什么不用插件的 JS API：桌面端 `sendNotification()` 的实现就是 `new window.Notification(...)`，
-// 而 macOS 的 WKWebView 不实现 Web 通知 —— 发出去毫无反应，`Notification.permission` 还恒报
-// granted（于是界面显示「已授权」却一条都收不到）。投递因此走 Rust 侧的 `notify_send`
-// （见 lib.rs），它用的是插件在原生侧的通道，并且会把「发没发出去」的原因带回来。
-
-import { IN_TAURI, call, callOrThrow } from "./tauri";
+// 而 macOS 的 WKWebView 不实现 Web 通知 —— `Notification.permission` 还恒报 granted
+// （界面显示「已授权」却一条都收不到）。投递因此走 Rust 侧的 `notify_send`（见 src-tauri/src/notify.rs）：
+// macOS 用 UNUserNotificationCenter，把「发没发出去」的原因带回来；Windows 用插件的 Toast。
+import { IN_TAURI, call, callOrThrow, listenAll } from "./tauri";
 
 export interface NotifyResult {
   ok: boolean;
@@ -32,17 +31,12 @@ export async function openNotifySettings(): Promise<void> {
 
 /**
  * 监听「点了通知」：回调带上通知标题。
- * Rust 那条通道没有编号可用，标题里已经带着标的与条件（见 alerts.ts 的 alertText），
+ *
+ * macOS 侧是我们自己的 delegate 发出来的 Tauri 事件（`notify-tapped`，见 src-tauri/src/notify.rs），
+ * 通知本身没有编号可用，标题里已经带着标的与条件（见 alerts.ts 的 alertText），
  * 调用方按标题认标的即可。
  */
 export async function onNotifyTap(fn: (title: string | null) => void): Promise<void> {
   if (!IN_TAURI) return;
-  const m = await import("@tauri-apps/plugin-notification");
-  await m
-    .onAction((e) => {
-      // 桌面上点通知本身报的是 "tap"；自定义按钮（第一版没做）另有 actionId
-      if (e.actionId !== "tap") return;
-      fn(e.notification?.title ?? null);
-    })
-    .catch(() => {});
+  await listenAll<string | null>("notify-tapped", (title) => fn(title ?? null));
 }

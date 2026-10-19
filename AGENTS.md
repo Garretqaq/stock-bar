@@ -45,6 +45,7 @@ src/notify.ts    系统通知的薄封装：权限查询 / 请求、发一条、
 src-tauri/src/lib.rs   托盘、弹窗定位（按鼠标位置把面板夹进工作区，见「坑」）、失焦自动收起、单实例、所有 #[tauri::command]
 src-tauri/src/bridge.rs    MCP 本地桥：回环地址上的 HTTP 入口、令牌与连接信息文件、命令转发与回信配对；info() 给设置面板报桥状态与脚本路径
 src-tauri/src/update.rs    应用内更新：检查 / 下载 / 安装 / 重启，待装的更新存在模块级静态量里（命令壳在 lib.rs）
+src-tauri/src/notify.rs    系统通知：macOS 用 UNUserNotificationCenter 自己发（授权 / 投递 / 点击回调），Windows 交给插件
 src-tauri/capabilities/default.json   三个窗口（main / settings / ticker）的权限
 .github/workflows/build.yml   双端打包：推 v* 标签构建 macOS（通用二进制）+ Windows 安装包与更新包，合并出 latest.json 并创建 Release 草稿，或手动触发上传 Artifacts
 mcp/lib.mjs + mcp/stockbar-mcp.mjs   零依赖 MCP 服务（stdio JSON-RPC）：工具表、端点发现、把命令转给本地桥（`pnpm mcp` 可直接跑）
@@ -100,11 +101,17 @@ Vite 是多页面打包，入口在 `vite.config.ts` 的 `rollupOptions.input` �
 - 标的范围是「自选 + 大盘指数」（都是标的）。板块**不给提醒**（ADR 0001：板块不是标的）；界面上能选的只有 `INDICES` 与 `watchlist`，`normalizeAlerts()` 在载入时把指向别处的规则一起丢掉。删自选要连带删它的规则（`dropAlertsOf()`，界面、MCP 的 `watchlist.remove` 两处都调），否则会留下「没人可盯」的孤儿规则。
 - 判定挂在主面板 `refresh()` 里（拿到这一轮报价之后、`renderAll()` 之前）：应用在跑就一直在判，与面板是否弹出无关。**只在交易时段判** —— `can` 回调按 `sessionStatus(regionOf(secid), now, quote.time)` 逐只判断（港股、美股各按自己的时段与节假日推断），收盘后价格不再动、凭残留的最后一笔成交触发没有意义。
 - 语义是**穿越那一刻通知一次**（见 `docs/adr/0002-alerts-fire-on-crossing.md`）：`evaluateAlerts()` 返回这一轮要发的通知与更新后的状态，`fired` 为真的规则持续成立期间不再重复；条件回到不成立才重新武装。另有两条防轰炸：同一规则两次通知至少隔 `ALERT_COOLDOWN_MS`（10 分钟，冷却期内穿越只标记不发），以及按**交易日键**重新武装（键取报价自带的最后成交时间，用 UTC 取日期 —— 港股、美股在本地时区里会跨到第二天）。这轮没拿到某只标的的报价时**跳过它、状态不动**，别把数据断档当成「条件解除了」。
-- 送达是系统通知（`tauri-plugin-notification`，macOS 通知中心 / Windows Toast），封装在 `src/notify.ts`。通知标题是「标的名 + 条件」，正文给现价与当日涨跌幅（`alertText()`）。浏览器预览（`pnpm dev`）里全部是空操作，所以 `alerts-wiring.test.ts` 验的是状态存储而不是通知。
-- 点通知要把主面板叫出来并定位：主面板起床就挂 `onNotifyTap()`（桌面上只有挂过 `onAction` 监听的窗口才收得到点击），回调里把 `pendingReveal` 记成那只标的、再调 Rust 的 `open_panel`（`lib.rs`，与点托盘图标同一套 `show_panel()` 定位），真正滚动发生在 `panel-shown` 之后 —— 那个事件会先把视图切回自选并刷新，早一步滚就白滚。自选走 `jumpToRow()`（切分组、滚过去、展开分时），大盘指数只滚到顶部卡片。标题映射只在这次运行里有效（`notifyTarget` 是「标题 → secid」，最多留 64 条），重启后点旧通知只是把面板叫出来。
+- 送达是系统通知（macOS 走 `src-tauri/src/notify.rs` 的 UNUserNotificationCenter，Windows 走插件的 Toast），前端封装在 `src/notify.ts`。通知标题是「标的名 + 条件」，正文给现价与当日涨跌幅（`alertText()`）。浏览器预览（`pnpm dev`）里全部是空操作，所以 `alerts-wiring.test.ts` 验的是状态存储而不是通知。
+- 点通知要把主面板叫出来并定位：主面板起床就挂 `onNotifyTap()`（它监听 Rust 发的 `notify-tapped` 事件，标题在 payload 里），回调里把 `pendingReveal` 记成那只标的、再调 Rust 的 `open_panel`（`lib.rs`，与点托盘图标同一套 `show_panel()` 定位），真正滚动发生在 `panel-shown` 之后 —— 那个事件会先把视图切回自选并刷新，早一步滚就白滚。自选走 `jumpToRow()`（切分组、滚过去、展开分时），大盘指数只滚到顶部卡片。标题映射只在这次运行里有效（`notifyTarget` 是「标题 → secid」，最多留 64 条），重启后点旧通知只是把面板叫出来。
 - 设置窗口的「提醒」页（`prefs.ts`，`data-page="alerts"`，排在「行情」之后）只管把规则写进设置：总开关（`alertsOn`）、系统通知那两行（「打开通知设置」+「发一条试试」）、新建表单（标的 / 条件 / 方向 / 阈值）、规则列表（逐条启停与删除）。规则列表按「内容键」重建（`alertListKey`，键里带标的名 —— 报价到了名字才会从代码变成名称），别每轮 `render()` 都整段重画。
-- 标的选择框是**自己画的**（`.alert-pick` + `#alert-pick-list`），不是原生 `<select>`：原生下拉打不了字，自选攒到几十只时得按名字 / 代码筛。候选只有大盘指数与自选（板块不是标的），名称 / 代码 / secid 都参与匹配；聚焦时把搜索词清空、列出全部 —— 输入框里显示的那只是「当前选中」，不该把自己筛没，所以搜索词单独记在 `alertPickQuery` 里。↑↓ 选、回车落、Esc 收起，点别处也收起。
-- **通知投递必须走 Rust 的 `notify_send`，不要用插件的 JS `sendNotification`**：它在桌面端的实现就是 `new window.Notification(...)`，而 WKWebView 不实现 Web 通知 —— 发出去毫无反应，`window.Notification.permission` 还恒为 granted（界面会显示「已授权」却一条都收不到），`requestPermission` 同理不可信。`notify_send` 走插件在原生侧的通道，`show()` 的 `Err` 会原样回到界面（「发一条试试」就是靠它说真话）。这条通道不带通知编号，所以点通知靠**标题**认标的（`notifyTarget` 是「标题 → secid」的映射）。
+- 标的选择框是**自己画的**（`.alert-pick` + `#alert-pick-list`），不是原生 `<select>`：原生下拉打不了字，自选攒到几十只时得按名字 / 代码筛。候选只有大盘指数与自选（板块不是标的），名称 / 代码 / secid 都参与匹配；聚焦时把搜索词清空、列出全部 —— 输入框里显示的那只是「当前选中」，不该把自己筛没，所以搜索词单独记在 `alertPickQuery` 里。↑↓ 选、回车落、Esc 收起，点别处也收起。**候选行必须单行**（行上 `white-space: nowrap`、名称 `text-overflow: ellipsis`、右侧标签 `flex: none`），**弹层要用菜单那套不透明底色**（`--menu-bg` / `--menu-line` / `--menu-shadow`，见 ctxmenu.css）：用卡片底色的话它跟下面的「规则」卡片同色、「名称（代码）+ 大盘指数」还会折成两行，看着像卡片内容漏出来了。
+- **通知投递走 Rust 的 `notify_send`，不要用插件的 JS `sendNotification`**：它在桌面端的实现就是 `new window.Notification(...)`，而 WKWebView 不实现 Web 通知 —— 发出去毫无反应，`window.Notification.permission` 还恒为 granted（界面会显示「已授权」却一条都收不到），`requestPermission` 同理不可信。
+- **macOS 上别退回插件那条路**（实现见 `src-tauri/src/notify.rs`）：tauri-plugin-notification 在 macOS 侧是 notify-rust → mac-notification-sys → `NSUserNotificationCenter`（macOS 11 起废弃）。macOS 26 上它只剩「静默入历史」—— usernoted 日志里 `Delivering ... to [.alert ...]` 有、`Presenting ... as alert` 一次都没有，应用也不出现在「系统设置 › 通知」的列表里（`defaults read com.apple.ncprefs` 里没有 `com.stockbar.eastmoney`），用户一条也看不到，插件却照样报成功。所以 macOS 自己用 `UNUserNotificationCenter`：
+  - 投递前读 `getNotificationSettings`：`Denied` 把原因直接回给界面；`NotDetermined` 先 `requestAuthorization`（系统弹窗，用户点了「允许」再发）。因此 `notify_send` 是 async + `spawn_blocking`，别写成同步命令 —— 会卡住主线程。
+  - delegate 的 `willPresent` 里明确要横幅 + 列表 + 声音：**应用在最前面时系统默认什么都不弹**，而「发一条试试」恰恰是用户开着设置窗口点的。
+  - 点通知靠 `didReceiveNotificationResponse` 把标题丢成 Tauri 事件 `notify-tapped`（前端 `src/notify.ts` 的 `onNotifyTap` 监听）；通知没有编号，所以按**标题**认标的（`notifyTarget` 是「标题 → secid」的映射）。
+  - **只在 `.app` 里碰这些 API**：`tauri dev` 跑的是没打包的裸二进制，那种进程没有通知身份，`currentNotificationCenter` 会抛 objc 异常直接崩 —— `notify::init` / `notify::send` 先用 `bundled()`（可执行文件路径里有没有 `.app/Contents/MacOS/`）挡一道，dev 下「发一条试试」只回一句说明。
+  - Windows / Linux 继续用插件的 Toast / DBus，那边一直是好的。
 
 **菜单栏（托盘）**
 - 托盘只由主面板 `main.ts` 的 `updateTray()` 负责更新。它用签名 `traySig` 去重，内容没变就不推送。设置窗口只用 `bar.ts` 做本地预览，不调用托盘命令。

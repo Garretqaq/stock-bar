@@ -1,6 +1,6 @@
 [package]
 name = "stock-bar"
-version = "0.0.14"
+version = "0.0.15"
 description = "菜单栏盯盘小工具（东方财富行情）"
 edition = "2021"
 
@@ -22,7 +22,8 @@ tiny_http = "0.12"
 # 桥的令牌：用系统随机源，别自己拼（本来就在依赖树里）
 getrandom = "0.3"
 tauri-plugin-updater = "2"
-# 系统通知（提醒触发时发一条）：macOS 走通知中心，Windows 走 Toast
+# 系统通知（提醒触发时发一条）：Windows 走 Toast（这个插件）；macOS 另走 UNUserNotificationCenter，
+# 见下面的 macOS 依赖与 src/notify.rs
 tauri-plugin-notification = "2"
 # 腾讯板块排行的取数：那条接口不返回 CORS 头，webview 里 fetch 读不到，改由 Rust 侧取
 # （见 src/qqrank.rs）。与 tauri-plugin-updater 用同一份 reqwest，features 对齐 ——
@@ -40,3 +41,12 @@ strip = true
 
 [target."cfg(windows)".dependencies]
 winreg = "0.56"
+
+# macOS 的通知：插件那条路走的是废弃的 NSUserNotificationCenter，在 macOS 26 上只入历史、
+# 不弹横幅（详见 src/notify.rs 的模块注释），所以自己用 UserNotifications 框架发。
+# 这几个 crate 本来就在 tauri 的依赖树里，不新增下载。
+[target."cfg(target_os = \"macos\")".dependencies]
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-user-notifications = "0.3"
+block2 = "0.6"

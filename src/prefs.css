@@ -2027,35 +2027,48 @@ svg .fill {
   position: absolute;
   z-index: 20;
   top: calc(100% + 4px);
-  right: 0;
   left: 0;
+  /* 比输入框略宽：一行放得下「名称（代码）+ 用途」，不用把标签挤到第二行 */
+  width: max-content;
+  min-width: 100%;
+  max-width: min(280px, calc(100vw - 24px));
   max-height: 216px;
   overflow: auto;
+  overscroll-behavior: contain;
   padding: 4px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--menu-line);
   border-radius: 10px;
-  background: var(--group);
-  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.18);
+  /* 用菜单那套不透明底色：跟卡片同色的话，摊开的分组看起来像卡片内容漏出来 */
+  background: var(--menu-bg);
+  box-shadow: var(--menu-shadow);
 }
 .alert-pick-item {
   display: flex;
   width: 100%;
-  align-items: baseline;
+  align-items: center;
   gap: 8px;
   padding: 6px 8px;
   border-radius: 7px;
   font-size: 12.5px;
+  line-height: 1.35;
   text-align: left;
+  white-space: nowrap;
   color: var(--text);
   transition: background 0.12s ease;
 }
 .alert-pick-item b {
+  min-width: 0;
+  overflow: hidden;
   font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .alert-pick-item small {
+  flex: none;
   margin-left: auto;
   font-size: 10.5px;
   color: var(--sub);
+  white-space: nowrap;
 }
 .alert-pick-item:hover,
 .alert-pick-item.on {

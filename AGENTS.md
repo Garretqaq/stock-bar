@@ -26,7 +26,7 @@ cd src-tauri && cargo check   # Rust 侧检查
 
 ```
 index.html      → src/main.ts   + src/style.css   主面板（托盘弹出的 360×560 无边框小窗，label="main"）
-settings.html   → src/prefs.ts  + src/prefs.css   设置窗口（仪表盘 / 行情 / 提醒 / MCP / 关于 / 设置六页，label="settings"，由 Rust 动态创建）
+settings.html   → src/prefs.ts  + src/prefs.css   设置窗口（仪表盘 / 行情 / 提醒 / MCP / 关于五页，label="settings"，由 Rust 动态创建）
 ticker.html     → src/ticker.ts + src/ticker.css  Windows 悬浮行情条（label="ticker"，由 set_ticker 动态创建/关闭）
 src/api.ts       东方财富接口：批量报价 ulist.np、分时 trends2、搜索 suggest（JSONP）、板块列表 clist（fetchBoards）、secid/市场/交易时段工具函数
 src/settings.ts  Settings 类型、默认值、localStorage 读写和旧数据迁移、跨窗口同步、主题和涨跌配色、自选分组的纯函数（`itemsOf` / `moveInView` / `normalizeGroups` 等）
@@ -80,7 +80,10 @@ Vite 是多页面打包，入口在 `vite.config.ts` 的 `rollupOptions.input` �
 - 外部 MCP 客户端（`mcp/stockbar-mcp.mjs`，stdio JSON-RPC）改自选与分组走这条链路：HTTP 桥（`bridge.rs`，只监听 `127.0.0.1` 的随机端口）→ Tauri 事件 `mcp-request` → 主面板 → `src/mcp.ts` 的 `prepareCommand()` / `apply()` → `saveSettings()` → 前端再调 `mcp_reply` 回信。**命令永远由前端执行**，所以 MCP 改动的校验、规整、广播与手点界面完全一致（设置窗口、菜单栏都会跟着刷新）。
 - 桥只在应用运行时、且设置里的 MCP 开关打开时才存在：连接信息（随机端口 + 令牌）写在 app data 目录的 `mcp-endpoint.json`（macOS 为 `~/Library/Application Support/com.stockbar.eastmoney/`，权限 0600），退出或关掉开关时删掉；令牌只用来挡本机其他进程。
 - 前端注册好监听后才调 `mcp_ready` 置位 READY，之前到达的命令会被明确拒绝（「还在启动」），而不是静默超时。等前端回信的上限是 32 秒，请求里带一个早 4 秒的 `deadline`：命令来不及了就不改设置、直接回「超时」，免得出现「客户端收到失败、设置其实改了」。
-- 设置窗口左侧导航里有一页独立的「MCP」（`prefs.ts`，排在「设置」上面，`data-page="mcp"`；切到它时 `go()` 会重新问一次状态）：状态来自 `mcp_info` 命令（`bridge.rs` 的 `info()`：端口 / 是否就绪 / 脚本路径），配置片段由 `src/mcp.ts` 的 `clientConfig()` 生成、一键复制。`mcp/stockbar-mcp.mjs` 与 `mcp/lib.mjs` 由 `tauri.conf.json` 的 `bundle.resources` 打进 `resource_dir()/mcp/`（macOS 是 `StockBar.app/Contents/Resources/mcp/`），页面给出的路径安装后直接可用；debug 构建里退回仓库的 `mcp/`，两者都找不到就给占位符让用户自己填。改 resources 的落点要连带改 `bridge.rs` 里按 `SCRIPT_FILE` 拼的查找路径。
+- 设置窗口左侧导航里有一页独立的「MCP」（`prefs.ts`，`data-page="mcp"`；切到它时 `go()` 会重新问一次状态）：状态来自 `mcp_info` 命令（`bridge.rs` 的 `info()`：端口 / 是否就绪 / 脚本路径），配置片段由 `src/mcp.ts` 的 `clientConfig()` 生成、一键复制。`mcp/stockbar-mcp.mjs` 与 `mcp/lib.mjs` 由 `tauri.conf.json` 的 `bundle.resources` 打进 `resource_dir()/mcp/`（macOS 是 `StockBar.app/Contents/Resources/mcp/`），页面给出的路径安装后直接可用；debug 构建里退回仓库的 `mcp/`，两者都找不到就给占位符让用户自己填。改 resources 的落点要连带改 `bridge.rs` 里按 `SCRIPT_FILE` 拼的查找路径。
+- **「仪表盘」一页曾经是两页**：原来的「设置」页（主题 / 涨跌配色 / 刷新间隔 / 数据来源）已经并进「仪表盘」，导航因此是五页（仪表盘 / 行情 / 提醒 / MCP / 关于）。两页说的都是「这台机器上怎么显示」，来回切没意义。合并时注意：
+  - `Page` 联合类型、`prefs.ts` 的 `PAGES`、`lib.rs` 的 `PAGES`（含它的单测）是**三处对齐**的，加 / 删页要一起改。旧的 `#settings` 链接会被 `isPage()` 挡下、回落到第一页（`dashboard`），不会白屏 —— 别为了「兼容」把 `settings` 留在白名单里，那样只会切到空白页。
+  - 每个 `<section class="page">` 与 `</section>` 必须成对：删旧页时格外的容易把下一段的 `<section ...>` 起始标签一起切掉，症状是那一页的内容**渲染进上一页**（截图里表现为「仪表盘」底部莫名其妙出现「关于」）。改完用 `grep -n '<section class="page"\\|</section>'` 数一遍。
 - **开关**（设置里的 `mcp`，默认关）决定桥起不起：Rust 读不到 localStorage，所以桥不在 `setup()` 里起 —— 主面板注册好监听后调 `mcp_set_enabled` 按设置开 / 关，MCP 页拨开关时也调它（命令返回开关后的状态，页面一次往返就刷新）。`bridge.rs` 的 `enable()` 绑端口 + 写连接信息文件，`disable()` 用 `tiny_http` 的 `unblock()` 让服务线程退出、丢掉 `SERVER` 里的最后一份 `Server` 释放端口，再删掉连接信息文件；因此关掉时是「端口根本不存在」，外部客户端拿到的是与「应用没在运行」相同的提示。
 - 命令分两段：`prepareCommand()` 先做要联网的部分（搜索 / 报价 / 确认成员还在），返回一个 `apply(latest)` 闭包，由主面板在**当时最新**的 `S` 上执行 —— 命令等网线的这几秒里设置窗口改过的东西（主题、刷新间隔、自选本身）不会被打回旧快照；`runCommand()` 是「准备完立刻执行」的便捷入口，只有测试与简单调用用。
 - op 名是 `watchlist.*` / `groups.*` / `instrument.*`（见 `src/mcp.ts` 的 `prepareCommand` switch），MCP 工具名、描述与入参 schema 在 `mcp/lib.mjs` 的 `TOOLS` 里：**新增能力要两边一起加**。参数校验在命令处理里做，不信 schema 的「required」。
@@ -111,6 +114,9 @@ Vite 是多页面打包，入口在 `vite.config.ts` 的 `rollupOptions.input` �
   - delegate 的 `willPresent` 里明确要横幅 + 列表 + 声音：**应用在最前面时系统默认什么都不弹**，而「发一条试试」恰恰是用户开着设置窗口点的。
   - 点通知靠 `didReceiveNotificationResponse` 把标题丢成 Tauri 事件 `notify-tapped`（前端 `src/notify.ts` 的 `onNotifyTap` 监听）；通知没有编号，所以按**标题**认标的（`notifyTarget` 是「标题 → secid」的映射）。
   - **只在 `.app` 里碰这些 API**：`tauri dev` 跑的是没打包的裸二进制，那种进程没有通知身份，`currentNotificationCenter` 会抛 objc 异常直接崩 —— `notify::init` / `notify::send` 先用 `bundled()`（可执行文件路径里有没有 `.app/Contents/MacOS/`）挡一道，dev 下「发一条试试」只回一句说明。
+  - **`.app` 必须带 ad-hoc 签名**（`tauri.conf.json` 的 `bundle.macOS.signingIdentity: "-"`）：`usernotificationsd` 认进程身份看的是**代码签名标识**，不是 Info.plist。不签的话标识是链接器按文件名生成的 `stock_bar-<hash>`，与 `com.stockbar.eastmoney` 对不上，`getNotificationSettings` / `requestAuthorization` 一律被拒（系统日志原话：`[stock_bar-e7076af1f93b727e] Entitlement 'com.apple.private.usernotifications.bundle-identifiers' required to request user notifications` + `requestAuthorization not allowed`）—— 而「系统设置 › 通知」里那条看起来明明允许着，界面上就会莫名其妙说「你还没允许」。ad-hoc 签名后 `codesign -dvv` 的 `Identifier` 才等于 bundle id（`Info.plist entries=15`、`Sealed Resources` 也有了），授权读写才正常。
+    - 顺带：**未签名**的 `.app` 连 `open` 都起不来（`launchd` 报 `Launchd job spawn failed`），所以「签名只为通知」这个印象是错的。
+    - 前端别在失败原因后面再补一句「去打开通知设置」：Rust 侧给的原因已经带了下一步（`send` 的文案），两边各说一遍就成了「去「打开通知设置」里打开 —— 去「打开通知设置」里允许 StockBar 通知」。`authorize()` 里系统直接拒绝（didGrant 0 + 带 NSError）要把 `localizedDescription` 原样带出去，只有用户自己点了「不允许」（无 error）才算「还没允许」。
   - Windows / Linux 继续用插件的 Toast / DBus，那边一直是好的。
 
 **菜单栏（托盘）**
@@ -209,4 +215,4 @@ gh secret set TAURI_SIGNING_PRIVATE_KEY < ~/.tauri/stockbar.key
 - 更新包必须签名：仓库 Secret `TAURI_SIGNING_PRIVATE_KEY` 存 `~/.tauri/stockbar.key` 的内容（私钥没设密码时 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 留空即可）。**缺这个 secret 会直接构建失败** —— `bundle.createUpdaterArtifacts` 要私钥签名；本地 `pnpm app:build` 同理，要带上 `TAURI_SIGNING_PRIVATE_KEY=~/.tauri/stockbar.key`（该变量可以给路径，也可以给内容）。
 - `plugins.updater.pubkey` 必须与那把私钥配对：不配对时签名照出、安装时才校验失败，构建期只有一条 warning。换密钥要连公钥一起换，否则老用户再也收不到更新。
 - `latest.json` 里的下载地址指向本次标签，而应用读的是 `releases/latest/download/latest.json`：草稿期间更新不生效，公开之后才对用户生效。
-- macOS 包未签名与公证是已知状态，不是回归。
+- macOS 包做的是 **ad-hoc 签名**（`bundle.macOS.signingIdentity: "-"`，构建日志里会有两行 `Signing with identity "-"`），不是 Apple 开发者签名、也没有公证：Gatekeeper 该拦还是拦，首次打开仍需右键「打开」或 `xattr -dr com.apple.quarantine`。但这道 ad-hoc 签名是**必需**的 —— 通知授权要靠它把进程身份认成 `com.stockbar.eastmoney`（见上文「系统通知」那条）。

@@ -76,9 +76,15 @@ import { openNotifySettings, sendNotify } from "./notify";
 
 let S: Settings = loadSettings();
 const quotes = new Map<string, Quote>();
-type Page = "dashboard" | "market" | "alerts" | "mcp" | "about" | "settings";
+/**
+ * 设置窗口的页。
+ * 「仪表盘」与「设置」原本是两页（前者管菜单栏样式与顺序，后者管主题 / 配色 / 数据），
+ * 说的都是「这台机器上怎么显示」，来回切没意义 —— 合成一页（见下面的 dashboard section）。
+ * 旧的 `#settings` 链接因此失效：`isPage` 挡下来后会回落到第一页（dashboard），不会白屏。
+ */
+type Page = "dashboard" | "market" | "alerts" | "mcp" | "about";
 /** 页名白名单：Rust 侧也会过滤（见 lib.rs 的 PAGES），这里再挡一次，免得切到空白页 */
-const PAGES: Page[] = ["dashboard", "market", "alerts", "mcp", "about", "settings"];
+const PAGES: Page[] = ["dashboard", "market", "alerts", "mcp", "about"];
 const isPage = (p: unknown): p is Page => PAGES.includes(p as Page);
 const HASH = location.hash.replace("#", "");
 let page: Page = isPage(HASH) ? HASH : "dashboard";
@@ -111,7 +117,6 @@ const I = {
   market: `<svg viewBox="0 0 24 24"><path d="M8 2.5v3M8 19.5v2"/><rect x="5" y="6" width="6" height="13" rx="1.5"/><path d="M16 2.5v5M16 17.5v4"/><rect x="13" y="8" width="6" height="9" rx="1.5"/></svg>`,
   dashboard: `<svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>`,
   mcp: `<svg viewBox="0 0 24 24"><path d="M11 3.5l1.7 4.6 4.6 1.7-4.6 1.7L11 16.1 9.3 11.5 4.7 9.8l4.6-1.7z"/><path d="M18.5 14.5l.7 1.9 1.9.7-1.9.7-.7 1.9-.7-1.9-1.9-.7 1.9-.7z"/></svg>`,
-  settings: `<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>`,
   sun: `<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>`,
   moon: `<svg viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>`,
   laptop: `<svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="11" rx="1.5"/><path d="M2 19h20"/></svg>`,
@@ -129,6 +134,12 @@ const I = {
   /** 取消置顶：与 top 同一个顶部横线、箭头朝下（右键菜单里与「置顶」成对出现） */
   topOff: `<svg viewBox="0 0 24 24"><path d="M4.5 4.5h15M12 9v11M7.5 15l4.5 4.5 4.5-4.5"/></svg>`,
   more: `<svg class="fill" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg>`,
+  /** 新建规则用：价位（¥）、涨跌幅（%）、跌破（下滑箭头）、上穿（上升箭头）、加号 */
+  price: `<svg viewBox="0 0 24 24"><path d="M8.5 4.5l3.5 6 3.5-6"/><path d="M12 10.5V20"/><path d="M8 14h8M8 17.2h8"/></svg>`,
+  percent: `<svg viewBox="0 0 24 24"><path d="M18.5 5.5l-13 13"/><circle cx="7.6" cy="7.6" r="2.6"/><circle cx="16.4" cy="16.4" r="2.6"/></svg>`,
+  arrowDown: `<svg viewBox="0 0 24 24"><path d="M12 4.5v14"/><path d="M6.5 13L12 18.5 17.5 13"/></svg>`,
+  arrowUp: `<svg viewBox="0 0 24 24"><path d="M12 19.5v-14"/><path d="M6.5 11L12 5.5 17.5 11"/></svg>`,
+  plus: `<svg viewBox="0 0 24 24"><path d="M12 5.5v13M5.5 12h13"/></svg>`,
 };
 
 // ---------- 骨架 ----------
@@ -210,7 +221,6 @@ root.innerHTML = `
       <button class="nav-item" data-page="market"><span class="nav-ico green">${I.market}</span>行情</button>
       <button class="nav-item" data-page="alerts"><span class="nav-ico red">${I.bell}</span>提醒</button>
       <button class="nav-item" data-page="mcp"><span class="nav-ico violet">${I.mcp}</span>MCP</button>
-      <button class="nav-item" data-page="settings"><span class="nav-ico gray">${I.settings}</span>设置</button>
       <button class="nav-item" data-page="about"><span class="nav-ico orange">${I.about}</span>关于</button>
     </nav>
     <div class="side-foot">
@@ -224,9 +234,10 @@ root.innerHTML = `
     <section class="page" data-page="dashboard">
       <header class="page-head">
         <h1>仪表盘</h1>
-        <p>选择${BAR}的展示样式与显示字段，并拖动调整标的顺序，改动会实时生效。</p>
+        <p>选择${BAR}的展示样式与显示字段，并拖动调整标的顺序；外观主题、涨跌配色与数据刷新也在这一页，改动会实时生效。</p>
       </header>
 
+      <h2 class="group-title">样式与字段</h2>
       <div class="group">
         ${IS_WIN ? WIN_DESK : MAC_DESK}
         <div class="styles" id="styles">
@@ -249,10 +260,6 @@ root.innerHTML = `
             ${FIELDS.map((f) => `<button class="chip" data-v="${f.v}"><span class="chip-check"></span>${f.name}</button>`).join("")}
           </div>
         </div>
-        <div class="row" id="row-color">
-          <div class="row-label">涨跌着色<small>${IS_WIN ? "悬浮行情条按涨跌显示红绿" : "双行紧凑样式下按涨跌显示红绿"}</small></div>
-          <label class="switch"><input type="checkbox" id="bar-color" /><i></i></label>
-        </div>
         ${
           IS_WIN
             ? `<div class="row" id="row-ticker">
@@ -262,9 +269,66 @@ root.innerHTML = `
             : ""
         }
       </div>
+
       <h2 class="group-title">${BAR}显示 <span class="count" id="ord-count"></span><span class="title-hint">顺序即${BAR}上的显示顺序${IS_WIN ? "" : "；标的太多会被系统截断甚至隐藏"}</span></h2>
       <div class="group ordgroup">
         <div class="ordlist" id="ord-list"></div>
+      </div>
+
+      <h2 class="group-title">主题</h2>
+      <div class="group">
+        <div class="themes" id="themes">
+          ${THEMES.map(
+            (t) => `
+            <button class="theme-card" data-v="${t.v}">
+              <div class="theme-thumb ${t.v}">
+                <div class="tw"><div class="tw-bar"><i></i><i></i><i></i></div><div class="tw-body"><span></span><span></span><span></span></div></div>
+              </div>
+              <div class="theme-name">${t.icon}${t.name}</div>
+            </button>`,
+          ).join("")}
+        </div>
+      </div>
+
+      <h2 class="group-title">涨跌配色</h2>
+      <div class="group">
+        <div class="row">
+          <div class="row-label">配色方案<small>同时作用于面板、分时图与${BAR}</small></div>
+          <div class="seg" id="seg-color" style="--n:2">
+            <button data-v="red"><span class="dots"><i class="r"></i><i class="g"></i></span>红涨绿跌</button>
+            <button data-v="green"><span class="dots"><i class="g"></i><i class="r"></i></span>绿涨红跌</button>
+          </div>
+        </div>
+        <div class="row" id="row-color">
+          <div class="row-label">${BAR}按涨跌着色<small id="row-color-hint">${
+            IS_WIN ? "关掉后行情条只显示单色" : "只用双行紧凑样式时可选；关掉后跟随系统深浅单色"
+          }</small></div>
+          <label class="switch"><input type="checkbox" id="bar-color" /><i></i></label>
+        </div>
+        <div class="row">
+          <div class="row-label">预览</div>
+          <div class="color-demo">
+            <span class="demo-item"><b class="up">3800.86</b><em class="pill up">+1.23%</em></span>
+            <span class="demo-item"><b class="down">2958.34</b><em class="pill down">-0.86%</em></span>
+          </div>
+        </div>
+      </div>
+
+
+      <h2 class="group-title">数据</h2>
+      <div class="group">
+        <div class="row">
+          <div class="row-label">刷新间隔</div>
+          <div class="seg" id="seg-interval" style="--n:${INTERVALS.length}">
+            ${INTERVALS.map((n) => `<button data-v="${n}">${n} 秒</button>`).join("")}
+          </div>
+        </div>
+        <div class="row">
+          <div class="row-label">数据来源<small id="source-hint">源站故障时自动切换</small></div>
+          <div class="seg" id="seg-source" style="--n:${SOURCES.length}">
+            ${SOURCES.map((o) => `<button data-v="${o.v}">${o.name}</button>`).join("")}
+          </div>
+        </div>
       </div>
     </section>
 
@@ -329,6 +393,7 @@ root.innerHTML = `
             <button class="sec-btn primary" id="alerts-test">发一条试试</button>
           </div>
         </div>
+        <div class="notify-hint" id="notify-hint" hidden></div>
       </div>
 
       <h2 class="group-title">新建规则</h2>
@@ -339,18 +404,18 @@ root.innerHTML = `
             <div class="alert-pick-list" id="alert-pick-list" hidden></div>
           </div>
           <div class="seg" id="seg-alert-kind" style="--n:2">
-            <button data-v="price">价格</button>
-            <button data-v="pct">涨跌幅</button>
+            <button data-v="price">${I.price}价格</button>
+            <button data-v="pct">${I.percent}涨跌幅</button>
           </div>
           <div class="seg" id="seg-alert-op" style="--n:2">
-            <button data-v="below" id="alert-op-below">跌破</button>
-            <button data-v="above" id="alert-op-above">上穿</button>
+            <button data-v="below" id="alert-op-below">${I.arrowDown}<span class="seg-txt">跌破</span></button>
+            <button data-v="above" id="alert-op-above">${I.arrowUp}<span class="seg-txt">上穿</span></button>
           </div>
           <label class="alert-input-wrap">
             <input id="alert-value" type="number" inputmode="decimal" min="0" step="0.01" placeholder="阈值" autocomplete="off" spellcheck="false" />
             <b id="alert-unit">元</b>
           </label>
-          <button class="sec-btn primary" id="alert-add">添加规则</button>
+          <button class="sec-btn primary" id="alert-add">${I.plus}添加规则</button>
         </div>
         <div class="alert-hint" id="alert-form-hint"></div>
       </div>
@@ -396,62 +461,6 @@ root.innerHTML = `
             <li>新建 / 改名 / 删除 / 排序分组，把自选移进移出分组</li>
           </ul>
           <div class="mcp-hint">大盘指数是内置的，不能通过 MCP 增删。</div>
-        </div>
-      </div>
-    </section>
-
-    <section class="page" data-page="settings">
-      <header class="page-head">
-        <h1>设置</h1>
-        <p>外观主题、涨跌配色与数据刷新。</p>
-      </header>
-
-      <h2 class="group-title">主题</h2>
-      <div class="group">
-        <div class="themes" id="themes">
-          ${THEMES.map(
-            (t) => `
-            <button class="theme-card" data-v="${t.v}">
-              <div class="theme-thumb ${t.v}">
-                <div class="tw"><div class="tw-bar"><i></i><i></i><i></i></div><div class="tw-body"><span></span><span></span><span></span></div></div>
-              </div>
-              <div class="theme-name">${t.icon}${t.name}</div>
-            </button>`,
-          ).join("")}
-        </div>
-      </div>
-
-      <h2 class="group-title">涨跌配色</h2>
-      <div class="group">
-        <div class="row">
-          <div class="row-label">配色方案<small>同时作用于面板、分时图与${BAR}</small></div>
-          <div class="seg" id="seg-color" style="--n:2">
-            <button data-v="red"><span class="dots"><i class="r"></i><i class="g"></i></span>红涨绿跌</button>
-            <button data-v="green"><span class="dots"><i class="g"></i><i class="r"></i></span>绿涨红跌</button>
-          </div>
-        </div>
-        <div class="row">
-          <div class="row-label">预览</div>
-          <div class="color-demo">
-            <span class="demo-item"><b class="up">3800.86</b><em class="pill up">+1.23%</em></span>
-            <span class="demo-item"><b class="down">2958.34</b><em class="pill down">-0.86%</em></span>
-          </div>
-        </div>
-      </div>
-
-      <h2 class="group-title">数据</h2>
-      <div class="group">
-        <div class="row">
-          <div class="row-label">刷新间隔</div>
-          <div class="seg" id="seg-interval" style="--n:${INTERVALS.length}">
-            ${INTERVALS.map((n) => `<button data-v="${n}">${n} 秒</button>`).join("")}
-          </div>
-        </div>
-        <div class="row">
-          <div class="row-label">数据来源<small id="source-hint">源站故障时自动切换</small></div>
-          <div class="seg" id="seg-source" style="--n:${SOURCES.length}">
-            ${SOURCES.map((o) => `<button data-v="${o.v}">${o.name}</button>`).join("")}
-          </div>
         </div>
       </div>
     </section>
@@ -509,17 +518,28 @@ function render(): void {
   $$(".nav-item").forEach((b) => b.classList.toggle("on", b.dataset.page === page));
   $$(".page").forEach((p) => p.classList.toggle("on", p.dataset.page === page));
 
-  // 仪表盘
+  // 仪表盘（原来的「设置」页已并进来：样式 / 字段 / 顺序 / 主题 / 配色 / 数据都在这一页）
   $$(".style-card").forEach((b) => b.classList.toggle("on", b.dataset.v === S.barStyle));
   $$("#fields .chip").forEach((b) => b.classList.toggle("on", S.barFields.includes(b.dataset.v as BarField)));
+  const colorOff = IS_WIN ? S.barStyle === "icon" : S.barStyle !== "compact";
   $<HTMLInputElement>("#bar-color").checked = S.barColor;
-  // Windows 悬浮条里单行文字也能着色；macOS 托盘文字不能着色
-  $("#row-color").classList.toggle("dim", IS_WIN ? S.barStyle === "icon" : S.barStyle !== "compact");
+  // macOS 只有「双行紧凑」是画出来的 PNG，能上色；单行文字的托盘 title 由系统画，改不了颜色
+  $("#row-color").classList.toggle("dim", colorOff);
+  // 灰掉时说清为什么灰 —— 否则这行看着像「重复的设置」而不是「当前样式用不上」
+  $("#row-color-hint").textContent = !colorOff
+    ? IS_WIN
+      ? "关掉后行情条只显示单色"
+      : "关掉后跟随系统深浅显示单色"
+    : S.barStyle === "icon"
+      ? IS_WIN
+        ? "当前是「仅图标」，行情条不显示"
+        : "当前是「仅图标」，菜单栏上没有行情文字"
+      : "单行文字由系统绘制，改不了颜色；切到「双行紧凑」才生效";
+  $("#fields").closest(".row")!.classList.toggle("dim", S.barStyle === "icon");
   if (IS_WIN) {
     $<HTMLInputElement>("#ticker").checked = S.ticker;
     $("#row-ticker").classList.toggle("dim", S.barStyle === "icon");
   }
-  $("#fields").closest(".row")!.classList.toggle("dim", S.barStyle === "icon");
   renderMarket();
   renderOrder();
   renderPreview();
@@ -1524,12 +1544,35 @@ function renderAlertList(): void {
  * 发一条测试通知，把真实结果说出来。
  * 别指望「先查权限再发」：macOS 的 WKWebView 里 `Notification.permission` 恒为 granted，
  * 而 Web 通知这条路本身是死的（见 notify.ts 的说明），所以只有真发一次才知道通不通。
+ *
+ * 结果落在「系统通知」这行**自己下面**（`#notify-hint`），别借用「新建规则」那张卡片的
+ * `#alert-form-hint`：那是给加规则用的，写在下面那张卡里，按钮在上面、反馈在下面，
+ * 点上多半没注意到，看着也不知道是谁的结果。
+ *
+ * 失败原因**原样**显示，别在尾巴上再补一句「去打开通知设置」：Rust 侧给的原因
+ * 里已经带了下一步该怎么办（`notify.rs` 的 send），再补一遍就成了「去「打开通知设置」
+ * 里打开 —— 去「打开通知设置」里允许 StockBar 通知」这种重复话。
  */
 async function testNotify(): Promise<void> {
-  const r = await sendNotify("StockBar 测试通知", "能看到这条，就说明提醒能送到你面前。");
-  alertFormHint(
-    r.ok ? "已发出一条测试通知" : `没发出去：${r.error} —— 去「打开通知设置」里允许 StockBar 通知`,
-  );
+  const btn = $<HTMLButtonElement>("#alerts-test");
+  btn.disabled = true;
+  // 等系统回话可能几十秒（首次授权要用户点弹窗），按钮先按住，别让人连点
+  btn.textContent = "发送中…";
+  try {
+    const r = await sendNotify("StockBar 测试通知", "能看到这条，就说明提醒能送到你面前。");
+    notifyHint(r.ok ? "已发出一条测试通知" : `没发出去：${r.error}`, r.ok ? "ok" : "err");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "发一条试试";
+  }
+}
+
+/** 「发一条试试」的结果：`tone` 只影响左边那颗圆点的颜色，正文始终是同一套字 */
+function notifyHint(text: string, tone: "ok" | "err"): void {
+  const box = $("#notify-hint");
+  box.className = `notify-hint ${tone}`;
+  box.textContent = text;
+  box.hidden = !text;
 }
 
 function alertFormHint(text: string): void {
@@ -1558,8 +1601,9 @@ function renderAlerts(): void {
   // 条件种类与方向的按钮文案跟着种类走；单价 / 百分比只差一个单位与步进
   setSeg("#seg-alert-kind", alertDraftKind);
   setSeg("#seg-alert-op", alertDraftOp);
-  $("#alert-op-below").textContent = OP_NAME[alertDraftKind].below;
-  $("#alert-op-above").textContent = OP_NAME[alertDraftKind].above;
+  // 只换文字节点：按钮里还有图标（.seg-txt 之外的 svg），整段 textContent 会把图标抹掉
+  $(".seg-txt", $("#alert-op-below")).textContent = OP_NAME[alertDraftKind].below;
+  $(".seg-txt", $("#alert-op-above")).textContent = OP_NAME[alertDraftKind].above;
   $("#alert-unit").textContent = alertDraftKind === "pct" ? "%" : "元";
   // 选中的那只还在就留着，否则回落到第一只（别让表单指着一只已经删掉的标的）。
   // 选择框展开着时不动输入框：用户可能正在里面敲搜索词。

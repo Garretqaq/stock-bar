@@ -84,13 +84,13 @@ macOS 菜单栏盯盘 · Windows 悬浮行情条 · 自选分组 · MCP
 
 ### 设置面板：按桌面习惯调整
 
-macOS 使用自绘窗口控件，Windows 使用对应的平台布局。主题、涨跌配色、刷新间隔与数据来源集中在「设置」页；行情栏样式与显示字段在「仪表盘」调整。
+macOS 使用自绘窗口控件，Windows 使用对应的平台布局。样式、显示字段、显示顺序、主题、涨跌配色与数据刷新都在「仪表盘」一页里调，改完即时生效。
 
 <table>
   <tr><th width="50%">macOS</th><th width="50%">Windows</th></tr>
   <tr>
-    <td><img src="docs/screenshots/macos-settings.webp" width="100%" alt="macOS 设置页：主题、涨跌配色、刷新间隔与双数据源"></td>
-    <td><img src="docs/screenshots/windows-settings.webp" width="100%" alt="Windows 设置页：平台导航、卡片式设置与双数据源"></td>
+    <td><img src="docs/screenshots/macos-settings.webp" width="100%" alt="macOS 设置窗口：仪表盘页的样式、显示字段、主题、涨跌配色与双数据源"></td>
+    <td><img src="docs/screenshots/windows-settings.webp" width="100%" alt="Windows 设置窗口：平台导航、卡片式设置与双数据源"></td>
   </tr>
 </table>
 

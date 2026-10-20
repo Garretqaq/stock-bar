@@ -68,7 +68,8 @@
       "../mcp/lib.mjs": "mcp/lib.mjs"
     },
     "macOS": {
-      "minimumSystemVersion": "11.0"
+      "minimumSystemVersion": "11.0",
+      "signingIdentity": "-"
     },
     "windows": {
       "webviewInstallMode": {

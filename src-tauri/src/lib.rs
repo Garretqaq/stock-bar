@@ -381,7 +381,7 @@ async fn open_settings(app: AppHandle, page: Option<String>) -> Result<(), Strin
 }
 
 /// 设置窗口里可用的页（与 prefs.ts 的 Page 一一对应）：不认识的页名一律忽略，免得切到空白页
-const PAGES: [&str; 6] = ["dashboard", "market", "alerts", "mcp", "about", "settings"];
+const PAGES: [&str; 5] = ["dashboard", "market", "alerts", "mcp", "about"];
 
 /// 窗口是新建的时候，「要打开哪一页」先存在这里：建窗时前端还没挂上监听，事件发出去会丢
 static PENDING_PAGE: LazyLock<Mutex<Option<String>>> = LazyLock::new(|| Mutex::new(None));
@@ -853,10 +853,12 @@ mod tests {
 
     #[test]
     fn 页名白名单只放行认识的页() {
-        for page in ["dashboard", "market", "mcp", "about", "settings"] {
+        for page in ["dashboard", "market", "alerts", "mcp", "about"] {
             assert!(PAGES.contains(&page), "{page} 应该在白名单里");
         }
         assert!(!PAGES.contains(&"nope"));
+        // 「设置」页已经并进「仪表盘」：老链接带 #settings 会被挡下，前端回落到第一页
+        assert!(!PAGES.contains(&"settings"));
     }
 
     #[test]

@@ -240,9 +240,6 @@ svg .fill {
 .nav-ico.blue {
   background: linear-gradient(145deg, #4aa8ff, #0a6cff);
 }
-.nav-ico.gray {
-  background: linear-gradient(145deg, #a1a1a6, #6e6e73);
-}
 .nav-ico.green {
   background: linear-gradient(145deg, #34d07f, #17a35b);
 }
@@ -304,8 +301,16 @@ svg .fill {
 .page.on {
   display: block;
 }
+/*
+ * 整页的入场动画（分级淡入）。fill-mode 必须是 backwards 而不是 both：
+ * `rise` 只写了 from，「both」会在动画结束后把 transform 停在 matrix(...) 上
+ * （不是 none），于是**每张卡片都成了独立的层叠上下文** —— 卡片里那些
+ * position: absolute 的弹层（如 #alert-pick-list 的 z-index: 20）就出不了自己这张卡，
+ * 会被后面的「规则」卡片整块盖住。「backwards」在延迟期间照样从 from 起步，
+ * 结束后样式回到自然值，层叠上下文也就不存在了。
+ */
 .page.on > * {
-  animation: rise 0.42s var(--ease-out) both;
+  animation: rise 0.42s var(--ease-out) backwards;
 }
 .page.on > :nth-child(2) {
   animation-delay: 40ms;
@@ -1994,6 +1999,30 @@ svg .fill {
 .alert-form .seg {
   flex: 0 0 auto;
 }
+/*
+ * 新建规则那几颗按钮里的图标：跟字同色（`.seg button.on` 时随 currentColor 变白），
+ * 但比全局 svg 的 16px 小一档 —— 那个尺寸在 12.5px 的字旁边压不住，行高会被顶开。
+ * 13px 实测偏小（¥ 本身笔画就细），取 14px。
+ */
+.alert-form .seg button svg {
+  width: 14px;
+  height: 14px;
+  stroke-width: 1.9;
+  opacity: 0.85;
+}
+.alert-form .seg button.on svg {
+  opacity: 1;
+}
+/* 「添加规则」那颗：图标 + 文字，左对齐一点，别让 plus 孤零零飘在中间 */
+.alert-form .sec-btn {
+  gap: 5px;
+  padding: 0 11px;
+}
+.alert-form .sec-btn svg {
+  width: 12px;
+  height: 12px;
+  stroke-width: 2.2;
+}
 /* 标的选择框：可输入筛选的下拉（原生 select 打不了字，这里自己画一个） */
 .alert-pick {
   position: relative;
@@ -2124,6 +2153,43 @@ svg .fill {
 }
 .alert-hint:not(:empty) {
   padding-bottom: 10px;
+}
+
+/*
+ * 「发一条试试」的结果：贴在「系统通知」那一行下面。
+ * 跟 .alert-hint 分开 —— 那个是「新建规则」表单的反馈，两者位置差着一张卡片，
+ * 共用一处会让人以为点了上面的按钮、反馈在下面的表单里。
+ * 圆点用固定的系统色，不跟 --up / --down 走（「绿涨红跌」下它们会翻过来）。
+ */
+.notify-hint {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 0 0 11px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--sub);
+}
+.notify-hint[hidden] {
+  display: none;
+}
+.notify-hint::before {
+  content: "";
+  flex: none;
+  width: 6px;
+  height: 6px;
+  margin-top: 6px;
+  border-radius: 50%;
+  background: var(--flat);
+}
+.notify-hint.ok::before {
+  background: #34c759;
+}
+.notify-hint.err::before {
+  background: #ff453a;
+}
+.notify-hint.err {
+  color: var(--text);
 }
 
 /* 规则列表：名称 + 条件 + 启停开关 + 删除 */

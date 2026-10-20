@@ -162,18 +162,34 @@ mod mac {
 
     /// 请求授权（已经决定过的话系统立刻回现状，不会再弹窗）。
     /// 用户点弹窗要时间，所以等满 120 秒 —— 调用方在阻塞线程上（见 lib.rs 的 notify_send）。
+    ///
+    /// 系统直接拒掉这次请求时（didGrant 0 + 带 NSError）要把原话带出来：那种情况
+    /// 多半不是「用户没点允许」，而是系统没把这个进程认成 StockBar —— 权限页上看着
+    /// 明明是允许的。一律回「你还没允许」会把人指到错的地方去。
     fn authorize() -> Result<bool, String> {
         let center = UNUserNotificationCenter::currentNotificationCenter();
         let (tx, rx) = mpsc::channel();
-        let block = RcBlock::new(move |granted: Bool, _error: *mut NSError| {
-            let _ = tx.send(granted.as_bool());
+        let block = RcBlock::new(move |granted: Bool, error: *mut NSError| {
+            let message = if error.is_null() {
+                None
+            } else {
+                unsafe { error.as_ref() }.map(|e| e.localizedDescription().to_string())
+            };
+            let _ = tx.send((granted.as_bool(), message));
         });
         center.requestAuthorizationWithOptions_completionHandler(
             UNAuthorizationOptions::Alert | UNAuthorizationOptions::Sound | UNAuthorizationOptions::Badge,
             &block,
         );
-        rx.recv_timeout(Duration::from_secs(120))
-            .map_err(|_| "等系统授权的结果超时了（弹窗还在的话点一下「允许」再试一次）".to_string())
+        let (granted, message) = rx
+            .recv_timeout(Duration::from_secs(120))
+            .map_err(|_| "等系统授权的结果超时了（弹窗还在的话点一下「允许」再试一次）".to_string())?;
+        match (granted, message) {
+            (true, _) => Ok(true),
+            // 用户自己点了「不允许」：这样系统不给 error，提示去设置里开是对的
+            (false, None) => Ok(false),
+            (false, Some(e)) => Err(e),
+        }
     }
 
     pub fn send(title: &str, body: &str) -> Result<(), String> {
@@ -186,7 +202,9 @@ mod mac {
             Some(s) if s == UNAuthorizationStatus::Denied => {
                 return Err("系统没有允许 StockBar 发通知 —— 去「打开通知设置」里打开 StockBar 的通知".into())
             }
-            // 第一次用（或读不到状态）：先要授权，用户点了「允许」再发
+            // 第一次用（或读不到状态）：先要授权，用户点了「允许」再发。
+            // `authorize()` 返回 Err 是「系统直接拒了这次请求」，原话要带出去 —— 别
+            // 替它说成「你还没允许」，那会把用户指到「打开通知设置」里白找一圈。
             _ => {
                 if !authorize()? {
                     return Err("你还没允许 StockBar 发送通知 —— 去「打开通知设置」里打开".into());

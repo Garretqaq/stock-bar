@@ -1983,6 +1983,10 @@ svg .fill {
   opacity: 0.45;
   cursor: not-allowed;
 }
+/* display: inline-flex 会盖掉 [hidden] 的默认 display: none，「取消」那颗平时藏着，得自己补一条 */
+.sec-btn[hidden] {
+  display: none;
+}
 .sec-btn.primary {
   color: var(--accent);
   border-color: color-mix(in srgb, var(--accent) 45%, transparent);
@@ -2250,6 +2254,31 @@ svg .fill {
 .alert-del:hover {
   color: #ff453a;
   background: color-mix(in srgb, #ff453a 12%, transparent);
+}
+/* 行尾的「修改」：与删除并排，同一套尺寸；悬停用强调色（删除才是红的） */
+.alert-edit {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  color: var(--sub);
+  transition: color 0.16s ease, background 0.16s ease;
+}
+.alert-edit svg {
+  width: 12px;
+  height: 12px;
+  stroke-width: 1.9;
+}
+.alert-edit:hover,
+.alert-item.editing .alert-edit {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+/* 正在修改的那一行：淡强调色底，好跟上面表单里的「保存修改」对上 */
+.alert-item.editing {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
 }
 .alert-empty {
   padding: 14px 12px;

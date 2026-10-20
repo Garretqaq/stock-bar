@@ -24,6 +24,8 @@ import {
   type UpdateInfo,
 } from "./update";
 import {
+  ALERT_PCT_MAX,
+  ALERT_PRICE_MAX,
   BAR_MAX,
   GROUP_NAME_MAX,
   INDICES,
@@ -140,6 +142,8 @@ const I = {
   arrowDown: `<svg viewBox="0 0 24 24"><path d="M12 4.5v14"/><path d="M6.5 13L12 18.5 17.5 13"/></svg>`,
   arrowUp: `<svg viewBox="0 0 24 24"><path d="M12 19.5v-14"/><path d="M6.5 11L12 5.5 17.5 11"/></svg>`,
   plus: `<svg viewBox="0 0 24 24"><path d="M12 5.5v13M5.5 12h13"/></svg>`,
+  /** 修改规则用：一支笔（斜向笔杆 + 笔尖那道横线） */
+  pen: `<svg viewBox="0 0 24 24"><path d="M4.6 19.4h3.3L18.2 9.1a2.33 2.33 0 0 0-3.3-3.3L4.6 16.1z"/><path d="M13.5 7.2l3.3 3.3"/></svg>`,
 };
 
 // ---------- 骨架 ----------
@@ -396,7 +400,7 @@ root.innerHTML = `
         <div class="notify-hint" id="notify-hint" hidden></div>
       </div>
 
-      <h2 class="group-title">新建规则</h2>
+      <h2 class="group-title" id="alert-form-title">新建规则</h2>
       <div class="group">
         <div class="alert-form">
           <div class="alert-pick">
@@ -415,12 +419,13 @@ root.innerHTML = `
             <input id="alert-value" type="number" inputmode="decimal" min="0" step="0.01" placeholder="阈值" autocomplete="off" spellcheck="false" />
             <b id="alert-unit">元</b>
           </label>
-          <button class="sec-btn primary" id="alert-add">${I.plus}添加规则</button>
+          <button class="sec-btn primary" id="alert-add">${I.plus}<span class="btn-txt">添加规则</span></button>
+          <button class="sec-btn" id="alert-cancel" hidden>取消</button>
         </div>
         <div class="alert-hint" id="alert-form-hint"></div>
       </div>
 
-      <h2 class="group-title">规则 <span class="count" id="alert-count"></span><span class="title-hint">一只标的可以有多条规则</span></h2>
+      <h2 class="group-title">规则 <span class="count" id="alert-count"></span><span class="title-hint">一只标的可以有多条规则 · 点行尾的笔改条件</span></h2>
       <div class="group">
         <div class="alert-list" id="alert-list"></div>
       </div>
@@ -1427,7 +1432,9 @@ let alertDraftKind: AlertKind = "price";
 let alertDraftOp: AlertOp = "below";
 /** 选中的标的（secid）；输入框显示的是它的「名称（代码）」 */
 let alertTarget = "";
-/** 标的选择框：展开状态、键盘高亮到第几项、以及**输入框里的搜索词** */
+/** 正在改哪条规则（null = 表单在「新建」状态）：表单只有一份，点行尾那支笔就就地切成修改 */
+let alertEditId: string | null = null;
+/** 选中的标的（secid）；输入框显示的是它的「名称（代码）」 */
 let alertPickOpen = false;
 let alertPickAt = 0;
 /** 搜索词单独记一份：输入框显示的是选中那只的名字，一聚焦就会把词清空、列出全部 */
@@ -1519,14 +1526,17 @@ function pickAlertTarget(secid: string): void {
 }
 
 function alertRow(a: Alert): string {
+  // 正在改的那一行留个标记：表单在列表上面，一眼能对上改的是哪条
+  const editing = a.id === alertEditId;
   return `
-    <div class="alert-item${a.enabled ? "" : " off"}" data-id="${esc(a.id)}">
+    <div class="alert-item${a.enabled ? "" : " off"}${editing ? " editing" : ""}" data-id="${esc(a.id)}">
       <div class="alert-main">
         <b>${esc(alertName(a.secid))}</b>
         <small><span class="tag">${marketTag(a.secid)}</span>${esc(codeOf(a.secid))}</small>
       </div>
       <span class="alert-cond">${esc(alertLabel(a))}</span>
       <label class="switch"><input type="checkbox" data-on="${esc(a.id)}"${a.enabled ? " checked" : ""} aria-label="启用 ${esc(alertLabel(a))}" /><i></i></label>
+      <button class="alert-edit" data-edit="${esc(a.id)}" title="修改规则" aria-label="修改规则">${I.pen}</button>
       <button class="alert-del" data-del="${esc(a.id)}" title="删除规则" aria-label="删除规则">
         <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>
       </button>
@@ -1579,7 +1589,39 @@ function alertFormHint(text: string): void {
   $("#alert-form-hint").textContent = text;
 }
 
-function addAlert(): void {
+/** 把一条已有规则装进表单（表单就地切成「修改」状态）：改条件不用删了重建 */
+function editAlert(id: string): void {
+  const a = S.alerts.find((x) => x.id === id);
+  if (!a) return;
+  alertEditId = id;
+  alertDraftKind = a.kind;
+  alertDraftOp = a.op;
+  alertTarget = a.secid;
+  closeAlertPick(); // 换标的走的是同一只选择框，先收起来
+  alertFormHint("");
+  renderAlerts();
+  // 表单里填上那条规则现在的样子：标的显示「名称（代码）」，阈值给原来那个数
+  $<HTMLInputElement>("#alert-target").value =
+    alertPickList().find((p) => p.secid === a.secid)?.label ?? codeOf(a.secid);
+  const value = $<HTMLInputElement>("#alert-value");
+  value.value = String(a.value);
+  // 表单在规则列表上面：滚过去，并把光标放进阈值框（改规则十有八九就是改这个数）
+  $("#alert-form-title").scrollIntoView?.({ block: "nearest" });
+  value.focus();
+  value.select();
+}
+
+/** 退出修改状态：表单回到「新建」，一个字段都不写进设置 */
+function cancelAlertEdit(): void {
+  if (alertEditId == null) return;
+  alertEditId = null;
+  $<HTMLInputElement>("#alert-value").value = "";
+  alertFormHint("");
+  renderAlerts();
+}
+
+/** 「添加规则 / 保存修改」：表单在修改状态就写回那一条，否则追加一条新的 */
+function submitAlert(): void {
   const secid = alertTarget;
   if (!secid) return alertFormHint("先选一只标的");
   const raw = Number($<HTMLInputElement>("#alert-value").value);
@@ -1588,6 +1630,17 @@ function addAlert(): void {
     return alertFormHint(
       alertDraftKind === "pct" ? "填 0.1 到 50 之间的百分比" : "填一个大于 0 的价格",
     );
+  }
+  const edited = alertEditId != null ? S.alerts.find((a) => a.id === alertEditId) : undefined;
+  if (edited) {
+    // 就地改：id、启用状态与在列表里的位置都不动（关掉的规则改完还是关着的）
+    const next: Alert = { ...edited, secid, kind: alertDraftKind, op: alertDraftOp, value };
+    S.alerts = S.alerts.map((a) => (a.id === next.id ? next : a));
+    alertEditId = null;
+    $<HTMLInputElement>("#alert-value").value = "";
+    commit();
+    alertFormHint(`已更新：${alertName(secid)} ${alertLabel(next)}`);
+    return;
   }
   const a = newAlert(S.alerts, secid, alertDraftKind, alertDraftOp, value);
   S.alerts = [...S.alerts, a];
@@ -1598,6 +1651,17 @@ function addAlert(): void {
 
 function renderAlerts(): void {
   $<HTMLInputElement>("#alerts-on").checked = S.alertsOn;
+  // 正在改的那条要是没了（另开的窗口删了它 / 删自选连带删掉）：表单退回「新建」，
+  // 别留在「改一条不存在的规则」的状态里
+  if (alertEditId != null && !S.alerts.some((a) => a.id === alertEditId)) {
+    alertEditId = null;
+    $<HTMLInputElement>("#alert-value").value = "";
+  }
+  const editing = alertEditId != null;
+  $("#alert-form-title").textContent = editing ? "修改规则" : "新建规则";
+  // 只换文字节点：那颗按钮里还有加号图标
+  $(".btn-txt", $("#alert-add")).textContent = editing ? "保存修改" : "添加规则";
+  $<HTMLButtonElement>("#alert-cancel").hidden = !editing;
   // 条件种类与方向的按钮文案跟着种类走；单价 / 百分比只差一个单位与步进
   setSeg("#seg-alert-kind", alertDraftKind);
   setSeg("#seg-alert-op", alertDraftOp);
@@ -1624,7 +1688,7 @@ function renderAlerts(): void {
   // 标的名来自报价 —— 名字进了键，名字到了规则列表也要跟着重画一次
   const targetsKey = picks.map((p) => `${p.secid}:${p.label}`).join("|");
   if (alertPickOpen) renderAlertPick();
-  const listKey = `${S.alerts.map((a) => `${a.id}:${a.kind}:${a.op}:${a.value}:${a.enabled ? 1 : 0}:${alertName(a.secid)}`).join(",")}|${targetsKey}`;
+  const listKey = `${S.alerts.map((a) => `${a.id}:${a.kind}:${a.op}:${a.value}:${a.enabled ? 1 : 0}:${alertName(a.secid)}`).join(",")}|${targetsKey}|${alertEditId ?? ""}`;
   if (listKey !== alertListKey) {
     alertListKey = listKey;
     renderAlertList();
@@ -1688,8 +1752,13 @@ $("#alerts-test").addEventListener("click", () => void testNotify());
 $("#seg-alert-kind").addEventListener("click", (e) => {
   const v = (e.target as HTMLElement).closest<HTMLElement>("button")?.dataset.v as AlertKind | undefined;
   if (!v || v === alertDraftKind) return;
+  // 换了单位之后原来那个数不一定还对（元 1500 换成百分比就没意义了）：
+  // 还在新单位的范围内就留着（改规则时不用重打一遍），超出范围才清掉
+  const input = $<HTMLInputElement>("#alert-value");
+  const n = Number(input.value);
+  const max = v === "pct" ? ALERT_PCT_MAX : ALERT_PRICE_MAX;
+  if (!(input.value.trim() !== "" && Number.isFinite(n) && n > 0 && n <= max)) input.value = "";
   alertDraftKind = v;
-  $<HTMLInputElement>("#alert-value").value = "";
   alertFormHint("");
   renderAlerts();
 });
@@ -1701,12 +1770,18 @@ $("#seg-alert-op").addEventListener("click", (e) => {
   renderAlerts();
 });
 
-$("#alert-add").addEventListener("click", addAlert);
+$("#alert-add").addEventListener("click", submitAlert);
+$("#alert-cancel").addEventListener("click", cancelAlertEdit);
 $<HTMLInputElement>("#alert-value").addEventListener("keydown", (e) => {
-  if (e.key === "Enter") addAlert();
+  if (e.key === "Enter") submitAlert();
+  // 修改状态下 Esc 就退出（与组名就地改名同一套手势）；新建状态留给输入法 / 别处
+  else if (e.key === "Escape" && alertEditId != null) {
+    e.stopPropagation();
+    cancelAlertEdit();
+  }
 });
 
-// 规则列表：勾选即启用 / 停用，× 删除（两条都改同一份 S.alerts，存完广播给主面板）
+// 规则列表：勾选即启用 / 停用，笔修改，× 删除（都改同一份 S.alerts，存完广播给主面板）
 $("#alert-list").addEventListener("change", (e) => {
   const input = e.target as HTMLInputElement;
   const id = input.dataset.on;
@@ -1716,10 +1791,17 @@ $("#alert-list").addEventListener("change", (e) => {
 });
 
 $("#alert-list").addEventListener("click", (e) => {
+  const edit = (e.target as HTMLElement).closest<HTMLElement>(".alert-edit")?.dataset.edit;
+  if (edit) return editAlert(edit);
   const id = (e.target as HTMLElement).closest<HTMLElement>(".alert-del")?.dataset.del;
   if (!id) return;
   const gone = S.alerts.find((a) => a.id === id);
   S.alerts = S.alerts.filter((a) => a.id !== id);
+  // 删掉的正是正在改的那条：表单退回「新建」（renderAlerts 里也有这道保险，这里是当场收干净）
+  if (alertEditId === id) {
+    alertEditId = null;
+    $<HTMLInputElement>("#alert-value").value = "";
+  }
   commit();
   if (gone) alertFormHint(`已删除：${alertName(gone.secid)} ${alertLabel(gone)}`);
 });

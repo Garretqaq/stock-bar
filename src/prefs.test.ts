@@ -317,3 +317,72 @@ describe("设置窗口：提醒页的标的选择框", () => {
     expect(document.querySelector<HTMLInputElement>("#alert-value")!.value).toBe("");
   });
 });
+
+describe("设置窗口：修改已有的提醒规则", () => {
+  // 起一份已经有两规则的设置：a1 价格跌破 1500（开着）、a2 涨超 5%（关着）
+  beforeEach(async () => {
+    vi.resetModules();
+    localStorage.clear();
+    localStorage.setItem(
+      "stockbar.settings.v1",
+      JSON.stringify({
+        watchlist: ["1.600519"],
+        selected: "1.600519",
+        bar: ["1.600519"],
+        alerts: [
+          { id: "a1", secid: "1.600519", kind: "price", op: "below", value: 1500, enabled: true },
+          { id: "a2", secid: "1.600519", kind: "pct", op: "above", value: 5, enabled: false },
+        ],
+      }),
+    );
+    document.body.innerHTML = '<div id="prefs" class="prefs"></div>';
+    vi.useFakeTimers();
+    await import("./prefs");
+    document.querySelector<HTMLElement>('.nav-item[data-page="alerts"]')!.click();
+  });
+
+  const value = () => document.querySelector<HTMLInputElement>("#alert-value")!;
+  const title = () => document.querySelector("#alert-form-title")!.textContent;
+  const addBtn = () => document.querySelector<HTMLElement>("#alert-add")!;
+  const row = (id: string) => document.querySelector<HTMLElement>(`.alert-item[data-id="${id}"]`)!;
+  const editRow = (id: string) => row(id).querySelector<HTMLElement>(".alert-edit")!.click();
+  const savedAlerts = () =>
+    saved().alerts as { id: string; kind: string; op: string; value: number; enabled: boolean }[];
+
+  it("点行尾的笔把那条装进表单：标题变「修改规则」，阈值是原来那个数", () => {
+    editRow("a1");
+    expect(title()).toBe("修改规则");
+    expect(value().value).toBe("1500");
+    expect(row("a1").classList.contains("editing")).toBe(true);
+    expect(addBtn().textContent).toContain("保存修改");
+  });
+
+  it("改阈值后保存：就地更新那一条，id 与位置都不动，表单退回「新建」", () => {
+    editRow("a1");
+    value().value = "1200";
+    addBtn().click();
+    const list = savedAlerts();
+    expect(list).toHaveLength(2);
+    expect(list[0]).toMatchObject({ id: "a1", kind: "price", op: "below", value: 1200, enabled: true });
+    expect(list[1].id).toBe("a2");
+    expect(title()).toBe("新建规则");
+    expect(value().value).toBe("");
+    expect(row("a1").classList.contains("editing")).toBe(false);
+  });
+
+  it("关掉的规则改完还是关着的", () => {
+    editRow("a2");
+    value().value = "8";
+    addBtn().click();
+    expect(savedAlerts()[1]).toMatchObject({ id: "a2", kind: "pct", op: "above", value: 8, enabled: false });
+  });
+
+  it("取消就退回「新建」，设置一个字段都不动", () => {
+    editRow("a1");
+    value().value = "999";
+    document.querySelector<HTMLElement>("#alert-cancel")!.click();
+    expect(title()).toBe("新建规则");
+    expect(value().value).toBe("");
+    expect(savedAlerts()[0].value).toBe(1500);
+  });
+});

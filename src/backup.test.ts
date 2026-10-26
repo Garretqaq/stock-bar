@@ -132,6 +132,15 @@ describe("恢复", () => {
 });
 
 describe("文案", () => {
+  it("摘要：0 也要报，没有时间就直说", () => {
+    // 没有时间就直说，别显示 1970
+    const empty = parseBackup(JSON.stringify({ watchlist: [] }));
+    expect(backupSummary(empty)).toContain("备份时间未知");
+    // 0 也要报：确认框里得能分清「没有分组」和「没读到」
+    expect(backupSummary(empty)).toContain("0 个分组");
+    expect(backupSummary(empty)).toContain("0 条提醒");
+  });
+
   it("时间与上次记录", () => {
     expect(timeText(0)).toBe("没有记录");
     expect(timeText(1700000000000)).toMatch(/^\d{4}-\d\d-\d\d \d\d:\d\d$/);

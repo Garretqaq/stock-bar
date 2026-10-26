@@ -21,9 +21,7 @@ export interface BackupFile {
 /** 当前备份格式 */
 export const BACKUP_FORMAT = 1;
 
-/** 远端两个坑位：常规备份（恢复源）/ 恢复前的安全副本（只写不读，留给手工取回） */
-export const SLOTS = ["backup", "safety"] as const;
-export type Slot = (typeof SLOTS)[number];
+// 远端两个坑位的名字写死在 Rust 侧（backup.rs 的 slot_file），前端只说 slot 名
 
 /** 解析备份失败：消息直接给用户看 */
 export class BackupError extends Error {
@@ -48,7 +46,7 @@ export function urlProblem(raw: string): string | null {
   return null;
 }
 
-/** 地址与账号都填好了才算配过（密码可以空：有些内网 WebDAV 不开认证） */
+/** 地址填好了就算配过（账号与密码可以空：有些内网的 WebDAV 不开认证） */
 export function configured(b: BackupSettings): boolean {
   return urlProblem(b.url) == null;
 }
@@ -134,18 +132,15 @@ export function timeText(ms: number): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
-/** 一份备份里都有什么：恢复前的确认框里说清楚，别让人盲点 */
+/** 一份备份里都有什么：恢复前的确认框里说清楚，别让人盲点（0 也报，才不会当成「没读到」） */
 export function backupSummary(file: BackupFile): string {
   const s = file.settings;
   const stocks = Array.isArray(s.watchlist) ? s.watchlist.length : 0;
   const groups = Array.isArray(s.groups) ? s.groups.length : 0;
   const alerts = Array.isArray(s.alerts) ? s.alerts.length : 0;
-  const parts = [`${stocks} 只自选`];
-  if (groups) parts.push(`${groups} 个分组`);
-  if (alerts) parts.push(`${alerts} 条提醒`);
   const when = file.savedAt ? `备份时间 ${timeText(file.savedAt)}` : "备份时间未知";
   const from = file.appVersion ? ` · 来自 v${file.appVersion.replace(/^v/i, "")}` : "";
-  return `${when} · ${parts.join(" · ")}${from}`;
+  return `${when} · ${stocks} 只自选 · ${groups} 个分组 · ${alerts} 条提醒${from}`;
 }
 
 /** 「上次备份」那行小字：没成功过就说没成功过 */

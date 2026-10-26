@@ -9,8 +9,8 @@
 //!   AES-256-GCM 加密（ring 的 AEAD，本来就在依赖树里 —— 换机器 / 拷贝设置目录才会解不开，
 //!   那时界面提示「重新输入密码」，不会静默失败）。
 //!
-//! 远端只有一个坑位：`settings.json`（每次备份直接覆盖）；恢复前把本地当前数据另写一份
-//! `restore-safety.json`，恢复搞砸了还能手工取回来。
+//! 远端只有两个固定坑位：`settings.json`（常规备份，每次直接覆盖）与 `restore-safety.json`
+//! （只在恢复前写一份本地当前数据，不当恢复源 —— 恢复搞砸了还能手工取回来）。
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -123,7 +123,6 @@ fn open(key: &[u8; 32], stored: &str) -> Result<String, String> {
         .strip_prefix(CIPHER_PREFIX)
         .ok_or_else(|| "密文格式不认识，请重新输入密码".to_string())?;
     let raw = unhex(rest).ok_or_else(|| "密文格式不认识，请重新输入密码".to_string())?;
-    // 12 字节 nonce + 至少一个 tag（16 字节）
     // 12 字节 nonce + 至少一个 tag（16 字节）；空密码也就是这 28 字节
     if raw.len() < 28 {
         return Err("密文格式不认识，请重新输入密码".into());

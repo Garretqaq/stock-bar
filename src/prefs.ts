@@ -70,7 +70,6 @@ import {
 import {
   backupJson,
   backupSummary,
-  configured,
   isSealed,
   lastText,
   makeBackup,
@@ -1379,6 +1378,12 @@ function setDavError(e: unknown): void {
   renderDav();
 }
 
+/** 三个动作按钮的可用状态：在应用里 + 地址有效 + 没有正在进行的请求（输入时也用它） */
+function syncDavButtons(): void {
+  const ready = IN_TAURI && !davBusy && urlProblem($<HTMLInputElement>("#dav-url").value) == null;
+  for (const id of ["#dav-test", "#dav-backup", "#dav-restore"]) $<HTMLButtonElement>(id).disabled = !ready;
+}
+
 function renderDav(): void {
   const st = phaseText(davPhase, davDetail, davError);
   const state = $("#dav-state");
@@ -1395,11 +1400,8 @@ function renderDav(): void {
   pass.placeholder = S.backup.pass ? "已保存 · 留空沿用" : "密码 / 应用密码";
   if (document.activeElement !== pass) pass.value = davPassPlain ?? "";
 
-  // 预览（pnpm dev）里没有 Tauri 命令：按钮全禁，别让人点了没反应
-  const ready = IN_TAURI && configured(S.backup);
-  $<HTMLButtonElement>("#dav-test").disabled = davBusy || !ready;
-  $<HTMLButtonElement>("#dav-backup").disabled = davBusy || !ready;
-  $<HTMLButtonElement>("#dav-restore").disabled = davBusy || !ready;
+  // 预览（pnpm dev）里没有 Tauri 命令、地址没填、或正在等回包：按钮全禁，别让人点了没反应
+  syncDavButtons();
 
   $("#dav-confirm").hidden = !davPending;
   $<HTMLButtonElement>("#dav-confirm-ok").disabled = davBusy;
@@ -1529,6 +1531,8 @@ async function backupNow(): Promise<void> {
     const c = await davPrep();
     const file = makeBackup(S, Date.now(), await appVersion());
     await callOrThrow<void>("backup_upload", { ...c, slot: "backup", content: backupJson(file) });
+    // 云端那份刚被覆盖，待确认的摘要已经对不上了：作废它（与换地址时同一条规则）
+    davPending = null;
     S.backup = { ...S.backup, at: file.savedAt, kind: "backup" };
     davPhase = "backed";
     davDetail = `已备份到云端（${timeText(file.savedAt)}）`;
@@ -2160,10 +2164,7 @@ $("#dav-user").addEventListener("change", () => saveDavFields());
 $("#dav-pass").addEventListener("change", () => void saveDavPass());
 // 输入时只更新按钮可用状态（不写设置、不广播）
 $("#dav-url").addEventListener("input", () => {
-  const ready = IN_TAURI && urlProblem($<HTMLInputElement>("#dav-url").value) == null;
-  for (const id of ["#dav-test", "#dav-backup", "#dav-restore"]) {
-    $<HTMLButtonElement>(id).disabled = davBusy || !ready;
-  }
+  syncDavButtons();
 });
 $("#dav-test").addEventListener("click", () => void testDav());
 $("#dav-backup").addEventListener("click", () => void backupNow());

@@ -20,6 +20,7 @@ import {
   moveRowInView,
   newGroup,
   normalizeGroups,
+  normalizeBackup,
   normalizePins,
   pinCount,
   pinItem,
@@ -607,6 +608,47 @@ describe("applySearchAction", () => {
     // 菜单是点开那一刻渲染的，点之前标的可能已经在别的窗口 / MCP 里被删掉了
     expect(applySearchAction(state(), groups, "gone", { kind: "moveToGroup", gid: "g1", label: "" }).groupOf).toEqual({
       a: "g1",
+    });
+  });
+});
+
+describe("WebDAV 备份的字段", () => {
+  beforeEach(() => localStorage.clear());
+
+  it("旧数据没有 backup 字段：按「还没配过」", () => {
+    put({ watchlist: ["1.600519"] });
+    expect(loadSettings().backup).toEqual({ url: "", user: "", pass: "", at: 0, kind: "" });
+  });
+
+  it("只留 v1: 密文：手改出来的明文一律丢掉", () => {
+    // 明文能落进存储就有泄漏风险，载入时直接清掉，让用户重输一次
+    put({ watchlist: [], backup: { url: " https://dav.example.com ", user: "me", pass: "plain-password", at: 5, kind: "backup" } });
+    expect(loadSettings().backup.pass).toBe("");
+    expect(loadSettings().backup.url).toBe("https://dav.example.com");
+  });
+
+  it("密文与上次记录原样保留；没有时间就不留动作", () => {
+    put({ watchlist: [], backup: { url: "https://dav.example.com", user: "me", pass: "v1:aabb", at: 1700000000000, kind: "restore" } });
+    expect(loadSettings().backup).toEqual({
+      url: "https://dav.example.com",
+      user: "me",
+      pass: "v1:aabb",
+      at: 1700000000000,
+      kind: "restore",
+    });
+    // at 清掉了的话 kind 也留着没意义（界面上说的是「上次 …」）
+    expect(normalizeBackup({ pass: "v1:aabb", kind: "backup" }).kind).toBe("");
+  });
+
+  it("形状不对（数组 / 字符串 / 时间不是数）都能挡下来", () => {
+    expect(normalizeBackup([]).url).toBe("");
+    expect(normalizeBackup("https://dav.example.com").url).toBe("");
+    expect(normalizeBackup({ url: 1, user: {}, pass: null, at: "昨天", kind: "nope" })).toEqual({
+      url: "",
+      user: "",
+      pass: "",
+      at: 0,
+      kind: "",
     });
   });
 });

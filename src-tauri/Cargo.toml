@@ -32,6 +32,9 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls-no-p
 # rustls 的加密后端：上面的 reqwest 用 rustls-no-provider，不装 provider 就建不出 Client
 # （tauri-plugin-updater 也是这么做的，见其 updater.rs；两边都装一次是安全的）
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
+# WebDAV 密码的本地加密：AES-256-GCM 直接用 ring 的 AEAD —— 它本来就在依赖树里
+# （见 src/backup.rs），不为一个对称加密再拉一个 crate 进来
+ring = "0.17"
 
 [profile.release]
 codegen-units = 1

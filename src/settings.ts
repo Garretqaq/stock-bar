@@ -27,6 +27,25 @@ export interface Group {
   name: string;
 }
 
+/**
+ * WebDAV 备份通道的配置。密码只存密文：明文只在设置窗口的内存里，
+ * 加密 / 解密都在 Rust 侧（见 src-tauri/src/backup.rs），密钥是 app data 目录里的随机文件。
+ */
+export interface BackupSettings {
+  /** 服务器地址（填到目录为止），空 = 还没配过 */
+  url: string;
+  user: string;
+  /** 密码密文（`v1:` 前缀）；换过机器 / 密钥文件丢了就解不开，界面提示重新输入 */
+  pass: string;
+  /** 上次成功的时间（毫秒），0 = 还没成功过 */
+  at: number;
+  /** 上次做的是备份还是恢复 */
+  kind: "" | "backup" | "restore";
+}
+
+/** 密码密文的前缀：写在一处，前端只认这一种，别让明文混进 localStorage */
+export const PASS_PREFIX = "v1:";
+
 export interface Settings {
   watchlist: string[];
   /** 自选分组（有序）；未分组不在其中，见 UNGROUPED */
@@ -57,6 +76,8 @@ export interface Settings {
   alerts: Alert[];
   /** 提醒总开关：关掉后规则全部保留，但一条通知都不发 */
   alertsOn: boolean;
+  /** WebDAV 备份通道（地址 / 账号 / 密码密文）与上次成功的记录 */
+  backup: BackupSettings;
 }
 
 export const STORE_KEY = "stockbar.settings.v1";
@@ -505,6 +526,26 @@ export function normalizeAlerts(list: string[], indices: string[], raw: unknown)
   return out;
 }
 
+// ---------- WebDAV 备份 ----------
+
+/**
+ * 载入 / 外部写入后的规整：只认认得的形状。
+ * 密码只留 `v1:` 密文 —— 密文以外的写法（手改出来的明文、别处塞进来的东西）一律丢掉，
+ * 宁可让用户重输一次，也不让明文落进 localStorage。
+ */
+export function normalizeBackup(raw: unknown): BackupSettings {
+  const r = (raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {}) as Partial<BackupSettings>;
+  const str = (v: unknown) => (typeof v === "string" ? v : "");
+  const at = typeof r.at === "number" && Number.isFinite(r.at) && r.at > 0 ? r.at : 0;
+  return {
+    url: str(r.url).trim(),
+    user: str(r.user),
+    pass: str(r.pass).startsWith(PASS_PREFIX) ? str(r.pass) : "",
+    at,
+    kind: at && (r.kind === "backup" || r.kind === "restore") ? r.kind : "",
+  };
+}
+
 export const DEFAULTS: Settings = {
   groups: [],
   groupOf: {},
@@ -524,6 +565,7 @@ export const DEFAULTS: Settings = {
   updateCheck: true,
   alerts: [],
   alertsOn: true,
+  backup: { url: "", user: "", pass: "", at: 0, kind: "" },
 };
 
 export function loadSettings(): Settings {
@@ -561,6 +603,9 @@ export function loadSettings(): Settings {
   // 总开关同理按默认「开」—— 没有规则时它开着也一条都发不出来
   s.alerts = normalizeAlerts(s.watchlist, INDICES.map((it) => it.secid), raw.alerts);
   if (typeof raw.alertsOn !== "boolean") s.alertsOn = DEFAULTS.alertsOn;
+  // WebDAV 备份通道：旧数据没有这个字段（或写坏了）时按「还没配过」；
+  // 密码只认 `v1:` 密文 —— 别的写法（手改出来的明文、旧版本残留）一律丢掉，别让它落进 localStorage
+  s.backup = normalizeBackup(raw.backup);
   return s;
 }
 

@@ -10,6 +10,7 @@ use tauri::{
 #[cfg(target_os = "macos")]
 use tauri_plugin_positioner::{Position, WindowExt};
 
+mod backup;
 mod bridge;
 mod notify;
 mod qqrank;
@@ -653,6 +654,47 @@ async fn qq_board_rank(ftype: String, offset: u32) -> Result<String, String> {
     qqrank::page(ftype, offset).await
 }
 
+// ---------- WebDAV 备份 / 恢复 ----------
+// 命令壳在这里，本体在 backup.rs（理由同上）。WebDAV 服务器基本不回 CORS 头，
+// webview 里 fetch 过不了预检，所以 PUT / GET / OPTIONS 都由 Rust 侧代发。
+// 密码的加密 / 解密也在这里 —— 明文不进 localStorage，密钥是 app data 目录里的随机文件。
+
+/// 测试连接：OPTIONS 一次配置的目录，成功时回一句能看懂的结果
+#[tauri::command]
+async fn backup_test(url: String, user: String, pass: String) -> Result<String, String> {
+    backup::test(url, user, pass).await
+}
+
+/// 上传一份备份（slot = backup 常规备份 / safety 恢复前的安全副本）
+#[tauri::command]
+async fn backup_upload(
+    url: String,
+    user: String,
+    pass: String,
+    slot: String,
+    content: String,
+) -> Result<(), String> {
+    backup::upload(url, user, pass, slot, content).await
+}
+
+/// 下载一份备份，原样回文本（解析与校验由前端做，见 src/backup.ts）
+#[tauri::command]
+async fn backup_download(url: String, user: String, pass: String, slot: String) -> Result<String, String> {
+    backup::download(url, user, pass, slot).await
+}
+
+/// 加密 WebDAV 密码：设置里只存这一串 `v1:…` 密文
+#[tauri::command]
+fn secret_encrypt(app: AppHandle, plain: String) -> Result<String, String> {
+    backup::encrypt(&app, &plain)
+}
+
+/// 解密 WebDAV 密码（换过机器 / 密钥文件丢了会失败，界面据此提示重新输入）
+#[tauri::command]
+fn secret_decrypt(app: AppHandle, stored: String) -> Result<String, String> {
+    backup::decrypt(&app, &stored)
+}
+
 // ---------- 版本更新 ----------
 // 命令壳在这里，本体在 update.rs（理由同 MCP：子模块里定义命令宏路径难伺候）
 
@@ -721,6 +763,11 @@ pub fn run() {
             mcp_info,
             mcp_set_enabled,
             qq_board_rank,
+            backup_test,
+            backup_upload,
+            backup_download,
+            secret_encrypt,
+            secret_decrypt,
             app_version,
             update_check,
             update_install,

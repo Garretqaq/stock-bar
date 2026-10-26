@@ -3239,3 +3239,73 @@ svg .fill {
 .win .gsec-btn.danger:hover {
   background: #e03a30;
 }
+
+/* ---------- 仪表盘：WebDAV 备份 ---------- */
+
+/* 三个输入框与状态行同宽（.row 是 flex 两端对齐，输入框靠右） */
+.dav-input {
+  width: 240px;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 12.5px;
+  color: var(--text);
+  background: var(--group);
+  transition: border-color 0.16s ease, box-shadow 0.16s ease;
+}
+.dav-input::placeholder {
+  color: var(--sub);
+}
+.dav-input:focus {
+  outline: 0;
+  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 30%, transparent);
+}
+/* 三个动作按钮：靠左排，不要 .sec-btn 自带的 margin-left:auto */
+.dav-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 0 12px;
+}
+.dav-actions .sec-btn {
+  margin-left: 0;
+}
+/* 恢复确认条：橙色描边（warn）—— 这一步会覆盖本地数据 */
+.dav-confirm {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, #ff9f0a 35%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, #ff9f0a 10%, transparent);
+}
+.dav-confirm[hidden] {
+  display: none;
+}
+.dav-confirm-text {
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--text);
+}
+.dav-confirm .dav-actions {
+  padding-bottom: 0;
+}
+.dav-hint {
+  padding: 0 0 12px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--sub);
+}
+/* 危险按钮：固定红（别跟随 --up / --down，绿涨红跌下会变成绿色） */
+.sec-btn.danger {
+  color: #ff453a;
+  border-color: color-mix(in srgb, #ff453a 45%, transparent);
+  background: color-mix(in srgb, #ff453a 10%, transparent);
+}
+.sec-btn.danger:hover {
+  color: #fff;
+  border-color: #ff453a;
+  background: #ff453a;
+}

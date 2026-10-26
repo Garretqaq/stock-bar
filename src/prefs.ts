@@ -29,6 +29,7 @@ import {
   BAR_MAX,
   GROUP_NAME_MAX,
   INDICES,
+  STORE_KEY,
   UNGROUPED,
   addToBar,
   applyAppearance,
@@ -66,6 +67,22 @@ import {
   type Settings,
   type Theme,
 } from "./settings";
+import {
+  backupJson,
+  backupSummary,
+  configured,
+  isSealed,
+  lastText,
+  makeBackup,
+  normalizeUrl,
+  parseBackup,
+  phaseText,
+  restoreSettings,
+  timeText,
+  urlProblem,
+  type BackupFile,
+  type BackupPhase,
+} from "./backup";
 import { IN_TAURI, IS_WIN, call, callOrThrow, listenAll } from "./tauri";
 import appIcon from "./assets/app-icon.png";
 // 与 Rust 托盘共用同一张图标（src-tauri/icons/tray.png），避免两份图不一致
@@ -334,6 +351,39 @@ root.innerHTML = `
           </div>
         </div>
       </div>
+
+      <h2 class="group-title">备份<span class="title-hint">整份设置存到你的 WebDAV：自选、置顶、分组、菜单栏、主题与提醒规则</span></h2>
+      <div class="group">
+        <div class="row">
+          <div class="row-label">服务器<small>填到目录为止，目录要先在服务器上建好</small></div>
+          <input class="dav-input" id="dav-url" placeholder="https://dav.example.com/dav/StockBar" autocomplete="off" spellcheck="false" />
+        </div>
+        <div class="row">
+          <div class="row-label">账号</div>
+          <input class="dav-input" id="dav-user" placeholder="用户名；不要认证时留空" autocomplete="off" spellcheck="false" />
+        </div>
+        <div class="row">
+          <div class="row-label">密码<small>加密后存在本机，明文不落盘；换机器要重输一次</small></div>
+          <input class="dav-input" id="dav-pass" type="password" placeholder="密码 / 应用密码" autocomplete="off" spellcheck="false" />
+        </div>
+        <div class="row">
+          <div class="row-label">状态</div>
+          <span class="up-state muted" id="dav-state"><i></i><b>还没连过</b></span>
+        </div>
+        <div class="dav-actions">
+          <button class="sec-btn" id="dav-test">测试连接</button>
+          <button class="sec-btn primary" id="dav-backup">立即备份</button>
+          <button class="sec-btn" id="dav-restore">从备份恢复</button>
+        </div>
+        <div class="dav-confirm" id="dav-confirm" hidden>
+          <div class="dav-confirm-text" id="dav-confirm-text"></div>
+          <div class="dav-actions">
+            <button class="sec-btn danger" id="dav-confirm-ok">覆盖本地并恢复</button>
+            <button class="sec-btn" id="dav-confirm-cancel">取消</button>
+          </div>
+        </div>
+        <div class="dav-hint" id="dav-hint"></div>
+      </div>
     </section>
 
     <section class="page" data-page="market">
@@ -556,6 +606,7 @@ function render(): void {
   setSeg("#seg-source", S.source);
   $<HTMLElement>("#source-hint").textContent = sourceHint(S);
   renderMcp();
+  renderDav();
   renderAlerts();
   renderAbout();
 }
@@ -1299,6 +1350,259 @@ async function copyMcpConfig(): Promise<boolean> {
   }
 }
 
+// ---------- 仪表盘：WebDAV 备份与恢复 ----------
+// 联网与加解密都在 Rust 侧（src-tauri/src/backup.rs），这里只管流程：
+// 测试连接 → 立即备份（覆盖云端 settings.json）→ 从备份恢复（读回来先确认，再写安全副本、覆盖本地）。
+// 地址与账号进设置（跟着设置同步），密码只存密文；明文留在 davPassPlain 里，窗口关掉就没了。
+
+let davPhase: BackupPhase = "idle";
+/** 状态行里的补充说明（连上了哪个地址 / 备份时间） */
+let davDetail = "";
+let davError = "";
+/** 正在联网：三个按钮全禁，免得点两次写两份 */
+let davBusy = false;
+/** 密码明文：只在当前窗口的内存里 */
+let davPassPlain: string | null = null;
+/** 密码加密的序号：连敲两次 / 回包晚到时，只认最后一次输入 */
+let davPassSeq = 0;
+/** 读回来等确认的那份云端备份；null = 没有待确认的恢复 */
+let davPending: BackupFile | null = null;
+
+function davErrorText(e: unknown): string {
+  return e instanceof Error ? e.message : String(e ?? "备份操作失败");
+}
+
+function setDavError(e: unknown): void {
+  davPhase = "error";
+  davError = davErrorText(e);
+  davBusy = false;
+  renderDav();
+}
+
+function renderDav(): void {
+  const st = phaseText(davPhase, davDetail, davError);
+  const state = $("#dav-state");
+  state.className = `up-state ${st.tone}`;
+  $("b", state).textContent = st.text;
+
+  // 输入框正被编辑时不回写：commit() 会重画整页，别把用户打了一半的地址冲掉
+  const url = $<HTMLInputElement>("#dav-url");
+  if (document.activeElement !== url) url.value = S.backup.url;
+  const user = $<HTMLInputElement>("#dav-user");
+  if (document.activeElement !== user) user.value = S.backup.user;
+  const pass = $<HTMLInputElement>("#dav-pass");
+  // 已存着密文时不回填明文（窗口重开时内存里没有明文），用 placeholder 说明「留空就沿用已保存的」
+  pass.placeholder = S.backup.pass ? "已保存 · 留空沿用" : "密码 / 应用密码";
+  if (document.activeElement !== pass) pass.value = davPassPlain ?? "";
+
+  // 预览（pnpm dev）里没有 Tauri 命令：按钮全禁，别让人点了没反应
+  const ready = IN_TAURI && configured(S.backup);
+  $<HTMLButtonElement>("#dav-test").disabled = davBusy || !ready;
+  $<HTMLButtonElement>("#dav-backup").disabled = davBusy || !ready;
+  $<HTMLButtonElement>("#dav-restore").disabled = davBusy || !ready;
+
+  $("#dav-confirm").hidden = !davPending;
+  $<HTMLButtonElement>("#dav-confirm-ok").disabled = davBusy;
+  $<HTMLButtonElement>("#dav-confirm-cancel").disabled = davBusy;
+  if (davPending) {
+    $<HTMLElement>("#dav-confirm-text").textContent =
+      `云端备份：${backupSummary(davPending)}。` +
+      "恢复会先把本机当前数据写成云端的安全副本（restore-safety.json），再用云端那份覆盖自选、分组与设置；" +
+      "备份通道的地址与密码保持本机这份。";
+  }
+
+  const saved = isSealed(S.backup.pass) ? "密码已加密保存 · " : "";
+  $<HTMLElement>("#dav-hint").textContent = IN_TAURI
+    ? `${saved}${lastText(S.backup)} · 云端目录里会写两个文件：settings.json（每次备份覆盖）与 restore-safety.json（只在恢复前写）`
+    : "浏览器预览里没有联网与加解密能力，备份与恢复只在应用窗口里可用。";
+}
+
+/** 把填的地址 / 账号写进设置（规整后）。返回地址的问题（null = 没问题） */
+function saveDavFields(): string | null {
+  const url = normalizeUrl($<HTMLInputElement>("#dav-url").value);
+  const user = $<HTMLInputElement>("#dav-user").value.trim();
+  const problem = urlProblem(url);
+  if (S.backup.url !== url || S.backup.user !== user) {
+    S.backup = { ...S.backup, url, user };
+    // 换了服务器 / 账号，手上那份「待确认的云端备份」就作废了 —— 否则接着点确认，
+    // 安全副本会写到新服务器，恢复的却还是上一台那份
+    if (davPending) {
+      davPending = null;
+      davPhase = "idle";
+      davDetail = "";
+    }
+    commit();
+  }
+  return problem;
+}
+
+/**
+ * 密码：输入即加密后存进设置（明文只留在内存里）。清空输入框 = 清掉已存的密文。
+ * 预览里无从加密，就只记在内存里 —— 绝不把明文写进 localStorage。
+ */
+async function saveDavPass(): Promise<void> {
+  const plain = $<HTMLInputElement>("#dav-pass").value;
+  // 序号：加密是异步的，敲完立刻清空 / 再敲一遍时，晚到的那份回包不能把新输入盖掉
+  const seq = ++davPassSeq;
+  davPassPlain = plain;
+  if (!plain) {
+    if (S.backup.pass) {
+      S.backup = { ...S.backup, pass: "" };
+      commit();
+    }
+    return;
+  }
+  if (!IN_TAURI) return;
+  try {
+    const sealed = await callOrThrow<string>("secret_encrypt", { plain });
+    if (seq !== davPassSeq) return; // 期间又改过密码：这份回包过期了
+    if (S.backup.pass !== sealed) {
+      S.backup = { ...S.backup, pass: sealed };
+      commit();
+    }
+  } catch (e) {
+    setDavError(e);
+  }
+}
+
+/**
+ * 这次调用要用的明文密码：先看输入框（刚敲的可能还没触发 change），再看内存，
+ * 最后请 Rust 解密一次。解不开（换机器 / 密钥文件丢了）就抛出让人重输的那句话。
+ */
+async function davPass(): Promise<string> {
+  const typed = $<HTMLInputElement>("#dav-pass").value;
+  if (typed) {
+    davPassPlain = typed;
+    return typed;
+  }
+  if (davPassPlain != null) return davPassPlain;
+  if (!S.backup.pass) return "";
+  try {
+    const plain = await callOrThrow<string>("secret_decrypt", { stored: S.backup.pass });
+    davPassPlain = plain ?? "";
+    return davPassPlain;
+  } catch (e) {
+    // 用 Rust 那边的原话：可能是密文坏了、密钥文件读不了、找不到数据目录 —— 别一律说成「换机器了」
+    throw new Error(davErrorText(e) || "密码在本机解不开，请在卡片里重新输入一次");
+  }
+}
+
+/** 当前版本号：备份文件里记一笔，恢复时能看出是哪一版写的（拿不到就算了） */
+async function appVersion(): Promise<string> {
+  return (await call<string>("app_version")) ?? "";
+}
+
+/** 联网前的统一检查：地址填了、有密码可用 */
+async function davPrep(): Promise<{ url: string; user: string; pass: string }> {
+  const problem = saveDavFields();
+  if (problem) throw new Error(problem);
+  return { url: S.backup.url, user: S.backup.user, pass: await davPass() };
+}
+
+async function testDav(): Promise<void> {
+  if (davBusy) return;
+  davBusy = true;
+  davPhase = "testing";
+  davError = "";
+  davDetail = "";
+  renderDav();
+  try {
+    const c = await davPrep();
+    const text = await callOrThrow<string>("backup_test", c);
+    davPhase = "ok";
+    davDetail = text;
+    davBusy = false;
+    renderDav();
+  } catch (e) {
+    setDavError(e);
+  }
+}
+
+async function backupNow(): Promise<void> {
+  if (davBusy) return;
+  davBusy = true;
+  davPhase = "backing";
+  davError = "";
+  davDetail = "";
+  renderDav();
+  try {
+    const c = await davPrep();
+    const file = makeBackup(S, Date.now(), await appVersion());
+    await callOrThrow<void>("backup_upload", { ...c, slot: "backup", content: backupJson(file) });
+    S.backup = { ...S.backup, at: file.savedAt, kind: "backup" };
+    davPhase = "backed";
+    davDetail = `已备份到云端（${timeText(file.savedAt)}）`;
+    davBusy = false;
+    commit(); // 记下时间并广播（主面板也收到同一条设置）
+  } catch (e) {
+    setDavError(e);
+  }
+}
+
+/** 第一步：把云端那份读回来，先让人看清是什么、再决定覆盖（不直接动手） */
+async function loadRemoteBackup(): Promise<void> {
+  if (davBusy) return;
+  davBusy = true;
+  davPhase = "fetching";
+  davError = "";
+  davDetail = "";
+  davPending = null;
+  renderDav();
+  try {
+    const c = await davPrep();
+    const text = await callOrThrow<string>("backup_download", { ...c, slot: "backup" });
+    davPending = parseBackup(text);
+    davPhase = "confirm";
+    davDetail = `云端备份：${backupSummary(davPending)}`;
+    davBusy = false;
+    renderDav();
+  } catch (e) {
+    davPending = null;
+    setDavError(e);
+  }
+}
+
+function cancelRestore(): void {
+  if (davBusy) return;
+  davPending = null;
+  davPhase = "idle";
+  davDetail = "";
+  davError = "";
+  renderDav();
+}
+
+/** 第二步：写安全副本 → 覆盖本地 → 走一遍 loadSettings()（老备份在这里升级、规整） */
+async function applyRestore(): Promise<void> {
+  const remote = davPending;
+  if (!remote || davBusy) return;
+  davBusy = true;
+  davPhase = "restoring";
+  davError = "";
+  davDetail = "";
+  renderDav();
+  try {
+    const c = await davPrep();
+    // 安全副本：先把本机当前数据推上去，恢复搞砸了还能从 restore-safety.json 手工取回
+    const safety = makeBackup(S, Date.now(), await appVersion());
+    await callOrThrow<void>("backup_upload", { ...c, slot: "safety", content: backupJson(safety) });
+    // 覆盖本地：先写进存储，再由 loadSettings() 读一遍 —— 迁移与规整（normalize*）只管这一处。
+    // adopt() 与「另一个窗口改了设置」走同一条路：收掉拖动、摘掉已删标的的多选、按需重排轮询
+    const mcpBefore = S.mcp;
+    localStorage.setItem(STORE_KEY, JSON.stringify(restoreSettings(remote, S)));
+    adopt(loadSettings());
+    // MCP 开关是「让 Rust 开 / 关本地桥」的指令，恢复把它改掉了就得马上说一声：
+    // 否则 MCP 页显示开着、端口其实没监听，或者反过来说关了、桥还占着端口
+    if (S.mcp !== mcpBefore) void applyMcp();
+    davPending = null;
+    davPhase = "restored";
+    davDetail = "已恢复：自选、分组与设置都换成了云端那一份";
+    davBusy = false;
+    commit(); // 写回规整后的版本并广播（主面板立刻跟着刷新）
+  } catch (e) {
+    setDavError(e);
+  }
+}
+
 // ---------- 关于页：版本与更新 ----------
 // 检查、下载、安装都在 Rust 侧（src-tauri/src/update.rs）；这里只管文案、进度与按钮状态。
 
@@ -1849,6 +2153,24 @@ $("#about-auto").addEventListener("change", (e) => {
   commit();
 });
 
+// 仪表盘：WebDAV 备份。地址 / 账号落设置（change 才写，别每敲一个字就广播），
+// 密码加密后才落设置；三个动作都先过 davPrep()（缺地址或解不开密码就当场报错）。
+$("#dav-url").addEventListener("change", () => saveDavFields());
+$("#dav-user").addEventListener("change", () => saveDavFields());
+$("#dav-pass").addEventListener("change", () => void saveDavPass());
+// 输入时只更新按钮可用状态（不写设置、不广播）
+$("#dav-url").addEventListener("input", () => {
+  const ready = IN_TAURI && urlProblem($<HTMLInputElement>("#dav-url").value) == null;
+  for (const id of ["#dav-test", "#dav-backup", "#dav-restore"]) {
+    $<HTMLButtonElement>(id).disabled = davBusy || !ready;
+  }
+});
+$("#dav-test").addEventListener("click", () => void testDav());
+$("#dav-backup").addEventListener("click", () => void backupNow());
+$("#dav-restore").addEventListener("click", () => void loadRemoteBackup());
+$("#dav-confirm-ok").addEventListener("click", () => void applyRestore());
+$("#dav-confirm-cancel").addEventListener("click", () => cancelRestore());
+
 $("#styles").addEventListener("click", (e) => {
   const v = (e.target as HTMLElement).closest<HTMLElement>(".style-card")?.dataset.v as BarStyle | undefined;
   if (!v || v === S.barStyle) return;
@@ -2189,7 +2511,12 @@ function schedulePoll(): void {
   pollTimer = window.setInterval(poll, S.interval * 1000);
 }
 
-onSettingsChange((next) => {
+/**
+ * 收下一份「别处写进来的设置」：换 S、收掉进行中的拖动、摘掉已不在自选的选中项、按需重排轮询。
+ * 跨窗口同步与「从备份恢复」都走这里 —— 恢复那条要是只写 `S = loadSettings()`，
+ * 多选里会留着已删的标的（拿它加菜单栏、Shift 锚点错位），恢复进来的标的也要等下一轮才出报价。
+ */
+function adopt(next: Settings): void {
   const intervalChanged = next.interval !== S.interval;
   const listChanged = next.watchlist.join() !== S.watchlist.join();
   S = next;
@@ -2200,7 +2527,9 @@ onSettingsChange((next) => {
   render();
   if (intervalChanged) schedulePoll();
   if (listChanged) void poll();
-});
+}
+
+onSettingsChange(adopt);
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => renderPreview());
 
 render();

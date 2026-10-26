@@ -19,7 +19,7 @@ cd src-tauri && cargo check   # Rust 侧检查
 
 - 包管理器用 **pnpm**（`packageManager` 字段已锁定版本），不要用 npm 或 yarn。
 - 改完之后至少跑通 `pnpm check`（类型检查加单元测试）和 `pnpm build`；改了 Rust 就再跑一次 `cargo check`。改了纯逻辑要补对应测试。
-- 单元测试用 **vitest**：`src/*.test.ts` 跑在 happy-dom 环境，覆盖 api / bar / settings / ctxmenu / drag / tabs / search / mcp / update / alerts 里的纯逻辑，以及四处界面接线 —— 设置窗口搜索结果右键（`prefs.test.ts`）、主面板自选行置顶与搜索结果点击去向（`main.test.ts`）、提醒的判定接线（`alerts-wiring.test.ts`，单独一个文件：它要一张干净的模块表，跑在 `main.test.ts` 后面时旧实例的定时器还活着），都用假搜索 / 报价真起一遍对应的窗口脚本（`main.ts` 起的是 `#app`，与 `index.html` 一致）；`mcp/*.test.mjs` 与 `scripts/*.test.mjs` 是脚本测试，文件头用 `// @vitest-environment node` 切到 node 环境（含一条真的起进程 + 假本地桥的端到端用例）。没有 lint 或格式化配置。
+- 单元测试用 **vitest**：`src/*.test.ts` 跑在 happy-dom 环境，覆盖 api / bar / settings / ctxmenu / drag / tabs / search / mcp / update / alerts / backup 里的纯逻辑，以及五处界面接线 —— 设置窗口搜索结果右键与备份卡片（`prefs.test.ts`）、主面板自选行置顶与搜索结果点击去向（`main.test.ts`）、提醒的判定接线（`alerts-wiring.test.ts`）、备份 / 恢复的流程顺序（`backup-wiring.test.ts`：`vi.mock("./tauri")` 假装在应用里，验「先写安全副本再覆盖」与失败时本地不动；后两个各自单独一个文件：它们要一张干净的模块表），都用假搜索 / 报价真起一遍对应的窗口脚本（`main.ts` 起的是 `#app`，与 `index.html` 一致）；`mcp/*.test.mjs` 与 `scripts/*.test.mjs` 是脚本测试，文件头用 `// @vitest-environment node` 切到 node 环境（含一条真的起进程 + 假本地桥的端到端用例）。没有 lint 或格式化配置。
 - Vite 开发端口固定为 1420（`strictPort`），和 `tauri.conf.json` 里的 `devUrl` 一一对应，两边必须一起改。
 
 ## 目录结构
@@ -42,9 +42,11 @@ src/mcp.ts       MCP 命令处理：看 / 搜 / 增删自选、置顶、排序�
 src/update.ts    版本更新的纯逻辑：状态文案、下载进度、提示条文案（联网在 Rust 侧）
 src/alerts.ts    提醒的判定与通知文案：条件判定、边缘触发 + 重新武装、冷却、通知标题与正文、触发状态的存取（纯逻辑，联网与送达在调用方）
 src/notify.ts    系统通知的薄封装：权限查询 / 请求、发一条、点通知的回调（浏览器预览里全部降级为空操作）
+src/backup.ts    WebDAV 备份 / 恢复的纯逻辑：地址规整与校验、备份信封（makeBackup / parseBackup）、恢复时的字段取舍（restoreSettings）、状态文案（联网与加解密在 Rust 侧）
 src-tauri/src/lib.rs   托盘、弹窗定位（按鼠标位置把面板夹进工作区，见「坑」）、失焦自动收起、单实例、所有 #[tauri::command]
 src-tauri/src/bridge.rs    MCP 本地桥：回环地址上的 HTTP 入口、令牌与连接信息文件、命令转发与回信配对；info() 给设置面板报桥状态与脚本路径
 src-tauri/src/update.rs    应用内更新：检查 / 下载 / 安装 / 重启，待装的更新存在模块级静态量里（命令壳在 lib.rs）
+src-tauri/src/backup.rs    WebDAV 备份：PUT / GET / OPTIONS 走 Rust（绕开 CORS）、slot → 文件名、密码的 AES-256-GCM 加解密与 secret.key
 src-tauri/src/notify.rs    系统通知：macOS 用 UNUserNotificationCenter 自己发（授权 / 投递 / 点击回调），Windows 交给插件
 src-tauri/capabilities/default.json   三个窗口（main / settings / ticker）的权限
 .github/workflows/build.yml   双端打包：推 v* 标签构建 macOS（通用二进制）+ Windows 安装包与更新包，合并出 latest.json 并创建 Release 草稿，或手动触发上传 Artifacts
@@ -89,6 +91,15 @@ Vite 是多页面打包，入口在 `vite.config.ts` 的 `rollupOptions.input` �
 - op 名是 `watchlist.*` / `groups.*` / `instrument.*`（见 `src/mcp.ts` 的 `prepareCommand` switch），MCP 工具名、描述与入参 schema 在 `mcp/lib.mjs` 的 `TOOLS` 里：**新增能力要两边一起加**。参数校验在命令处理里做，不信 schema 的「required」。
 - 标的用「secid 或关键词」指代：`resolveTarget()` 先认 secid 正则，否则走搜索；命中多只就报错并把候选列出来，让模型用 secid 再问一次。加入自选前会用一次报价确认代码不是编的（报价接口本身挂了就放行，并在结果里说明「未能校验」）。
 - 分组用「名字或 id」指代，找不到就报错并列出可选分组；「未分组」是内置的，不能改名 / 排序 / 删除。删除分组只把成员回落到未分组，自选一只都不少。
+
+**WebDAV 备份（整份设置）**
+- 备份的是**整份 `Settings`**（自选、置顶、分组、菜单栏、主题、配色、提醒规则都在里面），恢复后统一走 `loadSettings()` 的迁移与规整（`normalize*`），所以老备份恢复到新版本也能用。提醒的**触发状态**不在设置里（它另存 `stockbar.alerts.state.v1`），因此不进备份 —— 恢复后第一轮 `refresh()` 会重新武装。
+- 联网在 Rust 侧（`src-tauri/src/backup.rs`，命令壳在 `lib.rs`）：WebDAV 服务器基本不回 CORS 头，webview 里 fetch 过不了预检，与腾讯板块排行同一条路子。三个入口 `backup_test`（OPTIONS，服务器回 405/501 时退一步用 PROPFIND `Depth: 0`）/ `backup_upload`（PUT）/ `backup_download`（GET），账号走 Basic Auth。
+- 远端只有两个固定坑位（命令参数 `slot` 只认这两个，值来自 webview，别让任意字符串拼进 URL）：`settings.json`（常规备份，每次「立即备份」直接覆盖，**不弹确认**）与 `restore-safety.json`（**只在恢复前**写一份本地当前快照，不当恢复源，留给手工取回）。目录不自动建（MKCOL 兼容性太杂），地址要指向服务器上已存在的目录。
+- 密码**只存密文**：`Settings.backup.pass` 是 `v1:` 开头的 AES-256-GCM 密文（命令 `secret_encrypt` / `secret_decrypt`，算法用 ring 的 AEAD —— 本来就在依赖树里），密钥是 app data 目录下的 32 字节随机文件 `secret.key`（Unix 上 0600，`create_new` 建的：文件在但读不了 / 长度不对就报错，**绝不覆盖** —— 覆盖一次等于把所有已存的密文变成解不开的）。明文只活在设置窗口的内存里（`davPassPlain`）；`normalizeBackup()` 载入时把不是 `v1:` 的东西全清掉，**别为了「兼容」让明文进 localStorage**。换机器或删了 `secret.key` 就解不开，界面提示重输，不会静默失败。
+- 恢复完要接着做的两件事常被漏掉：① 写进存储后走 `loadSettings()` + `adopt()`（`prefs.ts` 里跨窗口同步用的同一个函数）—— 迁移与规整、收掉拖动、摘掉已删标的的多选、按需重排轮询都在那儿；② 恢复可能改掉 `mcp`，那是「让 Rust 开 / 关本地桥」的指令，得跟着调一次 `mcp_set_enabled`，否则 MCP 页显示开着、端口其实没监听（或反之桥还占着端口）。
+- 恢复分两段：先把云端那份读回来、解析成 `BackupFile`、在卡片里摊出摘要（时间 / 自选数 / 分组数 / 提醒数）等确认；确认后才「写安全副本 → 覆盖本地」。`restoreSettings()` 只换自选 / 分组 / 主题 / 提醒这些内容，**备份通道的地址与密码保持本机这份** —— 远端那份密文是别的机器加出来的，搬过来就再也备份不了。安全副本没写成时中止恢复（别做成「不可逆」）。
+- 纯逻辑在 `src/backup.ts`（地址校验、`makeBackup` / `parseBackup` 的信封、`restoreSettings`、状态文案 `phaseText`），界面与流程在 `prefs.ts` 的仪表盘页；`makeBackup()` 会把密码密文清成空串（带过去也没用）。备份格式有 `format` 版本号，解析端遇到更高版本直接拒绝，不硬套。
 
 **版本更新（应用内）**
 - 检查与安装都在 Rust 侧（`src-tauri/src/update.rs`，命令壳在 `lib.rs`）：`tauri-plugin-updater` 请求 `tauri.conf.json` 里配的端点（GitHub Release 上的 `latest.json`），按公钥校验签名、下载、替换安装包。前端只管文案与进度，纯逻辑在 `src/update.ts`，两个窗口共用。

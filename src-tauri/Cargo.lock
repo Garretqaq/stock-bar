@@ -3572,6 +3572,7 @@ dependencies = [
  "objc2-foundation",
  "objc2-user-notifications",
  "reqwest",
+ "ring",
  "rustls",
  "serde",
  "serde_json",

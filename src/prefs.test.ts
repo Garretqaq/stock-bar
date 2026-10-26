@@ -386,3 +386,39 @@ describe("设置窗口：修改已有的提醒规则", () => {
     expect(savedAlerts()[0].value).toBe(1500);
   });
 });
+
+// WebDAV 备份卡片：浏览器预览（happy-dom 里 IN_TAURI = false）下按钮全禁、状态与说明都能读出来。
+// 真正的联网 / 加解密在应用里跑（Rust 侧 backup.rs 有自己的单测），这里只钉住接线没有写坏。
+describe("设置窗口：备份卡片", () => {
+  beforeEach(boot);
+
+  const disabled = (id: string) => document.querySelector<HTMLButtonElement>(id)!.disabled;
+
+  it("三个动作按钮都在，预览里一律禁用", () => {
+    expect(document.querySelector("#dav-url")).toBeTruthy();
+    expect(document.querySelector("#dav-user")).toBeTruthy();
+    expect(document.querySelector("#dav-pass")).toBeTruthy();
+    expect(disabled("#dav-test")).toBe(true);
+    expect(disabled("#dav-backup")).toBe(true);
+    expect(disabled("#dav-restore")).toBe(true);
+    // 恢复的确认条默认藏着，别让人一进页面就看到「覆盖本地」
+    expect(document.querySelector<HTMLElement>("#dav-confirm")!.hidden).toBe(true);
+  });
+
+  it("状态与说明写清楚当前处境", () => {
+    expect(document.querySelector("#dav-state")!.textContent).toContain("还没连过");
+    expect(document.querySelector("#dav-hint")!.textContent).toContain("浏览器预览");
+  });
+
+  it("地址落进设置：change 才写，末尾斜杠会被规整掉", () => {
+    const url = document.querySelector<HTMLInputElement>("#dav-url")!;
+    url.value = "https://dav.example.com/stockbar/  ";
+    url.dispatchEvent(new Event("change"));
+    expect(saved().backup.url).toBe("https://dav.example.com/stockbar");
+    // 密码：预览里不加密就不落盘，明文绝不进 localStorage
+    const pass = document.querySelector<HTMLInputElement>("#dav-pass")!;
+    pass.value = "plain-password";
+    pass.dispatchEvent(new Event("change"));
+    expect(saved().backup.pass).toBe("");
+  });
+});

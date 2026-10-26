@@ -1388,7 +1388,9 @@ function renderDav(): void {
   const st = phaseText(davPhase, davDetail, davError);
   const state = $("#dav-state");
   state.className = `up-state ${st.tone}`;
-  $("b", state).textContent = st.text;
+  // 「状态」那一格只有一行宽：错误原因整段塞不进去（会挤成两行小字），
+  // 那里只留一句「出错了」，原因放下面通栏的说明里（红色）
+  $("b", state).textContent = davPhase === "error" ? "出错了" : st.text;
 
   // 输入框正被编辑时不回写：commit() 会重画整页，别把用户打了一半的地址冲掉
   const url = $<HTMLInputElement>("#dav-url");
@@ -1414,9 +1416,14 @@ function renderDav(): void {
   }
 
   const saved = isSealed(S.backup.pass) ? "密码已加密保存 · " : "";
-  $<HTMLElement>("#dav-hint").textContent = IN_TAURI
-    ? `${saved}${lastText(S.backup)} · 云端目录里会写两个文件：settings.json（每次备份覆盖）与 restore-safety.json（只在恢复前写）`
-    : "浏览器预览里没有联网与加解密能力，备份与恢复只在应用窗口里可用。";
+  const hint = $<HTMLElement>("#dav-hint");
+  hint.classList.toggle("err", davPhase === "error");
+  hint.textContent =
+    davPhase === "error"
+      ? st.text
+      : IN_TAURI
+        ? `${saved}${lastText(S.backup)} · 云端目录里会写两个文件：settings.json（每次备份覆盖）与 restore-safety.json（只在恢复前写）`
+        : "浏览器预览里没有联网与加解密能力，备份与恢复只在应用窗口里可用。";
 }
 
 /** 把填的地址 / 账号写进设置（规整后）。返回地址的问题（null = 没问题） */

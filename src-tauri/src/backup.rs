@@ -148,7 +148,7 @@ fn status_error(action: &str, status: u16) -> String {
         403 => "没有权限（这个账号不能写这个目录）",
         404 => "地址不对：找不到这个目录",
         405 => "服务器不接受这个操作",
-        409 => "目录不存在（WebDAV 不会自动建目录），先在服务器上建好",
+        409 => "目录不存在，自动建一次也没成功",
         507 => "云端空间不足",
         s if (500..600).contains(&s) => "服务器出错了",
         _ => "请求被服务器拒绝",
@@ -283,13 +283,57 @@ pub async fn test(url: String, user: String, pass: String) -> Result<String, Str
             .map_err(|e| net_error("测试连接", e))?;
     }
     let status = res.status().as_u16();
+    // 目录还不存在：账号与地址是通的，备份时会用 MKCOL 建一次 —— 别报成「连接失败」
+    if status == 404 {
+        return Ok(format!("账号与地址都通，但目录还不存在（HTTP 404）：备份时会自动建一次（{base}）"));
+    }
     if !res.status().is_success() {
         return Err(status_error("测试连接", status));
     }
     Ok(format!("连接成功（HTTP {status}），备份会写到 {base}/{BACKUP_FILE}"))
 }
 
-/// 上传一份 JSON（slot = backup / safety）
+/// 建一个集合（目录）。服务器回 201 是新建成，回 405 是「已经有了」—— 两者都算可以继续写。
+/// MKCOL 只建一个空集合，不会动里面已有的东西。
+async fn ensure_dir(base: &str, user: &str, pass: &str) -> Result<(), String> {
+    let client = client()?;
+    let res = with_auth(
+        client.request(reqwest::Method::from_bytes(b"MKCOL").unwrap(), base),
+        user,
+        pass,
+    )
+    .send()
+    .await
+    .map_err(|e| net_error("建目录", e))?;
+    let status = res.status().as_u16();
+    // 405 = 已经存在（有的服务器拿它回「重复 MKCOL」）；2xx = 建成了
+    if (200..300).contains(&status) || status == 405 {
+        return Ok(());
+    }
+    Err(format!("建不了目录（HTTP {status}）：{base}"))
+}
+
+/// PUT 一次，只回状态码（不把 4xx 变成错误：409 要拿来做「先建目录再重试」的判断）
+async fn put_once(target: &str, user: &str, pass: &str, content: &str) -> Result<u16, String> {
+    let client = client()?;
+    let res = with_auth(
+        client
+            .put(target)
+            .header(reqwest::header::CONTENT_TYPE, "application/json; charset=utf-8"),
+        user,
+        pass,
+    )
+    .body(content.to_string())
+    .send()
+    .await
+    .map_err(|e| net_error("备份", e))?;
+    Ok(res.status().as_u16())
+}
+
+/// 上传一份 JSON（slot = backup / safety）。
+///
+/// 目录不存在时服务器回 409 —— WebDAV 不会替用户建目录，所以这里补一步 MKCOL 再重试一次：
+/// 用户填的地址就是「想存到哪儿」，让他先去别处手工建目录纯属折腾。建不成时把目标地址一起报出来。
 pub async fn upload(
     url: String,
     user: String,
@@ -298,22 +342,21 @@ pub async fn upload(
     content: String,
 ) -> Result<(), String> {
     let file = slot_file(&slot)?;
-    let target = join_url(&url, file)?;
-    let client = client()?;
-    let res = with_auth(
-        client
-            .put(&target)
-            .header(reqwest::header::CONTENT_TYPE, "application/json; charset=utf-8"),
-        &user,
-        &pass,
-    )
-    .body(content)
-    .send()
-    .await
-    .map_err(|e| net_error("备份", e))?;
-    let status = res.status();
-    if !status.is_success() {
-        return Err(status_error("备份", status.as_u16()));
+    let base = check_base(&url)?;
+    let target = join_url(&base, file)?;
+    let mut status = put_once(&target, &user, &pass, &content).await?;
+    if status == 409 {
+        ensure_dir(&base, &user, &pass).await?;
+        status = put_once(&target, &user, &pass, &content).await?;
+    }
+    if !(200..300).contains(&status) {
+        let why = status_error("备份", status);
+        // 409 说明目录再怎么建也没成：把实际要写的地址报出来，用户一眼能看出地址填错在哪
+        return Err(if status == 409 {
+            format!("{why}；目标：{target}")
+        } else {
+            why
+        });
     }
     Ok(())
 }

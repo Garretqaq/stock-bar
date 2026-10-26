@@ -3309,3 +3309,7 @@ svg .fill {
   border-color: #ff453a;
   background: #ff453a;
 }
+/* 失败原因：整段放在说明行里（状态那一格只有一行宽，塞不下），用固定的危险色 */
+.dav-hint.err {
+  color: #ff453a;
+}

@@ -138,7 +138,9 @@ describe("设置窗口：WebDAV 备份流程", () => {
     expect(cmds()).not.toContain("backup_upload");
     expect(saved().backup.at).toBe(0);
     expect(saved().backup.kind).toBe("");
-    expect($("#dav-state").textContent).toContain("解不开");
+    // 原因放在下面那行通栏的说明里（状态那一格只有一行宽，只写「出错了」）
+    expect($("#dav-hint").textContent).toContain("解不开");
+    expect($("#dav-state").textContent).toContain("出错了");
   });
 
   it("恢复：先写安全副本（本机当前数据）再覆盖本地；地址与密码保留本机这份", async () => {
@@ -177,7 +179,7 @@ describe("设置窗口：WebDAV 备份流程", () => {
     await flush();
     expect(saved().watchlist).toEqual(["1.600519"]);
     expect(saved().backup.kind).toBe("");
-    expect($("#dav-state").textContent).toContain("507");
+    expect($("#dav-hint").textContent).toContain("507");
   });
 
   it("云端文件不是备份：报错，不覆盖本地", async () => {
@@ -186,7 +188,7 @@ describe("设置窗口：WebDAV 备份流程", () => {
     await flush();
     expect($<HTMLElement>("#dav-confirm").hidden).toBe(true);
     expect(saved().watchlist).toEqual(["1.600519"]);
-    expect($("#dav-state").textContent).toContain("JSON");
+    expect($("#dav-hint").textContent).toContain("JSON");
   });
 
   it("恢复把 MCP 开关改掉时要通知 Rust 开 / 关本地桥", async () => {

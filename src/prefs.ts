@@ -354,8 +354,8 @@ root.innerHTML = `
       <h2 class="group-title">备份<span class="title-hint">整份设置存到你的 WebDAV：自选、置顶、分组、菜单栏、主题与提醒规则</span></h2>
       <div class="group">
         <div class="row">
-          <div class="row-label">服务器<small>填到目录为止，目录要先在服务器上建好</small></div>
-          <input class="dav-input" id="dav-url" placeholder="https://dav.example.com/dav/StockBar" autocomplete="off" spellcheck="false" />
+          <div class="row-label">服务器<small>只填到 /dav/ 这一级；StockBar 子目录由应用自己建</small></div>
+          <input class="dav-input" id="dav-url" placeholder="https://dav.jianguoyun.com/dav/" autocomplete="off" spellcheck="false" />
         </div>
         <div class="row">
           <div class="row-label">账号</div>
@@ -1422,7 +1422,7 @@ function renderDav(): void {
     davPhase === "error"
       ? st.text
       : IN_TAURI
-        ? `${saved}${lastText(S.backup)} · 云端目录里会写两个文件：settings.json（每次备份覆盖）与 restore-safety.json（只在恢复前写）`
+        ? `${saved}${lastText(S.backup)} · 云端会写到「地址/StockBar/」下：settings.json（每次备份覆盖）与 restore-safety.json（只在恢复前写）`
         : "浏览器预览里没有联网与加解密能力，备份与恢复只在应用窗口里可用。";
 }
 

@@ -22,6 +22,9 @@ use tauri::{AppHandle, Manager};
 const BACKUP_FILE: &str = "settings.json";
 /// 恢复前的安全副本：只在「从备份恢复」时写入，不当恢复源
 const SAFETY_FILE: &str = "restore-safety.json";
+/// 应用在用户填的目录下自己建 / 自己用的子目录：用户只填到 `/dav/` 这一级，
+/// 不必知道（也不该被要求去建）`StockBar`
+const DIR: &str = "StockBar";
 /// 密钥文件名（app data 目录下）
 const KEY_FILE: &str = "secret.key";
 /// 密文前缀：将来换算法时靠它认版本，别改
@@ -47,9 +50,20 @@ fn base_url(raw: &str) -> &str {
     raw.trim().trim_end_matches('/')
 }
 
-/// 校验目录地址，返回规整后的形式（空 = 空串）
+/// 去掉尾部可能已经带着的 `/StockBar`：旧版本让用户填到子目录那一级，
+/// 不剥掉的话会拼成 `…/StockBar/StockBar`。比较不分大小写（系统自带的文件夹面板常这么补）。
+fn strip_app_dir(base: &str) -> &str {
+    let tail = format!("/{}", DIR.to_ascii_lowercase());
+    if base.to_ascii_lowercase().ends_with(&tail) {
+        base[..base.len() - tail.len()].trim_end_matches('/')
+    } else {
+        base
+    }
+}
+
+/// 校验目录地址，返回规整后的**父目录**（应用子目录见 `app_dir`）
 fn check_base(raw: &str) -> Result<String, String> {
-    let base = base_url(raw);
+    let base = strip_app_dir(base_url(raw));
     if base.is_empty() {
         return Err("先填 WebDAV 地址".into());
     }
@@ -60,13 +74,18 @@ fn check_base(raw: &str) -> Result<String, String> {
     Ok(base.to_string())
 }
 
-/// 目录地址 + 文件名。文件名是常量，但仍旧挡一次斜杠，免得拼出别处的路径
+/// 应用自己的子目录：`<用户填的地址>/StockBar`
+fn app_dir(base: &str) -> String {
+    format!("{base}/{DIR}")
+}
+
+/// 应用子目录 + 文件名。文件名是常量，但仍旧挡一次斜杠，免得拼出别处的路径
 fn join_url(base: &str, file: &str) -> Result<String, String> {
     let base = check_base(base)?;
     if file.is_empty() || file.contains('/') || file.contains("..") {
         return Err(format!("备份文件名不合法：{file}"));
     }
-    Ok(format!("{base}/{file}"))
+    Ok(format!("{}/{file}", app_dir(&base)))
 }
 
 /// 十六进制编码（避免为了 base64 再引一个依赖）
@@ -266,8 +285,8 @@ fn net_error(action: &str, e: reqwest::Error) -> String {
     }
     format!("{action}失败：连不上服务器（{e}）")
 }
-
-/// 测试连接：先 OPTIONS 目录，服务器不认（405 / 501）再退一步用 PROPFIND Depth: 0
+/// 测试连接：先 OPTIONS 用户填的父目录，服务器不认（405 / 501）再退一步用 PROPFIND Depth: 0。
+/// 应用自己的子目录（StockBar）能不能建起来要靠写入才知道，这里只验账号与地址通不通。
 pub async fn test(url: String, user: String, pass: String) -> Result<String, String> {
     let base = check_base(&url)?;
     let client = client()?;
@@ -276,21 +295,28 @@ pub async fn test(url: String, user: String, pass: String) -> Result<String, Str
         .await
         .map_err(|e| net_error("测试连接", e))?;
     if res.status() == 405 || res.status() == 501 {
-        res = with_auth(client.request(reqwest::Method::from_bytes(b"PROPFIND").unwrap(), &base), &user, &pass)
-            .header("Depth", "0")
-            .send()
-            .await
-            .map_err(|e| net_error("测试连接", e))?;
+        res = with_auth(
+            client.request(reqwest::Method::from_bytes(b"PROPFIND").unwrap(), &base),
+            &user,
+            &pass,
+        )
+        .header("Depth", "0")
+        .send()
+        .await
+        .map_err(|e| net_error("测试连接", e))?;
     }
     let status = res.status().as_u16();
-    // 目录还不存在：账号与地址是通的，备份时会用 MKCOL 建一次 —— 别报成「连接失败」
+    // 用户填的是父目录（例如 /dav/）：它不存在才真失败 —— 应用只会在它下面建 StockBar
     if status == 404 {
-        return Ok(format!("账号与地址都通，但目录还不存在（HTTP 404）：备份时会自动建一次（{base}）"));
+        return Err(format!("地址不对：{base} 这个目录不存在（只填到 /dav/ 这一级即可）"));
     }
     if !res.status().is_success() {
         return Err(status_error("测试连接", status));
     }
-    Ok(format!("连接成功（HTTP {status}），备份会写到 {base}/{BACKUP_FILE}"))
+    Ok(format!(
+        "连接成功（HTTP {status}），备份会写到 {}/{BACKUP_FILE}",
+        app_dir(&base)
+    ))
 }
 
 /// 建一个集合（目录）。服务器回 201 是新建成，回 405 是「已经有了」—— 两者都算可以继续写。
@@ -332,8 +358,8 @@ async fn put_once(target: &str, user: &str, pass: &str, content: &str) -> Result
 
 /// 上传一份 JSON（slot = backup / safety）。
 ///
-/// 目录不存在时服务器回 409 —— WebDAV 不会替用户建目录，所以这里补一步 MKCOL 再重试一次：
-/// 用户填的地址就是「想存到哪儿」，让他先去别处手工建目录纯属折腾。建不成时把目标地址一起报出来。
+/// 应用自己的子目录（`StockBar`）不存在时服务器回 409 —— 这里补一步 MKCOL 再重试一次：
+/// 用户只该填到 `/dav/` 这一级，让他去建子目录纯属折腾。建不成时把目标地址一起报出来。
 pub async fn upload(
     url: String,
     user: String,
@@ -346,7 +372,9 @@ pub async fn upload(
     let target = join_url(&base, file)?;
     let mut status = put_once(&target, &user, &pass, &content).await?;
     if status == 409 {
-        ensure_dir(&base, &user, &pass).await?;
+        // 只补建应用自己的子目录；用户填的父目录不存在时 MKCOL 也会失败，
+        // 那时的错误消息会带上这个路径，能看出地址填错了
+        ensure_dir(&app_dir(&base), &user, &pass).await?;
         status = put_once(&target, &user, &pass, &content).await?;
     }
     if !(200..300).contains(&status) {
@@ -394,19 +422,48 @@ mod tests {
 
     #[test]
     fn 地址去掉末尾斜杠并只认_http() {
-        assert_eq!(check_base("  https://dav.example.com/stockbar/  ").unwrap(), "https://dav.example.com/stockbar");
+        assert_eq!(check_base("  https://dav.example.com/dav/  ").unwrap(), "https://dav.example.com/dav");
         assert_eq!(check_base("http://192.168.1.9:5005").unwrap(), "http://192.168.1.9:5005");
         // 空地址、别的协议一律拒掉
         assert!(check_base("   ").is_err());
         assert!(check_base("ftp://dav.example.com").is_err());
-        assert!(check_base("dav.example.com/stockbar").is_err());
+        assert!(check_base("dav.example.com/dav").is_err());
+    }
+
+    #[test]
+    fn 子目录由应用自己拼并建() {
+        // 用户只填到 /dav/，StockBar 由应用补
+        assert_eq!(
+            app_dir("https://dav.example.com/dav"),
+            "https://dav.example.com/dav/StockBar"
+        );
+        // 旧版本让用户填到子目录那一级：剥回去，别拼成 …/StockBar/StockBar
+        assert_eq!(
+            check_base("https://dav.example.com/dav/StockBar").unwrap(),
+            "https://dav.example.com/dav"
+        );
+        // 大小写、末尾斜杠都不影响
+        assert_eq!(
+            check_base("https://dav.example.com/dav/stockbar/").unwrap(),
+            "https://dav.example.com/dav"
+        );
+        // 只是名字里带 StockBar 的别的目录不动
+        assert_eq!(
+            check_base("https://dav.example.com/dav/StockBar2").unwrap(),
+            "https://dav.example.com/dav/StockBar2"
+        );
+        // 根目录本身就填成 /StockBar 的情况：退到域名，再由应用拼回去
+        assert_eq!(
+            check_base("https://dav.example.com/StockBar").unwrap(),
+            "https://dav.example.com"
+        );
     }
 
     #[test]
     fn 拼出来的地址是一个文件() {
         assert_eq!(
-            join_url("https://dav.example.com/stockbar/", BACKUP_FILE).unwrap(),
-            "https://dav.example.com/stockbar/settings.json"
+            join_url("https://dav.example.com/dav/", BACKUP_FILE).unwrap(),
+            "https://dav.example.com/dav/StockBar/settings.json"
         );
         // 文件名是常量，但也不该允许拼出别的路径
         assert!(join_url("https://dav.example.com", "../etc/passwd").is_err());

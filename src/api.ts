@@ -787,7 +787,7 @@ function isAfternoonOpenDup(region: Region, hm: string, parts: string[], prev: s
  * 返回最近 5 个交易日，每天一组 `"HHMM 价格 累计量 累计额"`（都是累计值，不是分钟增量）。
  * 因此：
  * - 价格直接用；
- * - 均价由累计额/累计量反推（A 股量是手，需 ×100；港美股是股），指数不画均价线；
+ * - 均价由累计额/累计量反推（累计量的单位见 volUnit，按数据自己判），指数不画均价线；
  * - 成交额取每分钟增量（当日累计额差分），这样和东财的语义一致，
  *   `cumAmount()` 的「按分钟累加 + 与上一日同期对比」逻辑可以原样复用。
  * 注意美股没有分时数据（接口返回 param error），这种情况抛错交给上层显示「加载失败」。
@@ -800,8 +800,13 @@ async function trendFromTencent(secid: string, days: number): Promise<TrendData>
   const groups: any[] = Array.isArray(node?.data) ? node.data : [];
   if (!groups.length) throw new ApiError("server", "腾讯未返回分时数据");
   const region = regionOf(secid);
-  // A 股的量单位是手，港美股是股；均价 = 累计额 / 累计量
-  const volUnit = region === "CN" ? 100 : 1;
+  // 累计量的单位不能按市场写死：多数 A 股接口给的是「手」（100 股），
+  // 但科创板（688/689）给的是「股」—— 一律 ×100 会把均价算成真实值的 1/100，
+  // 均价线掉到价格线下面一大截，纵轴被它撑成 ±100% 以上，价格线就成了一条平线。
+  // 所以拿第一笔有量的「累计额 / 累计量」跟当时的成交价比一下：约等于价格是股，
+  // 约等于百分之一价格是手。两者差 100 倍，判起来没有歧义。
+  // null = 还没定（A 股要等第一笔有量的点）；港美股一直是股。
+  let volUnit: number | null = region === "CN" ? null : 1;
   // 指数不画均价线：腾讯给指数的「累计量」是另一套口径（恒生指数 amt/vol ≈ 1，
   // 上证指数算出来是 14 而点位在 3800），画上去会把价格线压成一条细缝。个股才有真实均价。
   const isIdx = isIndexSecid(secid);
@@ -836,12 +841,17 @@ async function trendFromTencent(secid: string, days: number): Promise<TrendData>
       const bad = cumAmt == null || cumAmt < prevAmt;
       const amount = bad ? null : cumAmt - prevAmt;
       if (cumAmt != null && cumAmt >= prevAmt) prevAmt = cumAmt;
+      // 第一笔有量的点定下累计量的单位（指数不参与：它的「累计量」是另一套口径）：
+      // 累计额/累计量 约等于 100 倍价格 → 量是手；约等于价格 → 量是股
+      if (!isIdx && volUnit == null && cumAmt != null && cumVol) {
+        volUnit = cumAmt / cumVol > price * 5 ? 100 : 1;
+      }
       count++;
       raw.push({
         date: iso,
         time: hm.padStart(4, "0"),
         price,
-        avg: isIdx || bad || !cumVol ? null : cumAmt! / (cumVol * volUnit),
+        avg: isIdx || bad || !cumVol || !volUnit ? null : cumAmt! / (cumVol * volUnit),
         vol: cumVol,
         amount,
       });

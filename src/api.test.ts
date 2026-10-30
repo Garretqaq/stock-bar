@@ -421,6 +421,17 @@ describe("腾讯映射与分时修正", () => {
     expect(t.points[0].avg).toBe(10);
   });
 
+  it("科创板（688）的累计量是「股」，均价不会被算成 1/100", async () => {
+    // 宇树科技-W：245257 股 × 624 元 = 153040368 元。按「手」换算会得到 6.24，
+    // 均价线掉到价格线下面一大截，纵轴被撑成 ±100%，价格线压成一条平线
+    const rows = ["0930 624 245257 153040368", "0931 610.5 757241 468686241"];
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(trendBody(rows, "sh688836"))));
+    const t = await fetchTrend("1.688836", 1, "tencent");
+    expect(t.points[0].avg).toBeCloseTo(624, 6);
+    // 均价是累计均价：始终落在价格区间附近，不会跑到 1/100
+    expect(t.points[1].avg).toBeCloseTo(468686241 / 757241, 6);
+  });
+
   it("上一日偏短时横轴仍按整日铺满，不超出整日长度", async () => {
     // 上一日只有 2 点、当日 4 点：按「两天之和 - 上一日」会得到 6 > 4
     const body = JSON.stringify({

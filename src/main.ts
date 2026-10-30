@@ -532,19 +532,12 @@ function drawTrend(holder: HTMLElement, progress = 1): void {
     if (p.price > max) max = p.price;
   }
   const pre = data.preClose ?? pts[0].price;
-  // 指数与板块的"均价"字段都不是真实均价（东财给的是另一套口径），只给个股画均价线；
-  // 纵轴范围同时容纳均价
+  // 指数与板块的"均价"字段都不是真实均价（东财给的是另一套口径），只给个股画均价线。
+  // 纵轴范围只看价格：均价是当日的成交量加权均价，永远落在当日最高 / 最低之间，
+  // 本来就撑不开范围；反过来让它参与取范围，一个算错的均价就能把纵轴撑到 ±100%，
+  // 价格线被压成一条平线（腾讯分时的科创板量口径错成「手」时就是这样）。
   const showAvg = !INDICES.some((it) => it.secid === id) && !isBoardSecid(id);
-  let rMin = min;
-  let rMax = max;
-  if (showAvg) {
-    for (const p of pts) {
-      if (p.avg == null || p.avg <= 0) continue;
-      if (p.avg < rMin) rMin = p.avg;
-      if (p.avg > rMax) rMax = p.avg;
-    }
-  }
-  const dev = Math.max(rMax - pre, pre - rMin, pre * 0.0002) * 1.1;
+  const dev = Math.max(max - pre, pre - min, pre * 0.0002) * 1.1;
   const lo = pre - dev;
   const hi = pre + dev;
   const x = (i: number) => PAD.l + (i / Math.max(total - 1, 1)) * w;

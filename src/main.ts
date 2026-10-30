@@ -544,7 +544,7 @@ function drawTrend(holder: HTMLElement, progress = 1): void {
       if (p.avg > rMax) rMax = p.avg;
     }
   }
-  const dev = Math.max(rMax - pre, pre - rMin, pre * 0.002) * 1.1;
+  const dev = Math.max(rMax - pre, pre - rMin, pre * 0.0002) * 1.1;
   const lo = pre - dev;
   const hi = pre + dev;
   const x = (i: number) => PAD.l + (i / Math.max(total - 1, 1)) * w;

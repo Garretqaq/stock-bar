@@ -183,6 +183,7 @@ Vite 是多页面打包，入口在 `vite.config.ts` 的 `rollupOptions.input` �
 
 ## 注意事项（坑）
 
+- 主面板窗口（`tauri.conf.json` 里 label 为 `main` 的那项）必须带 `"backgroundThrottling": "disabled"`：主面板平时是隐藏的，而 WKWebView 默认会把不在屏幕上的 webview 的定时器挂起（`inactiveSchedulingPolicy = suspend`），`refresh()` 的 `setInterval` 就停了 —— 症状是「菜单栏的数字要点一下图标才更新」（点开触发 `panel-shown` 才刷一次）。托盘、提醒的判定都挂在这个窗口的轮询上，别删这一行。
 - 菜单栏图标只有一份：`src-tauri/icons/tray.png`。Rust 用 `include_bytes!` 嵌入，`prefs.ts` 也直接 import 这个文件做预览，替换时只改这一处。
 - 已启用 CSP（`tauri.conf.json` 的 `csp` / `devCsp`）。新增外部域名时必须同步放行：fetch 走 `connect-src`，JSONP 走 `script-src`，图片走 `img-src`。`devCsp` 额外放行了 Vite 的 `localhost:1420`。`macOSPrivateApi: true` 是透明窗口需要的，不要关。
 - `dist/`、`src-tauri/target/`、`src-tauri/gen/` 都是生成产物，不要手动修改。

@@ -28,6 +28,7 @@ import {
   barIndexAt,
   barPct,
   barSlot,
+  candleBox,
   klineRange,
   movingAvg,
   type KlineData,
@@ -909,7 +910,8 @@ function drawKline(holder: HTMLElement): void {
   const priceH = h - volH - gap;
   const volTop = top + priceH + gap;
   const slotW = w / KLINE_COUNT;
-  const candleW = Math.max(1, Math.min(6, slotW * 0.62));
+  // 窄窗（360px）里一根约 3.3px；浏览器预览拉宽到 1000px 时最多 9px，再宽就散成一根根柱子了
+  const candleW = Math.max(1, Math.min(9, slotW * 0.62));
   /** 第 i 根落在哪一格：不满 60 根时靠右（与悬停换算共用 kline.ts 的 barSlot） */
   const cx = (i: number) => PAD.l + (barSlot(i, bars.length) + 0.5) * slotW;
   const y = (v: number) => top + ((hi - v) / (hi - lo)) * priceH;
@@ -952,13 +954,12 @@ function drawKline(holder: HTMLElement): void {
     ctx.moveTo(x, y(b.high));
     ctx.lineTo(x, y(b.low));
     ctx.stroke();
-    const yTop = y(Math.max(b.open, b.close));
-    const bottom = y(Math.min(b.open, b.close));
+    const box = candleBox(b.open, b.close, y);
     ctx.fillRect(
       Math.round(cx(i) - candleW / 2),
-      Math.round(yTop),
+      Math.round(box.top),
       Math.max(1, Math.round(candleW)),
-      Math.max(1, Math.round(bottom - top)),
+      Math.max(1, Math.round(box.height)),
     );
     if (b.vol != null && maxVol > 0) {
       ctx.fillStyle = alpha(color, 0.55);

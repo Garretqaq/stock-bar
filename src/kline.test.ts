@@ -6,6 +6,7 @@ import {
   barIndexAt,
   barPct,
   barSlot,
+  candleBox,
   klineRange,
   movingAvg,
   parseKlineEastmoney,
@@ -178,5 +179,19 @@ describe("单根涨跌幅", () => {
 
   it("上一根收盘是 0 时不算（不显示 inf）", () => {
     expect(barPct([bar(0), bar(5)], 1)).toBeNull();
+  });
+});
+
+describe("蜡烛实体的几何", () => {
+  // 纵轴把价格映射成像素：100 - 价格（越高像素越小）
+  const yOf = (v: number) => 100 - v;
+
+  it("实体从开收里较高的那个画到较低的，高度只跟两者之差有关", () => {
+    expect(candleBox(10, 5, yOf)).toEqual({ top: 90, height: 5 });
+    expect(candleBox(5, 10, yOf)).toEqual({ top: 90, height: 5 });
+  });
+
+  it("开收相同（平盘）也留 1px，不然那一根什么都看不到", () => {
+    expect(candleBox(10, 10, yOf)).toEqual({ top: 90, height: 1 });
   });
 });

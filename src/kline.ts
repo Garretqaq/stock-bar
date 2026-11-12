@@ -172,3 +172,18 @@ export function barPct(bars: KlineBar[], i: number): number | null {
   if (prev == null || cur == null || prev === 0) return null;
   return (cur / prev - 1) * 100;
 }
+
+/**
+ * 一根蜡烛实体的位置与高度：从开收里较高的那个画到较低的，至少 1px。
+ * 高度必须用「两个价格各自映射出来的像素差」，不能借布局常量 —— 那样每根都会被画成
+ * 从自身顶部往下几十像素的粗柱子，压掉真实的开收位置（这个 bug 真的发生过）。
+ */
+export function candleBox(
+  open: number,
+  close: number,
+  yOf: (v: number) => number,
+): { top: number; height: number } {
+  const a = yOf(Math.max(open, close));
+  const b = yOf(Math.min(open, close));
+  return { top: Math.min(a, b), height: Math.max(1, Math.abs(b - a)) };
+}

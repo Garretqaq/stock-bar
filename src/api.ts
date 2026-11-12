@@ -1,6 +1,12 @@
 // 东方财富公开行情接口封装
 // secid = 市场代码.证券代码：1 沪、0 深、116 港股、105/106/107 美股、100 海外指数
 import { IN_TAURI, callOrThrow } from "./tauri";
+import {
+  KLINE_COUNT,
+  parseKlineEastmoney,
+  parseKlineTencent,
+  type KlineData,
+} from "./kline";
 
 const UT = "b2884a393a59ad64002292a3e90d46a5";
 const SEARCH_TOKEN = "D43BF722C8E33BDC906FB84D85E326E8";
@@ -889,6 +895,27 @@ function inSession(region: Region, hm: string): boolean {
 }
 
 /**
+ * 按数据源顺序试一遍：`auto` 先东财、失败再腾讯，哪个先成功用哪个，全失败就抛最后一个错误。
+ * 「成功但没数据」由调用方自己决定（板块榜单换一家再试、日K报「暂无」）。
+ */
+async function fromSources<T>(
+  source: DataSource,
+  run: (which: "eastmoney" | "tencent") => Promise<T>,
+): Promise<T> {
+  const order: ("eastmoney" | "tencent")[] =
+    source === "tencent" ? ["tencent"] : source === "eastmoney" ? ["eastmoney"] : ["eastmoney", "tencent"];
+  let lastErr: unknown;
+  for (const which of order) {
+    try {
+      return await run(which);
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw lastErr ?? new ApiError("server", "获取失败");
+}
+
+/**
  * 分时走势：按数据源取，`auto` 先试东财、失败再试腾讯。
  * `days` 传 2 时取两天：画图仍只用最新一天，另一天用来算「与上一日同期」的成交额对比。
  */
@@ -897,19 +924,77 @@ export async function fetchTrend(
   days = 1,
   source: DataSource = "auto",
 ): Promise<TrendData> {
-  const order: ("eastmoney" | "tencent")[] =
-    source === "tencent" ? ["tencent"] : source === "eastmoney" ? ["eastmoney"] : ["eastmoney", "tencent"];
-  let lastErr: unknown;
-  for (const which of order) {
-    try {
-      return which === "eastmoney"
-        ? await trendFromEastmoney(secid, days)
-        : await trendFromTencent(secid, days);
-    } catch (e) {
-      lastErr = e;
-    }
+  return fromSources(source, (which) =>
+    which === "eastmoney" ? trendFromEastmoney(secid, days) : trendFromTencent(secid, days),
+  );
+}
+
+// ---------- 日K ----------
+
+/**
+ * 东财日K：push2his.eastmoney.com/api/qt/stock/kline/get
+ * `klt=101` 日线、`fqt=1` 前复权（除权后的走势才是连续的）、`lmt` 只取最近这么多根。
+ * 不传 beg：传了 `beg=0` 会从最早那一根给你（2001 年），拿不到最近的。
+ */
+async function klineFromEastmoney(secid: string, count: number): Promise<KlineData> {
+  const url =
+    `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${encodeURIComponent(secid)}` +
+    `&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56` +
+    `&klt=101&fqt=1&lmt=${count}&end=20500101&ut=${UT}`;
+  return parseKlineEastmoney(secid, await getJson(url));
+}
+
+/**
+ * 腾讯日K：web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=<code>,day,,,<n>,qfq
+ * 美股要带交易所后缀（usAAPL → usAAPL.OQ）：不带时第一行会混进一条 2011 年的脏数据，
+ * 一根就把纵轴拉到十年前的价格。后缀由响应里 qt 的第 3 列给出（AAPL.OQ / BABA.N），
+ * 所以先按十年前的写法问一次、拿到完整代码再重拉一次 —— 只在美股兜底时多这一次请求。
+ */
+async function klineFromTencent(secid: string, count: number): Promise<KlineData> {
+  const tc = tencentCode(secid);
+  if (!tc) throw new ApiError("server", "该标的不支持腾讯日K");
+  const url = (code: string) =>
+    `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${code},day,,,${count},qfq`;
+  let json = await getJson(url(tc));
+  let code = tc;
+  const isUs = ["105", "106", "107"].includes(secid.slice(0, secid.indexOf(".")));
+  const full = json?.data?.[tc]?.qt?.[tc]?.[2];
+  if (isUs && typeof full === "string" && full && `us${full}` !== tc) {
+    code = `us${full}`;
+    json = await getJson(url(code));
   }
-  throw lastErr ?? new ApiError("server", "分时获取失败");
+  return parseKlineTencent(secid, json, code);
+}
+
+/**
+ * 日K：按数据源取，`auto` 先试东财、失败再试腾讯（与分时同一条路子）。
+ * 板块不在这里 —— 板块不是标的，不提供日K（见 docs/adr/0001）。
+ *
+ * 「这家没数据」不当成故障：换下一家再试，两家都空就把空表交给界面报「暂无日K数据」，
+ * 与「日K加载失败」（请求真的挂了）分开。
+ */
+export async function fetchKline(
+  secid: string,
+  count = KLINE_COUNT,
+  source: DataSource = "auto",
+): Promise<KlineData> {
+  let empty: KlineData | null = null;
+  try {
+    return await fromSources(source, async (which) => {
+      const got =
+        which === "eastmoney"
+          ? await klineFromEastmoney(secid, count)
+          : await klineFromTencent(secid, count);
+      if (!got.bars.length) {
+        empty = got;
+        throw new ApiError("server", "未返回日K数据");
+      }
+      return got;
+    });
+  } catch (e) {
+    if (empty) return empty;
+    throw e;
+  }
 }
 
 // ---------- 全市场成交额 ----------

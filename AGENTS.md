@@ -28,7 +28,7 @@ cd src-tauri && cargo check   # Rust 侧检查
 index.html      → src/main.ts   + src/style.css   主面板（托盘弹出的 360×560 无边框小窗，label="main"）
 settings.html   → src/prefs.ts  + src/prefs.css   设置窗口（仪表盘 / 行情 / 提醒 / MCP / 关于五页，label="settings"，由 Rust 动态创建）
 ticker.html     → src/ticker.ts + src/ticker.css  Windows 悬浮行情条（label="ticker"，由 set_ticker 动态创建/关闭）
-src/api.ts       东方财富接口：批量报价 ulist.np、分时 trends2、搜索 suggest（JSONP）、板块列表 clist（fetchBoards）、secid/市场/交易时段工具函数
+src/api.ts       东方财富接口：批量报价 ulist.np、分时 trends2、日K kline（fetchKline）、搜索 suggest（JSONP）、板块列表 clist（fetchBoards）、secid/市场/交易时段工具函数
 src/settings.ts  Settings 类型、默认值、localStorage 读写和旧数据迁移、跨窗口同步、主题和涨跌配色、自选分组的纯函数（`itemsOf` / `moveInView` / `normalizeGroups` 等）
 src/bar.ts       菜单栏内容生成：单行文字 barText / 双行紧凑 canvas PNG barImage
 src/tauri.ts     Tauri 桥接层：call / emitAll / listenAll（非 Tauri 环境自动降级为空操作），平台判断 IS_WIN、canvas 字体栈 UI_FONT
@@ -37,6 +37,7 @@ src/drag.ts      拖动排序的纯计算：slotAt（竖排落点）/ slotAtX（
 src/tabs.ts      分组筛选条的纯计算：isDragMove / isDragClick（横滑拖动与「拖完那一下 click」的判定）/ scrollDeltaFor（把选中的标签带进视野要滚多少），主面板用
 src/sortable.ts  拖动排序的 DOM 侧逻辑：指针 / 位移 / 落点（纯计算在 drag.ts）+ 键盘 Alt + ←→；设置窗口（自选行、分组胶囊）与主面板（自选行）共用，行选择器之外的行不参与拖动
 src/boards.ts    板块榜单的纯逻辑：口径文案（行业 / 概念 / 地域）、Ⅱ / Ⅲ 细分识别与过滤、涨跌榜排序（联网在 api.ts 的 fetchBoards，DOM 在主面板）
+src/kline.ts     日K的纯逻辑：东财 / 腾讯两种返回的解析、MA5/10/20、纵轴范围、悬停下标换算（联网在 api.ts 的 fetchKline，绘制在 main.ts）
 src/search.ts    搜索结果的点击去向：点行本身（hitAction：预览 / 跳过去）与跳过去时该看哪个分组（filterToReveal），主面板用
 src/mcp.ts       MCP 命令处理：看 / 搜 / 增删自选、置顶、排序、分组增删改排序的纯逻辑（搜索与报价由调用方注入）；另含设置面板 MCP 卡片用的 clientConfig()（客户端配置 JSON）与 bridgeState()（状态文案）
 src/update.ts    版本更新的纯逻辑：状态文案、下载进度、提示条文案（联网在 Rust 侧）
@@ -165,6 +166,16 @@ Vite 是多页面打包，入口在 `vite.config.ts` 的 `rollupOptions.input` �
 - **榜单行的 key 只看「有哪些板块」，绝不看名次**：涨跌幅每几秒就在动，把顺序算进 key 会让整块反复重建，而重建会把展开中的分时图（一张画好的 canvas）一起丢掉。名次变化用 `reorderBoards()` 搬 DOM，成员真的变了（换口径 / 开关细分 / 板块增减）才重建，并在重建后补画一次（`renderTrendPanels()`）。
 - 点一行展开该板块的分时（`toggleBoardTrend()`）：**不动 `S.selected`** —— 选中项仍然只表示「标的」，不会被板块 secid 污染。分时**跟着这一行自己的来源**走（`boardSourceOf(id) ?? S.source`）：`90.BK…` 找东财的 `trends2`，`91.pt…` 找腾讯的 `day/query`（板块是 3 列、没有累计额，所以成交额与均价线都是 null —— 见 `trendFromTencent` 里放宽的那处）。两类板块都不画均价线（`isBoardSecid()`，与大盘指数同理）。
 - 只在板块视图打开时才拉榜单（`refresh()` 里的 `if (view === "board")`）：不打开这个视图的用户，一次请求都不会多发。搜索框两个视图都留着，但**两边是两回事**：自选那边走远程 suggest，板块这边是在 `boards` 那份内存列表上**就地过滤**（`src/boards.ts` 的 `searchBoards`，按名字或代码、不发请求）—— 所以它只搜当前口径，搜不到别的口径里的板块，空结果里会写明这一点（想跨口径搜得把另外两类也拉下来，东财 1035 个 = 11 次请求，先没做）。换视图会把搜索词清掉（两边语义不同）。大盘指数卡片两个视图都留着 —— 看板块也要对着大盘看。
+
+**日K线（面板里的第二种图）**
+- 展开的面板（`.trend`）标题行最左边有一对「分时 / 日K」小分段按钮（`.trend-seg`）。**图种是全局一份的**：自选行、大盘指数卡片、搜索预览一起切，展开下一只标的时保持当前图种 —— 连续翻几只股票看日K不该每展开一只就重新点一次。只存在内存里，主面板每次弹出都回到分时（`panel-shown` 里 `setKlineMode(false)`，与板块口径 / 涨跌幅榜同一条规则）。
+- **只给标的**：自选、大盘指数、搜索预览。板块行是 `trendInner(false)`，没有那对按钮、标题仍标「· 分时」（板块不是标的，见 ADR 0001）。有按钮的面板标题只写名称，当前图种由按钮自己说明。
+- 数据：东财 `push2his…/kline/get`（`klt=101` 日线、`fqt=1` 前复权、`lmt=60`、**不传 beg** —— 传了 `beg=0` 会给最早那几根）。`auto` 时东财不通退腾讯 `fqkline/get`（解析在 `src/kline.ts`：前复权的键名是 `qfqday`、不复权是 `day`，两种都认）。腾讯的美股要**带交易所后缀**（`usAAPL.OQ`）：不带时第一行会混进一条 2011 年的脏数据，一根就把纵轴拉到十年前 —— 后缀由响应里 `qt` 的第 3 列给出，所以先按不带后缀问一次、拿到完整代码再重拉一次。两个域名都已在 CSP 的 `connect-src` 里。
+- 刷新：日K拉一次就缓存，60 秒内不重复拉；盘中（`sessionStatus(...).open`）每 60 秒补拉一次，收盘后不再请求；重新展开面板时缓存超过 60 秒也补一次（`ensureKline` / `refreshKline`）。请求失败也记时间，别每轮刷新（5 秒）都去重试。日K模式下个股不再跟着每轮拉分时，**大盘指数例外**：面板底部那两行成交额（今日全市场 / 较上一日同期）用的是分时数据，换了图种也照旧显示。
+- 绘制在 `main.ts` 的 `drawKline()`：上面约 75% 画蜡烛 + MA5/10/20、下面约 25% 画量柱，左上角写三条均线的当前值，右侧是高 / 低（悬停时换成「日期 收 涨跌幅」）。阳线 `--up`、阴线 `--down`、平盘 `--flat`（绿涨红跌设置自动生效），均线用新增的 `--ma5` / `--ma10` / `--ma20`（深浅两套主题各配一档，canvas 里用 `cssVar()` 读）。一屏固定 60 格：不满 60 根（新股）靠右对齐、左边留白，蜡烛宽度才不会因为只有几根被拉粗。没有入场动画。
+- 分时与日K各有一份缓存（`trendCache` / `klineCache`）、各有一份请求序号（`trendSeq` / `klineSeq`）和悬停下标（`trendHover` / `klineHover`）：横轴一个是分钟、一个是根数，共用会互相算错。`drawPanel()` / `animatePanel()` 是唯一按图种分派的地方。
+- 纯逻辑在 `src/kline.ts`（`kline.test.ts`），接线在 `main.test.ts` 的「主面板：日K」那一组。
+
 **行情接口（api.ts）**
 - secid 格式是 `市场.代码`：`1` 沪、`0` 深（代码以 8/4/92 开头的算北交所）、`116` 港股、`105/106/107` 美股、`100` 海外指数；`90` 是板块（如 `90.BK0480`），它**不是标的**，见「板块榜单」。
 - `90` 是东财的板块、`91` 是腾讯的板块（都用各自的原生代码），两者都**不是标的**，见「板块榜单」。腾讯的板块列表**走 Rust 侧**（命令 `qq_board_rank` → `src-tauri/src/qqrank.rs`），不在 webview 里 fetch，所以 `connect-src` 里**不需要**放行 `proxy.finance.qq.com` —— 那条接口不返回 CORS 头（实测只对自家站点回 `Access-Control-Allow-Origin`），也不支持 JSONP，前端 fetch 一定被拦，之前板块榜单落到腾讯就加载失败就是这个原因。

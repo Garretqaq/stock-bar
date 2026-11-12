@@ -6,6 +6,7 @@ import {
   codeOf,
   cumAmount,
   fetchBoards,
+  fetchKline,
   fetchMarketAmount,
   fetchQuotes,
   fetchTrend,
@@ -794,5 +795,77 @@ describe("腾讯板块排行：应用里走 Rust 侧", () => {
     expect(got[0].secid).toBe("91.pt01801120");
     expect(fetchMock.mock.calls.every(([u]) => !String(u).includes("proxy.finance.qq.com"))).toBe(true);
     expect(calls.length).toBe(1); // 东财失败后这一页才有腾讯那一次
+  });
+});
+
+describe("日K接口", () => {
+  const em = (klines: string[], name = "贵州茅台") =>
+    new Response(JSON.stringify({ data: { name, klines } }));
+  const tx = (code: string, rows: string[][], qtName = "贵州茅台", qtCode = code.slice(-6)) =>
+    new Response(
+      JSON.stringify({
+        data: { [code]: { qfqday: rows, qt: { [code]: ["1", qtName, qtCode] } } },
+      }),
+    );
+
+  it("auto：东财挂了就退腾讯，返回的 K 线照样解析", async () => {
+    const fetchMock = vi.fn(async (u: string) =>
+      u.includes("push2his")
+        ? new Response("", { status: 502 })
+        : tx("sh600519", [["2026-11-11", "1445", "1402.3", "1445.62", "1402", "39848"]]),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const got = await fetchKline("1.600519");
+    expect(got.bars).toEqual([
+      { date: "2026-11-11", open: 1445, close: 1402.3, high: 1445.62, low: 1402, vol: 39848 },
+    ]);
+    expect(fetchMock.mock.calls[1][0]).toContain("param=sh600519");
+  });
+
+  it("数据源是东财时只问东财，不再退腾讯", async () => {
+    const fetchMock = vi.fn(async (_u: string) => em(["2026-11-11,10,11,11.5,9.5,1000"]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await fetchKline("1.600519", 60, "eastmoney");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toContain("klt=101");
+    expect(fetchMock.mock.calls[0][0]).toContain("fqt=1");
+    expect(fetchMock.mock.calls[0][0]).toContain("lmt=60");
+    // 带了 beg=0 会从最早那一根给起（2001 年），拿不到最近的
+    expect(fetchMock.mock.calls[0][0]).not.toContain("beg=");
+  });
+
+  it("腾讯兜底美股：先问 usAAPL，拿到完整代码后带交易所后缀重拉一次", async () => {
+    const fetchMock = vi.fn(async (u: string) => {
+      const param = new URL(u).searchParams.get("param") ?? "";
+      if (param.startsWith("usAAPL,")) {
+        // 不带后缀时接口会混进一条 2011 年的脏数据
+        return tx("usAAPL", [["2011-06-02", "346.22", "346.22", "347.84", "344.53", "16780815"]], "苹果", "AAPL.OQ");
+      }
+      return tx("usAAPL.OQ", [["2026-11-11", "349.55", "355.63", "355.91", "349.33", "34453477"]], "苹果", "AAPL.OQ");
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const got = await fetchKline("105.AAPL", 60, "tencent");
+    expect(got.bars[0].date).toBe("2026-11-11");
+    expect(fetchMock.mock.calls[1][0]).toContain("param=usAAPL.OQ,");
+  });
+
+  it("两家都没数据：给空表而不是报错（界面据此说「暂无日K数据」）", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (u: string) =>
+        u.includes("push2his") ? em([]) : tx("sh600519", []),
+      ),
+    );
+
+    const got = await fetchKline("1.600519");
+    expect(got.bars).toEqual([]);
+  });
+
+  it("两家都挂了才抛错（界面据此说「日K加载失败」）", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("", { status: 502 })));
+    await expect(fetchKline("1.600519")).rejects.toThrow("HTTP 502");
   });
 });

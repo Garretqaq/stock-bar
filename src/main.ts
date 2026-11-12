@@ -3,6 +3,7 @@ import {
   getActiveSource,
   codeOf,
   fetchBoards,
+  fetchKline,
   fetchMarketAmount,
   fetchQuotes,
   fetchTrend,
@@ -21,6 +22,16 @@ import {
   type TrendData,
 } from "./api";
 import { barImage, barText, canvasPng } from "./bar";
+import {
+  KLINE_COUNT,
+  MA_WINDOWS,
+  barIndexAt,
+  barPct,
+  barSlot,
+  klineRange,
+  movingAvg,
+  type KlineData,
+} from "./kline";
 import { BOARD_KINDS, boardKindLabel, boardRows, leaderTag, type BoardOrder } from "./boards";
 import {
   GROUP_NAME_MAX,
@@ -95,6 +106,26 @@ let refreshing = false;
 /** 全市场成交额（沪+深+北），只在指数分时面板展开时拉取 */
 let market: MarketAmount | null = null;
 let marketSeq = 0;
+
+// ---------- 日K ----------
+/**
+ * 图种：false = 分时、true = 日K。全局一个（同一时间最多只有一个列表面板 + 一个预览开着），
+ * 展开下一只标的时保持当前图种 —— 连续翻几只股票看日K是最常见的用法。
+ * 只存在内存里：主面板每次弹出都回到分时（与板块口径 / 涨跌幅榜同一条规则，见 panel-shown）。
+ */
+let klineMode = false;
+const klineCache = new Map<string, KlineData>();
+/** 每个标的自己的日K请求序号，理由与 trendSeq 一样（列表与搜索预览可能同时在拉） */
+const klineSeq = new Map<string, number>();
+const klineErr = new Set<string>();
+/** 每只标的最近一次去拉日K的时间（请求开头就记）：60 秒内不重复拉，失败也等下一个 60 秒 */
+const klineAt = new Map<string, number>();
+const klineHover = new WeakMap<HTMLElement, number>();
+/**
+ * 日K的刷新间隔。日线一天才收一根，盘中只要把当天那根跟上；
+ * 60 秒一次比跟报价同频省得多，也不会让人盯着一个不动的收盘价。
+ */
+const KLINE_REFRESH_MS = 60_000;
 
 // ---------- 板块榜单 ----------
 // 板块不是标的（见 CONTEXT.md 与 docs/adr/0001-boards-are-read-only.md）：
@@ -206,7 +237,7 @@ app.innerHTML = `
 
   <main class="body" id="body">
     <section class="indices" id="indices"></section>
-    <div class="trend trend-index" id="trend-index"><div class="trend-card"><div class="trend-head"><span class="trend-title"></span><span class="trend-meta"></span></div><canvas></canvas><div class="trend-foot"></div></div></div>
+    <div class="trend trend-index" id="trend-index"><div class="trend-card"><div class="trend-head">${trendSeg()}<span class="trend-title"></span><span class="trend-meta"></span></div><canvas></canvas><div class="trend-foot"></div></div></div>
 
     <div class="vtabs" id="vtabs" role="tablist" aria-label="视图">
       <button class="vtab on" data-view="watch" role="tab" aria-selected="true">自选</button>
@@ -268,15 +299,37 @@ const trendHover = new WeakMap<HTMLElement, number>();
 const trendErr = new Set<string>();
 const reduceMotion = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-function trendInner(): string {
+/**
+ * 面板的骨架。`withKline` 为假时不给「分时 / 日K」那一对按钮（板块不是标的，不提供日K）。
+ * 标题因此只写名称：当前在看哪种图由那对按钮自己说明。
+ */
+function trendInner(withKline = true): string {
   return (
     `<div class="trend-card"><div class="trend-head">` +
+    (withKline ? trendSeg() : "") +
     `<span class="trend-title"></span><span class="trend-meta"></span></div>` +
     `<canvas></canvas></div>`
   );
 }
 
-/** 展开/收起分时图；展开时选中该标的并拉取数据 */
+/** 「分时 / 日K」分段按钮：标题行最左边，不额外占高度 */
+function trendSeg(): string {
+  const on = (mode: "trend" | "kline") => ((mode === "kline") === klineMode ? " on" : "");
+  return (
+    `<span class="trend-seg">` +
+    `<button type="button" data-mode="trend" class="${on("trend").trim()}">分时</button>` +
+    `<button type="button" data-mode="kline" class="${on("kline").trim()}">日K</button>` +
+    `</span>`
+  );
+}
+
+/** 这只标的此刻该画日K吗：日K模式下、而且它确实是标的（板块不是，见 ADR 0001） */
+const showingKline = (id: string): boolean => klineMode && !isBoardSecid(id);
+
+/** 同一件事的面板版：拿面板上的 secid 问一句（绘制 / 入场 / 悬停三处都走这里） */
+const showKline = (el: HTMLElement): boolean => showingKline(el.dataset.id ?? "");
+
+/** 展开/收起面板；展开时选中该标的并拉取数据 */
 async function toggleTrend(id: string): Promise<void> {
   if (trendOpen === id) {
     trendOpen = null;
@@ -288,10 +341,29 @@ async function toggleTrend(id: string): Promise<void> {
   save();
   renderHeader();
   syncOpenState();
-  const had = trendCache.has(id);
-  if (had) openHolders(id).forEach(animateTrend);
-  // 全市场成交额（底部那两行）只在指数面板里出现，展开指数时顺带拉一次
-  await Promise.all([loadTrend(id, !had), isIndex(id) ? loadMarket() : Promise.resolve()]);
+  if (hasPanelData(id)) openHolders(id).forEach(animatePanel);
+  await loadOpenPanel(id);
+}
+
+/** 这块面板现在有没有能立刻画出来的数据：画日K时看日K，否则看分时 */
+function hasPanelData(id: string): boolean {
+  return showingKline(id) ? klineCache.has(id) : trendCache.has(id);
+}
+
+/**
+ * 展开一只标的时要拉的数据。
+ * 日K模式下不拉分时（省掉那份请求），**但大盘指数是例外**：面板底部那两行成交额
+ * （今日全市场 / 较上一日同期）用的是分时数据，图种跟「今天成交了多少」是两件事，
+ * 换成日K也还在那儿（保留不动，面板高度也不会在切换时跳）。
+ */
+async function loadOpenPanel(id: string): Promise<void> {
+  const kline = showingKline(id);
+  const needTrend = !kline || isIndex(id);
+  await Promise.all([
+    needTrend ? loadTrend(id, !trendCache.has(id)) : Promise.resolve(),
+    kline ? Promise.resolve(ensureKline(id)) : Promise.resolve(),
+    isIndex(id) ? loadMarket() : Promise.resolve(),
+  ]);
 }
 
 /**
@@ -344,6 +416,69 @@ async function loadTrend(id: string, animate: boolean): Promise<void> {
 }
 
 /**
+ * 拉一只标的的日K。`auto` 时东财不通会自动退到腾讯（见 api.ts 的 fetchKline）。
+ * 请求序号与分时各管各的：列表与搜索预览可能同时在拉，后发的那份不该把先发的判成过期。
+ */
+async function loadKline(id: string): Promise<void> {
+  const seq = (klineSeq.get(id) ?? 0) + 1;
+  klineSeq.set(id, seq);
+  // 先记下这次尝试的时间：拉取在路上时 klineAt 已经有值，5 秒一轮的刷新不会叠着再发一份
+  klineAt.set(id, Date.now());
+  try {
+    const data = await fetchKline(id, KLINE_COUNT, S.source);
+    if (klineSeq.get(id) !== seq || !isTrendOpen(id)) return;
+    klineCache.set(id, data);
+    klineAt.set(id, Date.now());
+    klineErr.delete(id);
+    renderTrendPanels();
+  } catch {
+    if (klineSeq.get(id) !== seq) return;
+    // 有旧图就留着：刷新失败不该把已经画出来的K线换成一格错误
+    if (!klineCache.has(id)) klineErr.add(id);
+    // 时间在请求开头就记下了：失败也等下一个 60 秒再试，别每轮刷新（5 秒）都去重试
+    renderTrendPanels();
+  }
+}
+
+/** 展开面板时用：没拉过、或缓存超过 60 秒才拉一次 */
+function ensureKline(id: string): void {
+  if (isBoardSecid(id)) return;
+  const at = klineAt.get(id);
+  if (at != null && Date.now() - at < KLINE_REFRESH_MS) return;
+  void loadKline(id);
+}
+
+/** 这只标的此刻在不在交易：收盘后日K不会再变，没必要接着请求 */
+function tradingNow(id: string): boolean {
+  const q = quotes.get(id);
+  return sessionStatus(regionOf(id), new Date(), q?.time ? q.time * 1000 : null).open;
+}
+
+/**
+ * 日K的 60 秒刷新（挂在 refresh() 里）：面板开着、缓存过期、而且正在交易才拉。
+ * 收盘后不再请求；重新展开时由 ensureKline 补一次，不吃这条限制。
+ */
+function refreshKline(): void {
+  if (!klineMode) return;
+  for (const id of openPanelIds()) {
+    const at = klineAt.get(id);
+    if (at == null) {
+      // 还没拉到过（切过来之前就开着面板）：先补上，跟交易时段无关
+      void loadKline(id);
+      continue;
+    }
+    if (Date.now() - at < KLINE_REFRESH_MS) continue;
+    if (!tradingNow(id)) continue;
+    void loadKline(id);
+  }
+}
+
+/** 现在开着的、能看日K的标的：列表里展开的那只 + 搜索里预览的那只（去重：两处可能是同一只） */
+function openPanelIds(): string[] {
+  return [...new Set([trendOpen, previewOpen])].filter((id): id is string => !!id && showingKline(id));
+}
+
+/**
  * 拉全市场成交额（沪+深+北）。
  * 只在展开的标的是大盘指数时调用 —— 底部那两行只在指数面板里有位置。
  * 失败时保留上一次的值：多一行旧数据也好过整行闪没。
@@ -377,8 +512,23 @@ function renderTrendPanels(): void {
   for (const el of panels) {
     const open = el === idxPanel ? idxOpen : isTrendOpen(el.dataset.id ?? "");
     el.classList.toggle("show", open);
-    if (open && !trendAnim.has(el)) drawTrend(el);
+    if (open && !trendAnim.has(el)) drawPanel(el);
   }
+}
+
+/** 按当前图种画这块面板：分时交给 drawTrend（折线），日K交给 drawKline */
+function drawPanel(el: HTMLElement, progress = 1): void {
+  if (showKline(el)) drawKline(el);
+  else drawTrend(el, progress);
+}
+
+/**
+ * 展开时的入场效果：分时仍是折线从左往右画出来；
+ * 日K直接画出来 —— 60 根 5px 宽的蜡烛一根根长出来只是闪一下，看不出个所以然。
+ */
+function animatePanel(el: HTMLElement): void {
+  if (showKline(el)) drawKline(el);
+  else animateTrend(el);
 }
 
 /** 折线从左到右"画"出来 */
@@ -489,7 +639,8 @@ function drawTrend(holder: HTMLElement, progress = 1): void {
   if (!cv) return;
   const title = holder.querySelector<HTMLElement>(".trend-title");
   const meta = holder.querySelector<HTMLElement>(".trend-meta");
-  if (title) title.textContent = `${nameOf(id)} · 分时`;
+  // 标的的标题只写名称（当前图种由「分时 / 日K」按钮说明）；板块没有那对按钮，仍标出「分时」
+  if (title) title.textContent = isBoardSecid(id) ? `${nameOf(id)} · 分时` : nameOf(id);
 
   const cssW = cv.clientWidth || 300;
   const cssH = cv.clientHeight || 130;
@@ -683,14 +834,246 @@ function drawTrend(holder: HTMLElement, progress = 1): void {
   }
 }
 
+/**
+ * 日K：蜡烛 + MA5/10/20 + 成交量。
+ * 不复用分时那套折线 —— 横轴是「第几根」而不是「第几分钟」，纵轴下面还多一格量柱区。
+ * 一屏固定 60 格（见 kline.ts 的 barIndexAt）：新股不够 60 根就靠右对齐，左边留白，
+ * 蜡烛宽度才不会因为「只有 5 根」被拉成五根粗柱子。
+ */
+function drawKline(holder: HTMLElement): void {
+  const id = holder.dataset.id ?? "";
+  const cv = holder.querySelector<HTMLCanvasElement>("canvas");
+  if (!cv) return;
+  const title = holder.querySelector<HTMLElement>(".trend-title");
+  const meta = holder.querySelector<HTMLElement>(".trend-meta");
+  if (title) title.textContent = nameOf(id);
+
+  const cssW = cv.clientWidth || 300;
+  const cssH = cv.clientHeight || 130;
+  const dpr = window.devicePixelRatio || 1;
+  const bw = Math.round(cssW * dpr);
+  const bh = Math.round(cssH * dpr);
+  if (cv.width !== bw || cv.height !== bh) {
+    cv.width = bw;
+    cv.height = bh;
+  }
+  const sub = cssVar("--sub", "#8e8e93");
+  const data = klineCache.get(id);
+  holder.classList.toggle("loading", !data && !klineErr.has(id));
+  // 指数面板底部那两行成交额是「今天的情况」，跟图种无关，换了日K也照旧显示
+  renderAmount(holder, trendCache.get(id));
+  const bars = data?.bars ?? [];
+  // 右上角默认报这一屏的高 / 低。先写出来（不依赖 canvas）：失败刷新时这张图要留着，
+  // 这一行也就不该空掉 —— 它同时也是「旧图还在」在测试里唯一看得见的痕迹
+  if (meta) {
+    if (!bars.length) {
+      meta.textContent = "";
+    } else if (!klineHover.has(holder)) {
+      let high = -Infinity;
+      let low = Infinity;
+      for (const b of bars) {
+        if (b.high > high) high = b.high;
+        if (b.low < low) low = b.low;
+      }
+      const last = bars[bars.length - 1].close;
+      meta.innerHTML =
+        `<span>高 <b class="${dirOf(high - last)}">${fmtPrice(high)}</b></span>` +
+        `<span>低 <b class="${dirOf(low - last)}">${fmtPrice(low)}</b></span>`;
+    }
+  }
+
+  const ctx = cv.getContext("2d");
+  if (!ctx) return;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, cssW, cssH);
+  if (!bars.length) {
+    if (data || klineErr.has(id)) {
+      ctx.fillStyle = sub;
+      ctx.font = `12px ${UI_FONT}`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(klineErr.has(id) ? "日K加载失败" : "暂无日K数据", cssW / 2, cssH / 2);
+    }
+    return;
+  }
+
+  const mas = MA_WINDOWS.map((w) => movingAvg(bars.map((b) => b.close), w));
+  const { lo, hi } = klineRange(bars, mas);
+  const w = cssW - PAD.l - PAD.r;
+  // 顶上留一行放 MA 的数值（分时的 PAD.t 是给刻度用的，放不下这一行）
+  const top = 14;
+  const h = cssH - top - PAD.b;
+  // 量柱占下面约四分之一，中间留一道缝把两块分开
+  const gap = 5;
+  const volH = Math.max(16, Math.round(h * 0.22));
+  const priceH = h - volH - gap;
+  const volTop = top + priceH + gap;
+  const slotW = w / KLINE_COUNT;
+  const candleW = Math.max(1, Math.min(6, slotW * 0.62));
+  /** 第 i 根落在哪一格：不满 60 根时靠右（与悬停换算共用 kline.ts 的 barSlot） */
+  const cx = (i: number) => PAD.l + (barSlot(i, bars.length) + 0.5) * slotW;
+  const y = (v: number) => top + ((hi - v) / (hi - lo)) * priceH;
+
+  let maxVol = 0;
+  for (const b of bars) if (b.vol != null && b.vol > maxVol) maxVol = b.vol;
+  const vy = (v: number) => volTop + volH - (maxVol > 0 ? (v / maxVol) * volH : 0);
+
+  const up = cssVar("--up", "#e0282e");
+  const down = cssVar("--down", "#1a9f50");
+  const flat = cssVar("--flat", "#8e8e93");
+  const grid = cssVar("--line", "rgba(0,0,0,0.06)");
+  const colorOf = (d: Dir) => (d === "up" ? up : d === "down" ? down : flat);
+
+  // 网格：价格区两条 + 量柱区一条底线
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = grid;
+  for (const f of [0.25, 0.75]) {
+    const gy = Math.round(top + priceH * f) + 0.5;
+    ctx.beginPath();
+    ctx.moveTo(PAD.l, gy);
+    ctx.lineTo(PAD.l + w, gy);
+    ctx.stroke();
+  }
+  const volBase = Math.round(volTop + volH) + 0.5;
+  ctx.beginPath();
+  ctx.moveTo(PAD.l, volBase);
+  ctx.lineTo(PAD.l + w, volBase);
+  ctx.stroke();
+
+  // 蜡烛：影线 + 实体（开收相同的那根画成一条平线，颜色走 --flat）
+  for (let i = 0; i < bars.length; i++) {
+    const b = bars[i];
+    const color = colorOf(dirOf(b.close - b.open));
+    const x = Math.round(cx(i)) + 0.5;
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x, y(b.high));
+    ctx.lineTo(x, y(b.low));
+    ctx.stroke();
+    const yTop = y(Math.max(b.open, b.close));
+    const bottom = y(Math.min(b.open, b.close));
+    ctx.fillRect(
+      Math.round(cx(i) - candleW / 2),
+      Math.round(yTop),
+      Math.max(1, Math.round(candleW)),
+      Math.max(1, Math.round(bottom - top)),
+    );
+    if (b.vol != null && maxVol > 0) {
+      ctx.fillStyle = alpha(color, 0.55);
+      ctx.fillRect(
+        Math.round(cx(i) - candleW / 2),
+        Math.round(vy(b.vol)),
+        Math.max(1, Math.round(candleW)),
+        Math.max(1, Math.round(volBase - vy(b.vol))),
+      );
+    }
+  }
+
+  // 均线：颜色来自 CSS 变量（深浅两套主题各配一套），同一根均线跨过缺值就断开
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
+  ctx.lineWidth = 1;
+  MA_WINDOWS.forEach((win, k) => {
+    const series = mas[k];
+    ctx.strokeStyle = cssVar(`--ma${win}`, flat);
+    ctx.beginPath();
+    let started = false;
+    for (let i = 0; i < series.length; i++) {
+      const v = series[i];
+      if (v == null) {
+        started = false;
+        continue;
+      }
+      if (!started) ctx.moveTo(cx(i), y(v));
+      else ctx.lineTo(cx(i), y(v));
+      started = true;
+    }
+    ctx.stroke();
+  });
+
+  // 左上角三条均线的当前值（最后有值的那一格），省得去悬停才知道
+  ctx.font = `9px ${UI_FONT}`;
+  ctx.textAlign = "left";
+  ctx.textBaseline = "top";
+  let tx = PAD.l + 2;
+  MA_WINDOWS.forEach((win, k) => {
+    const series = mas[k];
+    let v: number | null = null;
+    for (let i = series.length - 1; i >= 0 && v == null; i--) v = series[i];
+    const text = v == null ? `MA${win} --` : `MA${win} ${fmtPrice(v)}`;
+    ctx.fillStyle = cssVar(`--ma${win}`, flat);
+    ctx.fillText(text, tx, 1);
+    tx += ctx.measureText(text).width + 7;
+  });
+
+  // 日期：首尾两根（MM-DD），中间那根给个中点，看跨度时不用悬停
+  ctx.fillStyle = sub;
+  ctx.textBaseline = "alphabetic";
+  ctx.font = `10px ${UI_FONT}`;
+  const md = (d: string) => (d.length >= 10 ? d.slice(5) : d);
+  ctx.textAlign = "left";
+  ctx.fillText(md(bars[0].date), PAD.l, cssH - 3);
+  if (bars.length > 2) {
+    ctx.textAlign = "center";
+    ctx.fillText(md(bars[Math.floor((bars.length - 1) / 2)].date), PAD.l + w / 2, cssH - 3);
+  }
+  ctx.textAlign = "right";
+  ctx.fillText(md(bars[bars.length - 1].date), PAD.l + w, cssH - 3);
+
+  // 十字光标 + 顶部信息（360px 宽放不下开高低收四列，收与涨跌幅已经够看）
+  const hv = klineHover.get(holder);
+  if (hv != null) {
+    const i = Math.min(Math.max(hv, 0), bars.length - 1);
+    const b = bars[i];
+    const hx = Math.round(cx(i)) + 0.5;
+    ctx.strokeStyle = alpha(sub, 0.6);
+    ctx.setLineDash([2, 2]);
+    ctx.beginPath();
+    ctx.moveTo(hx, top);
+    ctx.lineTo(hx, volBase);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    if (meta) {
+      const pct = barPct(bars, i);
+      const d = dirOf(pct);
+      const pctHtml = pct == null ? "" : `<b class="${d}">${fmtPct(pct)}</b>`;
+      // 开高低收四列在 360px 宽下通常放不下（标题还要占一格），放不下就退回「日期 收 涨跌幅」
+      const full =
+        `<span>${esc(md(b.date))}</span>` +
+        `<b>开${fmtPrice(b.open)}</b><b>高${fmtPrice(b.high)}</b>` +
+        `<b>低${fmtPrice(b.low)}</b><b>收${fmtPrice(b.close)}</b>${pctHtml}`;
+      const probe =
+        `${md(b.date)} 开${fmtPrice(b.open)} 高${fmtPrice(b.high)} ` +
+        `低${fmtPrice(b.low)} 收${fmtPrice(b.close)} ${pct == null ? "" : fmtPct(pct)}`;
+      meta.innerHTML =
+        ctx.measureText(probe).width <= cssW - 100
+          ? full
+          : `<span>${esc(md(b.date))}</span><b>${fmtPrice(b.close)}</b>${pctHtml}`;
+    }
+  }
+}
+
 // 悬停十字光标
 document.addEventListener("pointermove", (e) => {
   const cv = e.target as HTMLElement;
   if (!(cv instanceof HTMLCanvasElement)) return;
   const holder = cv.closest<HTMLElement>(".trend");
-  const data = holder && trendCache.get(holder.dataset.id ?? "");
-  if (!holder || !data || trendAnim.has(holder)) return;
+  if (!holder || trendAnim.has(holder)) return;
   const r = cv.getBoundingClientRect();
+  // 日K与分时的横轴不是一回事（根数 vs 分钟数），换算也各用各的
+  if (showKline(holder)) {
+    const data = klineCache.get(holder.dataset.id ?? "");
+    if (!data || !data.bars.length) return;
+    const i = barIndexAt(e.clientX - r.left, PAD.l, r.width - PAD.l - PAD.r, data.bars.length);
+    if (klineHover.get(holder) === i) return;
+    klineHover.set(holder, i);
+    drawKline(holder);
+    return;
+  }
+  const data = trendCache.get(holder.dataset.id ?? "");
+  if (!data) return;
   const w = r.width - PAD.l - PAD.r;
   const i = Math.round(((e.clientX - r.left - PAD.l) / w) * (trendTotal(data) - 1));
   if (trendHover.get(holder) === i) return;
@@ -703,7 +1086,41 @@ document.addEventListener("pointerout", (e) => {
   const holder = cv.closest<HTMLElement>(".trend");
   if (!holder) return;
   trendHover.delete(holder);
-  drawTrend(holder);
+  klineHover.delete(holder);
+  drawPanel(holder);
+});
+
+/**
+ * 换图种：全局生效（列表、指数卡片、搜索预览一起换），已缓存的当场重画，
+ * 没缓存的立刻去拉。切换时把分时的入场动画与悬停下标一起收掉，
+ * 否则切过去的那一下可能还在按「分钟」找位置。
+ */
+function setKlineMode(on: boolean): void {
+  if (klineMode === on) return;
+  klineMode = on;
+  for (const raf of trendAnim.values()) cancelAnimationFrame(raf);
+  trendAnim.clear();
+  document.querySelectorAll<HTMLElement>(".trend-seg").forEach((seg) => {
+    seg.querySelectorAll<HTMLButtonElement>("button").forEach((b) => {
+      const active = (b.dataset.mode === "kline") === on;
+      b.classList.toggle("on", active);
+      b.setAttribute("aria-pressed", String(active));
+    });
+  });
+  document.querySelectorAll<HTMLElement>(".trend").forEach((el) => {
+    trendHover.delete(el);
+    klineHover.delete(el);
+  });
+  renderTrendPanels();
+  if (on) for (const id of openPanelIds()) ensureKline(id);
+}
+
+// 点「分时 / 日K」：按钮在面板里，别让这一下冒到「点别处收起搜索」那套判断上
+document.addEventListener("click", (e) => {
+  const btn = (e.target as HTMLElement).closest<HTMLElement>(".trend-seg button");
+  if (!btn) return;
+  e.stopPropagation();
+  setKlineMode(btn.dataset.mode === "kline");
 });
 
 function renderIndices(): void {
@@ -1468,7 +1885,7 @@ function renderBoards(): void {
           `<div class="row brow" data-id="${esc(b.secid)}" style="--i:${delay}">` +
           `<div class="row-main"><div class="row-name"></div><div class="row-meta"></div></div>` +
           `<div class="pill flat">--</div></div>` +
-          `<div class="trend${trendOpen === b.secid ? " show" : ""}" data-id="${esc(b.secid)}">${trendInner()}</div>`
+          `<div class="trend${trendOpen === b.secid ? " show" : ""}" data-id="${esc(b.secid)}">${trendInner(false)}</div>`
         );
       })
       .join("");
@@ -1759,9 +2176,12 @@ async function openPreview(id: string): Promise<void> {
   }
   previewOpen = id;
   renderSearch(searchItems);
-  const had = trendCache.has(id);
-  if (had) openHolders(id).forEach(animateTrend);
-  await Promise.all([loadTrend(id, !had), loadPreviewQuote(id)]);
+  if (hasPanelData(id)) openHolders(id).forEach(animatePanel);
+  await Promise.all([
+    // 日K模式下预览也看日K（与列表同一个图种），此时不必再拉分时
+    showingKline(id) ? Promise.resolve(ensureKline(id)) : loadTrend(id, !trendCache.has(id)),
+    loadPreviewQuote(id),
+  ]);
 }
 
 /** 预览那只是实时报价：它不在自选里，常规轮询不管它，展开时先问一次（之后由 refresh 带上） */
@@ -1980,12 +2400,16 @@ async function refresh(): Promise<void> {
     lastOk = Date.now();
     failCount = 0;
     if (trendOpen) {
-      void loadTrend(trendOpen, false);
+      // 画日K时个股不必跟着每轮拉分时（板块没有日K，仍然要拉）；
+      // 大盘指数也例外 —— 底部那两行成交额是分时数据
+      if (!showingKline(trendOpen) || isIndex(trendOpen)) void loadTrend(trendOpen, false);
       // 指数面板展开着：底部那两行也要跟着刷新
       if (isIndex(trendOpen)) void loadMarket();
     }
     // 搜索面板里预览着的那只（不在自选里）：价格跟着走了，分时图也要跟着走
-    if (previewOpen) void loadTrend(previewOpen, false);
+    if (previewOpen && !showingKline(previewOpen)) void loadTrend(previewOpen, false);
+    // 日K自己那份 60 秒一次的刷新（收盘后不再请求）
+    refreshKline();
   } catch (e) {
     failCount++;
     errorMsg = apiErrorText(e);
@@ -2119,6 +2543,8 @@ void listenAll("panel-shown", () => {
   boardKind = "industry";
   boardOrder = "up";
   boardSubs = false;
+  // 日K也不记住：每次弹出回到分时（与上面那几项同一条规则）
+  setKlineMode(false);
   renderView();
   refresh();
   // 点提醒通知弹出来的那一次：定位到通知说的那只标的（自选切分组滚过去，指数滚到顶部卡片）

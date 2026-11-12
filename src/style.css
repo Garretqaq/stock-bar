@@ -13,6 +13,10 @@
   --border: rgba(0, 0, 0, 0.08);
   --accent: #0a84ff;
   --accent-soft: rgba(10, 132, 255, 0.12);
+  /* 日K的三条均线：橙 / 蓝 / 紫，深浅两套主题各配一档 */
+  --ma5: #f5a623;
+  --ma10: #0a84ff;
+  --ma20: #bf5af2;
   /* 大盘卡片：浅蓝底 + 浅蓝描边 */
   --idx-surface: #ffffff;
   --idx-tint: 10%;
@@ -46,6 +50,9 @@
     --idx-tint-2: 6%;
     --idx-border: rgba(255, 255, 255, 0.08);
     --idx-border-hover: rgba(255, 255, 255, 0.16);
+    --ma5: #ffb340;
+    --ma10: #409cff;
+    --ma20: #d07cf8;
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.2), 0 4px 12px rgba(0, 0, 0, 0.25);
     --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.25), 0 8px 24px rgba(0, 0, 0, 0.3);
     --shadow-lg: 0 4px 16px rgba(0, 0, 0, 0.3), 0 12px 40px rgba(0, 0, 0, 0.35);
@@ -66,6 +73,9 @@
   --idx-tint-2: 6%;
   --idx-border: rgba(255, 255, 255, 0.08);
   --idx-border-hover: rgba(255, 255, 255, 0.16);
+  --ma5: #ffb340;
+  --ma10: #409cff;
+  --ma20: #d07cf8;
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.2), 0 4px 12px rgba(0, 0, 0, 0.25);
   --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.25), 0 8px 24px rgba(0, 0, 0, 0.3);
   --shadow-lg: 0 4px 16px rgba(0, 0, 0, 0.3), 0 12px 40px rgba(0, 0, 0, 0.35);
@@ -1003,13 +1013,40 @@ button {
 }
 .trend-head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   gap: 8px;
   height: 16px;
   margin-bottom: 2px;
   font-size: 11px;
   color: var(--sub);
+}
+/* 「分时 / 日K」：标题行最左边一对小分段按钮，标题因此只写名称。
+   选中态用反白的小胶囊（--text 打底），不额外占高度、也不用 accent 色去抢图上的注意力 */
+.trend-seg {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 1px;
+  padding: 1px;
+  border-radius: 6px;
+  background: var(--hover);
+}
+.trend-seg button {
+  padding: 0 5px;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: var(--sub);
+  font: inherit;
+  font-size: 10px;
+  line-height: 13px;
+  cursor: pointer;
+}
+.trend-seg button.on {
+  background: var(--text);
+  color: var(--card);
+  font-weight: 600;
 }
 .trend-title {
   font-size: 12px;
@@ -1020,6 +1057,7 @@ button {
   text-overflow: ellipsis;
 }
 .trend-meta {
+  margin-left: auto;
   display: flex;
   gap: 8px;
   white-space: nowrap;

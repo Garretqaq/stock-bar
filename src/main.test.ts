@@ -49,6 +49,15 @@ vi.mock("./api", async (orig) => {
       prevAmount: null,
       prevDate: null,
     })),
+    // 日K：两根假蜡烛就够跑通接线（绘图本身在 happy-dom 里量不出来）
+    fetchKline: vi.fn(async (secid: string) => ({
+      secid,
+      name: "",
+      bars: [
+        { date: "2026-11-11", open: 10, close: 11, high: 11.5, low: 9.5, vol: 1000 },
+        { date: "2026-11-12", open: 11, close: 10.5, high: 11.2, low: 10.2, vol: 900 },
+      ],
+    })),
     fetchMarketAmount: vi.fn(async () => null),
     // 数据源是腾讯时给腾讯那一套（91.pt…），否则给东财的
     fetchBoards: vi.fn(async (kind: string, source?: string) =>
@@ -1161,5 +1170,148 @@ describe("主面板：分组管理", () => {
     expect(box.dataset.gid).toBe("g2"); // 还在改原来那个分组
     expect(box.value).toBe("改了一半"); // 草稿没被重画冲掉
     expect(document.activeElement).toBe(box);
+  });
+});
+
+// 日K：面板标题行最左边那对「分时 / 日K」按钮。
+// 图种是全局一份的 —— 连续翻几只股票看日K不该每展开一只就重新点一次；
+// 板块不是标的（ADR 0001），它那一行不给这对按钮。
+describe("主面板：日K", () => {
+  /** 被 mock 掉的 fetchKline（每个用例 boot 之后都是新的一份） */
+  const mockedKline = async () => (await import("./api")).fetchKline as unknown as ReturnType<typeof vi.fn>;
+  const panelOf = (id: string) => document.querySelector<HTMLElement>(`#list .trend[data-id="${id}"]`)!;
+  const segOf = (el: Element) => [...el.querySelectorAll<HTMLElement>(".trend-seg button")];
+  const clickMode = (mode: "trend" | "kline") =>
+    document.querySelector<HTMLElement>(`#list .trend .trend-seg button[data-mode="${mode}"]`)!.click();
+  const openRow = async (id: string) => {
+    rowOf(id).querySelector<HTMLElement>(".row-name")!.click();
+    await vi.advanceTimersByTimeAsync(0);
+  };
+
+  beforeEach(() => boot());
+
+  it("自选行与大盘指数的面板都有「分时 / 日K」，默认停在分时", () => {
+    const seg = segOf(panelOf("1.600519"));
+    expect(seg.map((b) => b.textContent)).toEqual(["分时", "日K"]);
+    expect(seg[0].classList.contains("on")).toBe(true);
+    expect(seg[1].classList.contains("on")).toBe(false);
+
+    expect(document.querySelectorAll("#trend-index .trend-seg button")).toHaveLength(2);
+  });
+
+  it("板块行没有这对按钮（板块不是标的，不提供日K），标题仍标出「分时」", async () => {
+    document.querySelector<HTMLElement>('.vtab[data-view="board"]')!.click();
+    await vi.advanceTimersByTimeAsync(0);
+    const bRow = document.querySelector<HTMLElement>("#boards .row")!;
+    bRow.click();
+    await vi.advanceTimersByTimeAsync(0);
+
+    const panel = document.querySelector<HTMLElement>("#boards .trend.show")!;
+    expect(panel.querySelector(".trend-seg")).toBeNull();
+    expect(panel.querySelector(".trend-title")!.textContent).toBe("航天航空 · 分时");
+  });
+
+  it("点日K：拉日K并把当前面板换过去；再展开下一只仍是日K", async () => {
+    await openRow("0.300750");
+    const fetchKline = await mockedKline();
+
+    clickMode("kline");
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(fetchKline).toHaveBeenCalledWith("0.300750", 60, "auto");
+    const panel = panelOf("0.300750");
+    // 假报价是空的，名称回落到代码 —— 这里要钉的是「标题只写名称、不再带 · 分时」
+    expect(panel.querySelector(".trend-title")!.textContent).toBe("300750");
+    expect(segOf(panel)[1].classList.contains("on")).toBe(true);
+
+    // 图种是全局的：换一只展开，直接就是日K（不必再点一次）
+    await openRow("116.00700");
+    expect(fetchKline).toHaveBeenLastCalledWith("116.00700", 60, "auto");
+    expect(panelOf("116.00700").querySelector(".trend-title")!.textContent).toBe("00700");
+  });
+
+  it("切回分时：已经缓存的日K留着，面板重新按分时画，不再请求日K", async () => {
+    await openRow("0.300750");
+    const fetchKline = await mockedKline();
+    clickMode("kline");
+    await vi.advanceTimersByTimeAsync(0);
+    const calls = fetchKline.mock.calls.length;
+
+    clickMode("trend");
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(segOf(panelOf("0.300750"))[0].classList.contains("on")).toBe(true);
+    expect(fetchKline.mock.calls.length).toBe(calls);
+  });
+
+  it("大盘指数看日K时仍然拉分时：底部那两行成交额用的是分时数据", async () => {
+    const api = await import("./api");
+    const id = "1.000001"; // 上证指数：在 INDICES 里
+    document.querySelector<HTMLElement>(`.idx[data-id="${id}"]`)!.click();
+    await vi.advanceTimersByTimeAsync(0);
+
+    clickMode("kline");
+    await vi.advanceTimersByTimeAsync(0);
+    const trendCalls = (api.fetchTrend as unknown as ReturnType<typeof vi.fn>).mock.calls.length;
+
+    // 收起再展开：这一轮应当同时拉日K与分时
+    document.querySelector<HTMLElement>(`.idx[data-id="${id}"]`)!.click();
+    document.querySelector<HTMLElement>(`.idx[data-id="${id}"]`)!.click();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect((api.fetchKline as unknown as ReturnType<typeof vi.fn>)).toHaveBeenLastCalledWith(id, 60, "auto");
+    expect((api.fetchTrend as unknown as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(trendCalls);
+  });
+
+  it("日K缓存 60 秒内不重复拉，过期后按刷新间隔补一次", async () => {
+    // 固定在周四上午 10:00（北京时间）：收盘后不刷新是另一条用例，别让跑测试的钟点影响断言
+    vi.setSystemTime(new Date("2026-11-12T02:00:00Z"));
+    await openRow("0.300750");
+    const fetchKline = await mockedKline();
+    clickMode("kline");
+    await vi.advanceTimersByTimeAsync(0);
+    const calls = fetchKline.mock.calls.length;
+
+    // 6 个刷新周期（30 秒）：日K还没到 60 秒，不该再拉
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(fetchKline.mock.calls.length).toBe(calls);
+
+    // 再过 30 秒：缓存过期，补拉一次
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(fetchKline.mock.calls.length).toBeGreaterThan(calls);
+  });
+
+  it("刷新失败时留着已经画出来的那张图（右上角的高 / 低不会被清掉）", async () => {
+    vi.setSystemTime(new Date("2026-11-12T02:00:00Z"));
+    await openRow("0.300750");
+    const fetchKline = await mockedKline();
+    clickMode("kline");
+    await vi.advanceTimersByTimeAsync(0);
+
+    const meta = panelOf("0.300750").querySelector<HTMLElement>(".trend-meta")!;
+    expect(meta.textContent).toContain("11.50"); // 这一屏的高
+
+    // 只看这一轮：mock 的实现跨 boot 可能被复用，绝对次数不稳
+    fetchKline.mockClear();
+    fetchKline.mockRejectedValueOnce(new Error("boom"));
+    await vi.advanceTimersByTimeAsync(60_000); // 缓存过期，补拉那一次失败
+
+    expect(fetchKline).toHaveBeenCalledTimes(1);
+    // 旧图还在：高 / 低照着上一份数据画
+    expect(meta.textContent).toContain("11.50");
+    expect(panelOf("0.300750").classList.contains("loading")).toBe(false);
+  });
+
+  it("收盘后（周末）日K不再跟着刷新，但第一次打开仍然拉一次", async () => {
+    vi.setSystemTime(new Date("2026-11-14T02:00:00Z")); // 周六
+    await openRow("0.300750");
+    const fetchKline = await mockedKline();
+    clickMode("kline");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchKline).toHaveBeenCalledWith("0.300750", 60, "auto"); // 历史K线照拉
+    const calls = fetchKline.mock.calls.length;
+
+    await vi.advanceTimersByTimeAsync(120_000); // 缓存早过期了，但没在交易
+    expect(fetchKline.mock.calls.length).toBe(calls);
   });
 });

@@ -23,14 +23,15 @@ import {
 } from "./api";
 import { barImage, barText, canvasPng } from "./bar";
 import {
-  KLINE_COUNT,
+  KLINE_FETCH,
+  KLINE_SHOW,
   MA_WINDOWS,
   barIndexAt,
   barPct,
   barSlot,
   candleBox,
   klineRange,
-  movingAvg,
+  klineWindow,
   type KlineData,
 } from "./kline";
 import { BOARD_KINDS, boardKindLabel, boardRows, leaderTag, type BoardOrder } from "./boards";
@@ -426,7 +427,8 @@ async function loadKline(id: string): Promise<void> {
   // 先记下这次尝试的时间：拉取在路上时 klineAt 已经有值，5 秒一轮的刷新不会叠着再发一份
   klineAt.set(id, Date.now());
   try {
-    const data = await fetchKline(id, KLINE_COUNT, S.source);
+    // 多拉一截给 MA20 热身，屏幕上只画最后 KLINE_SHOW 根
+    const data = await fetchKline(id, KLINE_FETCH, S.source);
     if (klineSeq.get(id) !== seq || !isTrendOpen(id)) return;
     klineCache.set(id, data);
     klineAt.set(id, Date.now());
@@ -838,7 +840,7 @@ function drawTrend(holder: HTMLElement, progress = 1): void {
 /**
  * 日K：蜡烛 + MA5/10/20 + 成交量。
  * 不复用分时那套折线 —— 横轴是「第几根」而不是「第几分钟」，纵轴下面还多一格量柱区。
- * 一屏固定 60 格（见 kline.ts 的 barIndexAt）：新股不够 60 根就靠右对齐，左边留白，
+ * 一屏固定 KLINE_SHOW 格（见 kline.ts 的 barIndexAt）：新股不够就靠右对齐、左边留白，
  * 蜡烛宽度才不会因为「只有 5 根」被拉成五根粗柱子。
  */
 function drawKline(holder: HTMLElement): void {
@@ -863,7 +865,7 @@ function drawKline(holder: HTMLElement): void {
   holder.classList.toggle("loading", !data && !klineErr.has(id));
   // 指数面板底部那两行成交额是「今天的情况」，跟图种无关，换了日K也照旧显示
   renderAmount(holder, trendCache.get(id));
-  const bars = data?.bars ?? [];
+  const { bars, mas } = klineWindow(data?.bars ?? []);
   // 右上角默认报这一屏的高 / 低。先写出来（不依赖 canvas）：失败刷新时这张图要留着，
   // 这一行也就不该空掉 —— 它同时也是「旧图还在」在测试里唯一看得见的痕迹
   if (meta) {
@@ -898,7 +900,6 @@ function drawKline(holder: HTMLElement): void {
     return;
   }
 
-  const mas = MA_WINDOWS.map((w) => movingAvg(bars.map((b) => b.close), w));
   const { lo, hi } = klineRange(bars, mas);
   const w = cssW - PAD.l - PAD.r;
   // 顶上留一行放 MA 的数值（分时的 PAD.t 是给刻度用的，放不下这一行）
@@ -909,7 +910,7 @@ function drawKline(holder: HTMLElement): void {
   const volH = Math.max(16, Math.round(h * 0.22));
   const priceH = h - volH - gap;
   const volTop = top + priceH + gap;
-  const slotW = w / KLINE_COUNT;
+  const slotW = w / KLINE_SHOW;
   // 窄窗（360px）里一根约 3.3px；浏览器预览拉宽到 1000px 时最多 9px，再宽就散成一根根柱子了
   const candleW = Math.max(1, Math.min(9, slotW * 0.62));
   /** 第 i 根落在哪一格：不满 60 根时靠右（与悬停换算共用 kline.ts 的 barSlot） */
@@ -1067,7 +1068,9 @@ document.addEventListener("pointermove", (e) => {
   if (showKline(holder)) {
     const data = klineCache.get(holder.dataset.id ?? "");
     if (!data || !data.bars.length) return;
-    const i = barIndexAt(e.clientX - r.left, PAD.l, r.width - PAD.l - PAD.r, data.bars.length);
+    // 横轴按「屏幕上画的那 30 格」算，不能用拉回来的根数（多出的那截是给均线热身的）
+    const shown = Math.min(data.bars.length, KLINE_SHOW);
+    const i = barIndexAt(e.clientX - r.left, PAD.l, r.width - PAD.l - PAD.r, shown);
     if (klineHover.get(holder) === i) return;
     klineHover.set(holder, i);
     drawKline(holder);

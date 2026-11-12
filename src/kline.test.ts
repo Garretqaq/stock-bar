@@ -2,11 +2,13 @@
 // 绘图与接线在 main.test.ts 里验。
 import { describe, expect, it } from "vitest";
 import {
-  KLINE_COUNT,
+  KLINE_FETCH,
+  KLINE_SHOW,
   barIndexAt,
   barPct,
   barSlot,
   candleBox,
+  klineWindow,
   klineRange,
   movingAvg,
   parseKlineEastmoney,
@@ -57,12 +59,12 @@ describe("东财日K解析", () => {
     expect(got.bars.map((b) => b.date)).toEqual(["2026-11-10", "2026-11-12"]);
   });
 
-  it("接口给了多于 60 根时只留最近 60 根", () => {
+  it("接口给多了只留最近 KLINE_FETCH 根（多出来的那截是给 MA20 热身的）", () => {
     const klines = Array.from({ length: 80 }, (_, i) => `${20260100 + i},1,1,1,1,0`);
     const got = parseKlineEastmoney("0.300750", { data: { klines } });
 
-    expect(got.bars).toHaveLength(KLINE_COUNT);
-    expect(got.bars[0].date).toBe(klines[80 - KLINE_COUNT].split(",")[0]);
+    expect(got.bars).toHaveLength(KLINE_FETCH);
+    expect(got.bars[0].date).toBe(klines[80 - KLINE_FETCH].split(",")[0]);
   });
 
   it("没有 data / 没有 klines：给空表，不抛", () => {
@@ -130,6 +132,23 @@ describe("均线", () => {
   });
 });
 
+describe("屏幕上的这一段", () => {
+  const many = Array.from({ length: 60 }, (_, i) => bar(100 + i));
+
+  it("只画最近 30 根", () => {
+    const got = klineWindow(many);
+    expect(got.bars).toHaveLength(KLINE_SHOW);
+    expect(got.bars[0].close).toBe(130);
+    expect(got.mas[0]).toHaveLength(KLINE_SHOW);
+  });
+
+  it("均线先按全部数据算再截：一进屏幕 MA20 就有值（不是第 20 格才冒出来）", () => {
+    expect(klineWindow(many).mas[2][0]).not.toBeNull();
+    // 只拉一屏那么多时，MA20 前面自然是空的 —— 这正是要多拉一截的原因
+    expect(klineWindow(many.slice(-KLINE_SHOW)).mas[2][0]).toBeNull();
+  });
+});
+
 describe("纵轴范围", () => {
   it("取 K 线的高低点与均线值的并集，再各留 6% 余量", () => {
     const bars = [bar(12, 10, 15), bar(18, 14, 20)];
@@ -151,22 +170,22 @@ describe("悬停下标换算", () => {
   const W = 300;
   const LEFT = 2;
 
-  it("不满 60 根时落在最后几格（barSlot 与 barIndexAt 互逆）", () => {
-    expect(barSlot(0, 30)).toBe(30);
-    expect(barSlot(29, 30)).toBe(59);
-    expect(barSlot(0, 60)).toBe(0);
+  it("不满一屏时落在最后几格（barSlot 与 barIndexAt 互逆）", () => {
+    expect(barSlot(0, 15)).toBe(15);
+    expect(barSlot(14, 15)).toBe(29);
+    expect(barSlot(0, KLINE_SHOW)).toBe(0);
   });
 
-  it("不满 60 根时靠右对齐：最左边那一格属于第一根", () => {
-    // 30 根占右半边（第 30~59 格）：左半边留给空白
-    expect(barIndexAt(LEFT, LEFT, W, 30)).toBe(0);
-    expect(barIndexAt(LEFT + (W / KLINE_COUNT) * 31, LEFT, W, 30)).toBe(1);
+  it("不满一屏时靠右对齐：最左边那一格属于第一根", () => {
+    // 15 根占右半边（后 15 格）：左半边留给空白
+    expect(barIndexAt(LEFT, LEFT, W, 15)).toBe(0);
+    expect(barIndexAt(LEFT + (W / KLINE_SHOW) * 16, LEFT, W, 15)).toBe(1);
   });
 
   it("指到最后一格换算成最后一根，越界钳住", () => {
-    expect(barIndexAt(LEFT + W, LEFT, W, 30)).toBe(29);
-    expect(barIndexAt(LEFT - 50, LEFT, W, 30)).toBe(0);
-    expect(barIndexAt(LEFT + W * 2, LEFT, W, 60)).toBe(59);
+    expect(barIndexAt(LEFT + W, LEFT, W, 15)).toBe(14);
+    expect(barIndexAt(LEFT - 50, LEFT, W, 15)).toBe(0);
+    expect(barIndexAt(LEFT + W * 2, LEFT, W, KLINE_SHOW)).toBe(KLINE_SHOW - 1);
   });
 });
 

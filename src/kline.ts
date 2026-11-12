@@ -1,8 +1,14 @@
 // 日K的纯逻辑：两种接口返回的解析、均线、纵轴范围、悬停下标换算。
 // 联网在 api.ts 的 fetchKline，绘制在 main.ts 的 drawKline，这里不碰 DOM。
 
-/** 一屏显示的K线根数：约三个月。不满这么多根时靠右对齐（见 barIndexAt） */
-export const KLINE_COUNT = 60;
+/** 一屏显示的K线根数：约一个半月。不满这么多根时靠右对齐（见 barIndexAt） */
+export const KLINE_SHOW = 30;
+
+/**
+ * 一次拉多少根：比屏幕上多一截，多出来的只用来给 MA20 热身。
+ * 只拉屏幕那么多的话，MA20 要到第 20 根才有值，图上大半截没有那条紫线。
+ */
+export const KLINE_FETCH = 60;
 
 /** 均线窗口：MA5 / MA10 / MA20 */
 export const MA_WINDOWS = [5, 10, 20] as const;
@@ -60,7 +66,7 @@ export function parseKlineEastmoney(secid: string, json: any): KlineData {
   return {
     secid,
     name: String(d?.name ?? ""),
-    bars: bars.slice(-KLINE_COUNT),
+    bars: bars.slice(-KLINE_FETCH),
   };
 }
 
@@ -87,7 +93,7 @@ export function parseKlineTencent(secid: string, json: any, code: string): Kline
   return {
     secid,
     name: Array.isArray(qt) ? String(qt[1] ?? "") : "",
-    bars: bars.slice(-KLINE_COUNT),
+    bars: bars.slice(-KLINE_FETCH),
   };
 }
 
@@ -118,6 +124,22 @@ export function movingAvg(values: (number | null)[], window: number): (number | 
 }
 
 /**
+ * 屏幕上要画的那一段：最近 `show` 根 + 与之对齐的均线。
+ * 均线**先按拉回来的全部数据算、再一起截**：只截不热身的话 MA20 要到第 20 格才有值，
+ * 一进屏幕就缺一大截紫线。
+ */
+export function klineWindow(
+  bars: KlineBar[],
+  show = KLINE_SHOW,
+): { bars: KlineBar[]; mas: (number | null)[][] } {
+  const closes = bars.map((b) => b.close);
+  return {
+    bars: bars.slice(-show),
+    mas: MA_WINDOWS.map((w) => movingAvg(closes, w).slice(-show)),
+  };
+}
+
+/**
  * 纵轴范围：K 线的高低点与三条均线的值一起取，上下各留 6% 余量。
  * 均线要算进来 —— MA20 在下跌行情里会落在最低价下方，不带着取就会被裁掉。
  */
@@ -144,10 +166,10 @@ export function klineRange(
 }
 
 /**
- * 第 i 根落在哪一格。横轴永远按 `total` 格铺：新股只有 30 根就靠右占后 30 格、左边留白，
+ * 第 i 根落在哪一格。横轴永远按 `total` 格铺：新股只有 12 根就靠右占后 12 格、左边留白，
  * 蜡烛宽度才不会因为只有几根被拉粗。绘制与悬停换算都用这一个算式。
  */
-export function barSlot(i: number, count: number, total = KLINE_COUNT): number {
+export function barSlot(i: number, count: number, total = KLINE_SHOW): number {
   return total - count + i;
 }
 
@@ -157,7 +179,7 @@ export function barIndexAt(
   left: number,
   width: number,
   count: number,
-  total = KLINE_COUNT,
+  total = KLINE_SHOW,
 ): number {
   if (count <= 0) return 0;
   const slotW = width / Math.max(total, 1);

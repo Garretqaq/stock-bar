@@ -2,7 +2,7 @@
 // secid = 市场代码.证券代码：1 沪、0 深、116 港股、105/106/107 美股、100 海外指数
 import { IN_TAURI, callOrThrow } from "./tauri";
 import {
-  KLINE_COUNT,
+  KLINE_FETCH,
   parseKlineEastmoney,
   parseKlineTencent,
   type KlineData,
@@ -975,7 +975,7 @@ async function klineFromTencent(secid: string, count: number): Promise<KlineData
  */
 export async function fetchKline(
   secid: string,
-  count = KLINE_COUNT,
+  count = KLINE_FETCH,
   source: DataSource = "auto",
 ): Promise<KlineData> {
   let empty: KlineData | null = null;

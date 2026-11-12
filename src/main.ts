@@ -1160,13 +1160,19 @@ function setKlineMode(on: boolean): void {
   if (on) for (const id of openPanelIds()) ensureKline(id);
 }
 
-// 点「分时 / 日K」：按钮在面板里，别让这一下冒到「点别处收起搜索」那套判断上
-document.addEventListener("click", (e) => {
-  const btn = (e.target as HTMLElement).closest<HTMLElement>(".trend-seg button");
-  if (!btn) return;
-  e.stopPropagation();
-  setKlineMode(btn.dataset.mode === "kline");
-});
+// 点「分时 / 日K」：按钮在面板里，别让这一下冒到「点别处收起搜索」那套判断上。
+// 必须挂在**捕获阶段**：搜索结果框那边对 `.sr-preview` 里的点击一律 stopPropagation（点图不该收起
+// 预览），冒泡到 document 的写法在搜索预览里永远收不到这一下 —— 表现就是"点日K没反应"。
+document.addEventListener(
+  "click",
+  (e) => {
+    const btn = (e.target as HTMLElement).closest<HTMLElement>(".trend-seg button");
+    if (!btn) return;
+    e.stopPropagation();
+    setKlineMode(btn.dataset.mode === "kline");
+  },
+  true,
+);
 
 function renderIndices(): void {
   const wrap = $("#indices");

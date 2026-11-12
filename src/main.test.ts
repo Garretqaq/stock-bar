@@ -1302,6 +1302,34 @@ describe("主面板：日K", () => {
     expect(panelOf("0.300750").classList.contains("loading")).toBe(false);
   });
 
+  it("搜索预览里的「日K」也点得动（结果框会拦掉预览块里的点击冒泡）", async () => {
+    const api = await import("./api");
+    vi.mocked(api.searchStocks).mockResolvedValue([
+      { secid: "0.301200", code: "301200", name: "大族数控", type: "深A" },
+    ]);
+    const input = document.querySelector<HTMLInputElement>("#search-input")!;
+    input.value = "大族";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await vi.advanceTimersByTimeAsync(300);
+
+    // 点行本身 → 就地预览（图上带着那对按钮）
+    document.querySelector<HTMLElement>('#search-results .sr[data-id="0.301200"]')!.click();
+    await vi.advanceTimersByTimeAsync(0);
+    const preview = document.querySelector<HTMLElement>("#search-results .sr-preview")!;
+    expect(preview.querySelector(".trend-seg")).not.toBeNull();
+
+    preview.querySelector<HTMLElement>('.trend-seg button[data-mode="kline"]')!.click();
+    await vi.advanceTimersByTimeAsync(0);
+
+    const fetchKline = await mockedKline();
+    expect(fetchKline).toHaveBeenLastCalledWith("0.301200", 60, "auto");
+    // 预览还开着（点按钮不该把预览收掉），而且已经在日K上
+    expect(document.querySelector("#search-results .sr-preview")).not.toBeNull();
+    expect(
+      preview.querySelector<HTMLElement>('.trend-seg button[data-mode="kline"]')!.classList.contains("on"),
+    ).toBe(true);
+  });
+
   it("收盘后（周末）日K不再跟着刷新，但第一次打开仍然拉一次", async () => {
     vi.setSystemTime(new Date("2026-11-14T02:00:00Z")); // 周六
     await openRow("0.300750");

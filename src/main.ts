@@ -679,6 +679,18 @@ function drawTrend(holder: HTMLElement, progress = 1): void {
   const total = trendTotal(data);
   const w = cssW - PAD.l - PAD.r;
   const h = cssH - PAD.t - PAD.b;
+  // 量柱画**每分钟成交额**：东财是 f57、腾讯是按累计额差分出来的，两家口径一致。
+  // 板块一律不画：腾讯的板块没有累计额（amount 全是 null）、东财的有 —— 同一个榜单里
+  // 两种板块一会儿有量柱一会儿没有，比"少一个信息"更难看，所以按"是不是标的"统一关掉，
+  // 价格区照旧占满，版式与以前完全一样。
+  let maxVol = 0;
+  for (const p of pts) if (p.amount != null && p.amount > maxVol) maxVol = p.amount;
+  const showVol = !isBoardSecid(id) && maxVol > 0;
+  const volGap = showVol ? 4 : 0;
+  const volH = showVol ? Math.max(12, Math.round(h * 0.22)) : 0;
+  const priceH = h - volH - volGap;
+  const volTop = PAD.t + priceH + volGap;
+  const volBase = Math.round(volTop + volH) + 0.5;
   let min = Infinity;
   let max = -Infinity;
   for (const p of pts) {
@@ -695,10 +707,11 @@ function drawTrend(holder: HTMLElement, progress = 1): void {
   const lo = pre - dev;
   const hi = pre + dev;
   const x = (i: number) => PAD.l + (i / Math.max(total - 1, 1)) * w;
-  const y = (v: number) => PAD.t + ((hi - v) / (hi - lo)) * h;
+  const y = (v: number) => PAD.t + ((hi - v) / (hi - lo)) * priceH;
 
   const up = cssVar("--up", "#e0282e");
   const down = cssVar("--down", "#1a9f50");
+  const flat = cssVar("--flat", "#8e8e93");
   const grid = cssVar("--line", "rgba(0,0,0,0.06)");
   const last = pts[pts.length - 1].price;
   const color = last >= pre ? up : down;
@@ -707,10 +720,16 @@ function drawTrend(holder: HTMLElement, progress = 1): void {
   ctx.lineWidth = 1;
   ctx.strokeStyle = grid;
   for (const f of [0.25, 0.75]) {
-    const gy = Math.round(PAD.t + h * f) + 0.5;
+    const gy = Math.round(PAD.t + priceH * f) + 0.5;
     ctx.beginPath();
     ctx.moveTo(PAD.l, gy);
     ctx.lineTo(PAD.l + w, gy);
+    ctx.stroke();
+  }
+  if (showVol) {
+    ctx.beginPath();
+    ctx.moveTo(PAD.l, volBase);
+    ctx.lineTo(PAD.l + w, volBase);
     ctx.stroke();
   }
   // 昨收虚线
@@ -726,17 +745,38 @@ function drawTrend(holder: HTMLElement, progress = 1): void {
   const n = Math.max(1, Math.ceil(pts.length * progress));
 
   // 渐变面积
-  const grad = ctx.createLinearGradient(0, PAD.t, 0, PAD.t + h);
+  const grad = ctx.createLinearGradient(0, PAD.t, 0, PAD.t + priceH);
   grad.addColorStop(0, alpha(color, 0.24));
   grad.addColorStop(1, alpha(color, 0));
   ctx.beginPath();
   ctx.moveTo(x(0), y(pts[0].price));
   for (let i = 1; i < n; i++) ctx.lineTo(x(i), y(pts[i].price));
-  ctx.lineTo(x(n - 1), PAD.t + h);
-  ctx.lineTo(x(0), PAD.t + h);
+  ctx.lineTo(x(n - 1), PAD.t + priceH);
+  ctx.lineTo(x(0), PAD.t + priceH);
   ctx.closePath();
   ctx.fillStyle = grad;
   ctx.fill();
+
+  // 量柱：颜色看那一分钟相对上一分钟（第一分钟跟昨收比）的涨跌
+  if (showVol) {
+    const bwv = Math.max(1, (w / Math.max(total - 1, 1)) * 0.7);
+    ctx.fillStyle = alpha(flat, 0.5);
+    for (let i = 0; i < n; i++) {
+      const a = pts[i].amount;
+      if (a == null || a <= 0) continue;
+      const prev = i === 0 ? pre : pts[i - 1].price;
+      const dir = dirOf(pts[i].price - prev);
+      if (dir !== "flat") ctx.fillStyle = alpha(dir === "up" ? up : down, 0.5);
+      else ctx.fillStyle = alpha(flat, 0.5);
+      const bh = Math.max(1, (a / maxVol) * volH);
+      ctx.fillRect(
+        Math.round(x(i) - bwv / 2),
+        Math.round(volTop + volH - bh),
+        Math.max(1, Math.round(bwv)),
+        Math.max(1, Math.round(bh)),
+      );
+    }
+  }
 
   // 均价线
   ctx.lineJoin = "round";
@@ -783,7 +823,7 @@ function drawTrend(holder: HTMLElement, progress = 1): void {
   ctx.fillText(`+${pctDev.toFixed(2)}%`, PAD.l + w, PAD.t - 8);
   ctx.textBaseline = "bottom";
   ctx.fillStyle = alpha(down, 0.8);
-  ctx.fillText(`-${pctDev.toFixed(2)}%`, PAD.l + w, PAD.t + h - 1);
+  ctx.fillText(`-${pctDev.toFixed(2)}%`, PAD.l + w, PAD.t + priceH - 1);
 
   // 时间轴
   ctx.fillStyle = sub;
@@ -810,8 +850,9 @@ function drawTrend(holder: HTMLElement, progress = 1): void {
     ctx.strokeStyle = alpha(sub, 0.6);
     ctx.setLineDash([2, 2]);
     ctx.beginPath();
+    // 竖线一路穿到量柱区底部：这是一条时间参考线，不该在半路断掉
     ctx.moveTo(hx, PAD.t);
-    ctx.lineTo(hx, PAD.t + h);
+    ctx.lineTo(hx, showVol ? volBase : PAD.t + priceH);
     ctx.moveTo(PAD.l, hy);
     ctx.lineTo(PAD.l + w, hy);
     ctx.stroke();
